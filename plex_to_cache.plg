@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2025.12.30.09">
+<!ENTITY version   "2025.12.30.10">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -62,7 +62,7 @@ if (file_exists($ptc_cfg_file)) {
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     foreach ($ptc_cfg as $key => $val) {
-        if (isset($_POST[$key])) { $ptc_cfg[$key] = $_POST[$key]; }
+        if (isset($_POST[$key])) { $ptc_cfg[$key] = $_POST[$key]; } 
         else { if (strpos($key, "ENABLE_") === 0 || $key === "ENABLE_SMART_CLEANUP") { $ptc_cfg[$key] = "False"; } }
     }
     $m_str = "";
@@ -90,7 +90,7 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 ?>
 <style>
 :root { --primary-blue: #00aaff; --bg-dark: #111; }
-#ptc-wrapper { display: flex; flex-wrap: nowrap; align-items: stretch; justify-content: space-between; gap: 15px; width: 100%; box-sizing: border-box; padding: 10px 0; }
+#ptc-wrapper { display: flex; flex-wrap: nowrap; align-items: stretch; justify-content: space-between; gap: 10px; width: 100%; box-sizing: border-box; padding: 10px 0; }
 .ptc-col { background: var(--bg-dark); border-radius: 12px; box-shadow: 0 0 12px rgba(0, 170, 255, 0.15); color: #f0f8ff; padding: 18px; box-sizing: border-box; display: flex; flex-direction: column; flex: 1; }
 #ptc-col-servers { flex: 0 0 28%; }
 #ptc-col-tuning { flex: 0 0 32%; }
@@ -106,19 +106,16 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 #mapping_table { width: 100%; border-collapse: collapse; margin-top: 5px; }
 #mapping_table th { text-align: left; color: var(--primary-blue); padding: 6px; border-bottom: 1px solid #333; font-size: 12px; }
 #mapping_table td { padding: 4px; }
-.btn-save { background: var(--primary-blue); color: #fff; border: none; border-radius: 4px; padding: 8px 16px; cursor: pointer; font-weight: bold; font-size: 13px; transition: all 0.2s; }
-.btn-save:hover { filter: brightness(1.2); transform: translateY(-1px); }
+.btn-save { background: var(--primary-blue); color: #fff; border: none; border-radius: 4px; padding: 10px 20px; cursor: pointer; font-weight: bold; font-size: 14px; transition: all 0.2s; width: 100%; margin-bottom: 20px; }
+.btn-save:hover { filter: brightness(1.2); }
 .btn-add { background: transparent; color: var(--primary-blue); border: 1px solid var(--primary-blue); padding: 4px 8px; border-radius: 4px; cursor: pointer; margin-top: 8px; font-size: 12px; }
-#ptc-log { background: #000; border: 1px solid #333; border-radius: 8px; color: #00ffaa; font-family: 'Courier New', monospace; font-size: 11px; padding: 12px; flex-grow: 1; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin-top: 10px; min-height: 600px; }
+#ptc-log { background: #000; border: 1px solid #333; border-radius: 8px; color: #00ffaa; font-family: 'Courier New', monospace; font-size: 13px; padding: 12px; flex-grow: 1; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin-top: 10px; min-height: 600px; }
 @media (max-width: 1250px) { #ptc-wrapper { flex-wrap: wrap; } .ptc-col { flex: 1 1 45%; } #ptc-col-log { flex: 1 1 100%; } }
 </style>
 <form method="post" autocomplete="off">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; background: var(--bg-dark); padding: 15px; border-radius: 12px; box-shadow: 0 0 12px rgba(0, 170, 255, 0.1);">
-        <h2 style="margin:0; color:var(--primary-blue); display: flex; align-items: center; gap: 10px;"><i class="fa fa-database"></i> Plex to Cache</h2>
-        <input type="submit" value="Save & Apply Settings" class="btn-save">
-    </div>
     <div id="ptc-wrapper">
         <div class="ptc-col" id="ptc-col-servers">
+            <input type="submit" value="SAVE & APPLY SETTINGS" class="btn-save">
             <div class="section-header"><i class="fa fa-play-circle"></i> Plex Server</div>
             <div class="form-pair"><label>Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_PLEX" value="True" <?= $ptc_cfg['ENABLE_PLEX'] == 'True' ? 'checked' : '' ?> ></div></div>
             <div class="form-pair"><label>URL:</label><div class="form-input-wrapper"><input type="text" name="PLEX_URL" value="<?= $ptc_cfg['PLEX_URL'] ?>"></div></div>
@@ -139,7 +136,7 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
             <div class="form-pair"><label>Exclude:</label><div class="form-input-wrapper"><input type="text" name="EXCLUDE_DIRS" value="<?= $ptc_cfg['EXCLUDE_DIRS'] ?>" placeholder="temp,skip"></div></div>
             <div class="section-header"><i class="fa fa-exchange"></i> Docker Mappings</div>
             <table id="mapping_table"><thead><tr><th>Host (Unraid)</th><th>Docker (Container)</th><th></th></tr></thead><tbody></tbody></table>
-            <button type="button" class="btn-add" onclick="addMappingRow()">+ Add Mapping</button>
+            <button type="button" class="btn-add" onclick="addMappingRow()">+ Mapping</button>
             <div class="section-header"><i class="fa fa-cogs"></i> Tuning & Cleanup</div>
             <div class="form-pair"><label>Check Interval:</label><div class="form-input-wrapper"><input type="number" name="CHECK_INTERVAL" value="<?= $ptc_cfg['CHECK_INTERVAL'] ?>"><span class="help-text">sec</span></div></div>
             <div class="form-pair"><label>Copy Delay:</label><div class="form-input-wrapper"><input type="number" name="COPY_DELAY" value="<?= $ptc_cfg['COPY_DELAY'] ?>"><span class="help-text">sec</span></div></div>
@@ -478,7 +475,7 @@ stop() {
 case "$1" in
     start) start ;; 
     stop) stop ;; 
-    restart) stop; sleep 1; start ;; 
+    restart) stop; sleep 1; start ;;
 esac
 ]]>
 </INLINE>
@@ -506,7 +503,7 @@ mkdir -p /boot/config/plugins/plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart
-echo "Plex to Cache v2025.12.30.08 installed."
+echo "Plex to Cache v2025.12.30.10 installed."
 ]]>
 </INLINE>
 </FILE>
