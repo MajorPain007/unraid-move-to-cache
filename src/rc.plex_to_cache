@@ -1,0 +1,71 @@
+#!/bin/bash
+
+PYTHON_SCRIPT="/usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py"
+PID_FILE="/var/run/plex_to_cache.pid"
+LOG_FILE="/var/log/plex_to_cache.log"
+
+start() {
+    if [ -f "$PID_FILE" ]; then
+        if ps -p $(cat "$PID_FILE") > /dev/null; then
+            echo "Service already running."
+            return
+        fi
+    fi
+    echo "Starting Plex to Cache Service..."
+    nohup python3 "$PYTHON_SCRIPT" > "$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
+    echo "Service started."
+}
+
+stop() {
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        if ps -p "$PID" > /dev/null; then
+            echo "Stopping Service..."
+            kill "$PID"
+            rm "$PID_FILE"
+            echo "Service stopped."
+        else
+            echo "Service not running (stale PID file)."
+            rm "$PID_FILE"
+        fi
+    else
+        echo "Service not running."
+    fi
+}
+
+restart() {
+    stop
+    sleep 1
+    start
+}
+
+status() {
+    if [ -f "$PID_FILE" ]; then
+        if ps -p $(cat "$PID_FILE") > /dev/null; then
+            echo "Service is running."
+        else
+            echo "Service is stopped (stale PID)."
+        fi
+    else
+        echo "Service is stopped."
+    fi
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        restart
+        ;;
+    status)
+        status
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+esac
