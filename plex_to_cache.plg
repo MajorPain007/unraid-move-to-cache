@@ -2,14 +2,14 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2025.12.30.14">
+<!ENTITY version   "2025.12.30.15">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" icon="server">
 
 <DESCRIPTION>
-Plex to Cache: Automatically moves media from array to cache on stream start. Includes smart cleanup, permission mirroring and season-ahead caching for Plex, Emby and Jellyfin.
+Plex to Cache: Automatically moves media from array to cache on stream start. Features smart cleanup and season-ahead caching for Plex, Emby and Jellyfin.
 </DESCRIPTION>
 
 <FILE Name="/tmp/plex_to_cache_install/plex_to_cache.page">
@@ -62,7 +62,7 @@ if (file_exists($ptc_cfg_file)) {
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     foreach ($ptc_cfg as $key => $val) {
-        if (isset($_POST[$key])) { $ptc_cfg[$key] = $_POST[$key]; } 
+        if (isset($_POST[$key])) { $ptc_cfg[$key] = $_POST[$key]; }
         else { if (strpos($key, "ENABLE_") === 0 || $key === "ENABLE_SMART_CLEANUP") { $ptc_cfg[$key] = "False"; } }
     }
     $m_str = "";
@@ -101,16 +101,16 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 .form-pair { display: flex; align-items: center; margin-bottom: 10px; gap: 8px; }
 .form-pair label { flex: 0 0 120px; color: var(--primary-blue); font-weight: bold; font-size: 13.5px; cursor: help; }
 .form-input-wrapper { flex: 1; display: flex; align-items: center; gap: 6px; }
-.ptc-input { background: #111 !important; border: 1px solid #444 !important; border-radius: 4px !important; color: #fff !important; padding: 5px 8px !important; width: 100% !important; box-sizing: border-box !important; font-size: 13.5px !important; height: 30px !important; }
+.ptc-input { background: #111 !important; border: 1px solid #444 !important; border-radius: 4px !important; color: #fff !important; padding: 6px 10px !important; width: 100% !important; box-sizing: border-box !important; font-size: 13.5px !important; height: 32px !important; }
 .ptc-input:focus { border-color: var(--primary-blue) !important; outline: none !important; }
 .input-small { width: 70px !important; flex: 0 0 70px !important; }
 .form-input-wrapper input[type="checkbox"] { accent-color: var(--primary-blue); width: 18px; height: 18px; cursor: pointer; }
 .unit-label { font-size: 12px; color: #777; white-space: nowrap; }
-.btn-ptc { background: transparent; color: var(--primary-blue); border: 1px solid var(--primary-blue); border-radius: 4px; cursor: pointer; transition: background 0.2s; font-weight: bold; }
+.btn-ptc { background: transparent; color: var(--primary-blue); border: 1px solid var(--primary-blue); border-radius: 4px; cursor: pointer; font-weight: bold; }
 .btn-ptc:hover { background: rgba(0, 170, 255, 0.15); }
 .btn-save { padding: 10px 15px; font-size: 13.5px; width: 100%; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 1px; }
 .btn-add { padding: 6px 12px; font-size: 12px; margin-top: 10px; }
-#ptc-log { background: #000; border: 1px solid #333; border-radius: 8px; color: #00ffaa; font-family: 'Courier New', monospace; font-size: 12.5px; padding: 12px; flex-grow: 1; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin-top: 10px; min-height: 600px; }
+#ptc-log { background: #000; border: 1px solid #333; border-radius: 8px; color: #00ffaa; font-family: 'Courier New', monospace; font-size: 12.5px; padding: 15px; flex-grow: 1; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin-top: 10px; min-height: 600px; }
 @media (max-width: 1250px) { #ptc-wrapper { flex-wrap: wrap; } .ptc-col { flex: 1 1 45%; } #ptc-col-log { flex: 1 1 100%; } }
 </style>
 <form method="post" autocomplete="off">
@@ -476,7 +476,7 @@ stop() {
 case "$1" in 
     start) start ;; 
     stop) stop ;; 
-    restart) stop; sleep 1; start ;;
+    restart) stop; sleep 1; start ;; 
 esac
 ]]>
 </INLINE>
@@ -485,7 +485,8 @@ esac
 <FILE Run="/bin/bash">
 <INLINE>
 <![CDATA[
-if ! python3 -c "import requests" 2>/dev/null; then
+if ! python3 -c "import requests" 2>/dev/null;
+then
     curl -s https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
     python3 /tmp/get-pip.py >/dev/null 2>&1
     pip3 install requests >/dev/null 2>&1
@@ -504,7 +505,7 @@ mkdir -p /boot/config/plugins/plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart
-echo "Plex to Cache v2025.12.30.14 installed."
+echo "Plex to Cache v2025.12.30.15 installed."
 ]]>
 </INLINE>
 </FILE>
