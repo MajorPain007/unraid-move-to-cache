@@ -3,6 +3,16 @@ $ptc_plugin = "plex_to_cache";
 $ptc_cfg_file = "/boot/config/plugins/$ptc_plugin/settings.cfg";
 $ptc_log_file = "/var/log/plex_to_cache.log";
 
+// Ajax Log Request
+if (isset($_GET['action']) && $_GET['action'] == 'get_log') {
+    if (file_exists($ptc_log_file)) {
+        echo shell_exec("tail -n 200 " . escapeshellarg($ptc_log_file));
+    } else {
+        echo "Log file not found. Service might be starting...";
+    }
+    exit;
+}
+
 // Defaults
 $ptc_cfg = [
     "LANGUAGE" => "EN",
@@ -12,7 +22,7 @@ $ptc_cfg = [
     "CHECK_INTERVAL" => "10", "CACHE_MAX_USAGE" => "80", "COPY_DELAY" => "30",
     "ENABLE_SMART_CLEANUP" => "False", "MOVIE_DELETE_DELAY" => "1800", "EPISODE_KEEP_PREVIOUS" => "2",
     "EXCLUDE_DIRS" => "", "MEDIA_FILETYPES" => ".mkv .mp4 .avi", "ARRAY_ROOT" => "/mnt/user",
-    "CACHE_ROOT" => "/mnt/cache", "DOCKER_MAPPINGS" => "/media:/Media;/movies:/Media/Movies;/tv:/Media/TV"
+    "CACHE_ROOT" => "/mnt/cache", "DOCKER_MAPPINGS" => ""
 ];
 
 // Load Config
@@ -62,7 +72,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
     
-    // Process Docker Mappings
+    // Process Docker Mappings (Stored as docker:host internally)
     $mappings_str = "";
     if (isset($_POST['mapping_docker']) && isset($_POST['mapping_host'])) {
         $dockers = $_POST['mapping_docker'];
@@ -89,9 +99,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     file_put_contents($ptc_cfg_file, $content);
     
     shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart");
-    $save_msg = $txt[$lang]['status_saved'];
-    
-    // Refresh to apply language change immediately if changed
     echo "<script>window.location.reload();</script>";
 }
 
@@ -129,17 +136,12 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 .btn-add { background: transparent; color: var(--primary-blue); border: 1px solid var(--primary-blue); padding: 5px 10px; border-radius: 4px; cursor: pointer; margin-top: 10px; }
 .btn-add:hover { background: rgba(0, 170, 255, 0.1); }
 #ptc-log { background: #000; border: 1px solid var(--primary-blue); border-radius: 8px; color: #00ffaa; font-family: monospace; font-size: 12px; padding: 15px; flex-grow: 1; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
-.status-msg { background: rgba(46, 204, 64, 0.1); color: #2ECC40; padding: 10px; border-radius: 6px; margin-bottom: 20px; border: 1px solid #2ECC40; text-align: center; font-weight: bold; }
 @media (max-width: 1100px) { #ptc-wrapper { flex-wrap: wrap; } #ptc-settings, #ptc-log-container { flex: 1 1 100%; } }
 </style>
 
 <div id="ptc-wrapper">
-
-    <!-- LEFT COLUMN: SETTINGS -->
     <div id="ptc-settings">
         <form method="post" autocomplete="off">
-            <?php if (isset($save_msg)) echo "<div class='status-msg'>$save_msg</div>"; ?>
-            
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                 <h2 style="margin:0; color:var(--primary-blue);"><?= $txt[$lang]['settings'] ?></h2>
                 <input type="submit" value="<?= $txt[$lang]['save'] ?>" class="btn-save">
@@ -155,97 +157,32 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
                 </div>
             </div>
 
-            <!-- PLEX -->
             <div class="section-header"><i class="fa fa-play-circle"></i> <?= $txt[$lang]['plex'] ?></div>
-            <div class="form-pair">
-                <label><?= $txt[$lang]['enable'] ?></label>
-                <div class="form-input-wrapper">
-                    <input type="checkbox" name="ENABLE_PLEX" value="True" <?= $ptc_cfg['ENABLE_PLEX'] == 'True' ? 'checked' : '' ?> >
-                </div>
-            </div>
-            <div class="form-pair">
-                <label>Plex URL:</label>
-                <div class="form-input-wrapper">
-                    <input type="text" name="PLEX_URL" value="<?= $ptc_cfg['PLEX_URL'] ?>" placeholder="http://192.168.1.100:32400" autocomplete="off">
-                </div>
-            </div>
-            <div class="form-pair">
-                <label>Plex Token:</label>
-                <div class="form-input-wrapper">
-                    <input type="password" name="PLEX_TOKEN" value="<?= $ptc_cfg['PLEX_TOKEN'] ?>" onmouseover="this.type='text'" onmouseout="this.type='password'" autocomplete="new-password">
-                </div>
-            </div>
+            <div class="form-pair"><label><?= $txt[$lang]['enable'] ?></label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_PLEX" value="True" <?= $ptc_cfg['ENABLE_PLEX'] == 'True' ? 'checked' : '' ?> ></div></div>
+            <div class="form-pair"><label>URL:</label><div class="form-input-wrapper"><input type="text" name="PLEX_URL" value="<?= $ptc_cfg['PLEX_URL'] ?>" autocomplete="off"></div></div>
+            <div class="form-pair"><label>Token:</label><div class="form-input-wrapper"><input type="password" name="PLEX_TOKEN" value="<?= $ptc_cfg['PLEX_TOKEN'] ?>" onmouseover="this.type='text'" onmouseout="this.type='password'" autocomplete="new-password"></div></div>
 
-            <!-- EMBY -->
             <div class="section-header"><i class="fa fa-server"></i> <?= $txt[$lang]['emby'] ?></div>
-            <div class="form-pair">
-                <label><?= $txt[$lang]['enable'] ?></label>
-                <div class="form-input-wrapper">
-                    <input type="checkbox" name="ENABLE_EMBY" value="True" <?= $ptc_cfg['ENABLE_EMBY'] == 'True' ? 'checked' : '' ?> >
-                </div>
-            </div>
-            <div class="form-pair">
-                <label>Emby URL:</label>
-                <div class="form-input-wrapper">
-                    <input type="text" name="EMBY_URL" value="<?= $ptc_cfg['EMBY_URL'] ?>" placeholder="http://192.168.1.100:8096" autocomplete="off">
-                </div>
-            </div>
-            <div class="form-pair">
-                <label>API Key:</label>
-                <div class="form-input-wrapper">
-                    <input type="password" name="EMBY_API_KEY" value="<?= $ptc_cfg['EMBY_API_KEY'] ?>" onmouseover="this.type='text'" onmouseout="this.type='password'" autocomplete="new-password">
-                </div>
-            </div>
+            <div class="form-pair"><label><?= $txt[$lang]['enable'] ?></label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_EMBY" value="True" <?= $ptc_cfg['ENABLE_EMBY'] == 'True' ? 'checked' : '' ?> ></div></div>
+            <div class="form-pair"><label>URL:</label><div class="form-input-wrapper"><input type="text" name="EMBY_URL" value="<?= $ptc_cfg['EMBY_URL'] ?>" autocomplete="off"></div></div>
+            <div class="form-pair"><label>API Key:</label><div class="form-input-wrapper"><input type="password" name="EMBY_API_KEY" value="<?= $ptc_cfg['EMBY_API_KEY'] ?>" onmouseover="this.type='text'" onmouseout="this.type='password'" autocomplete="new-password"></div></div>
 
-            <!-- JELLYFIN -->
             <div class="section-header"><i class="fa fa-film"></i> <?= $txt[$lang]['jelly'] ?></div>
-            <div class="form-pair">
-                <label><?= $txt[$lang]['enable'] ?></label>
-                <div class="form-input-wrapper">
-                    <input type="checkbox" name="ENABLE_JELLYFIN" value="True" <?= $ptc_cfg['ENABLE_JELLYFIN'] == 'True' ? 'checked' : '' ?> >
-                </div>
-            </div>
-            <div class="form-pair">
-                <label>Jellyfin URL:</label>
-                <div class="form-input-wrapper">
-                    <input type="text" name="JELLYFIN_URL" value="<?= $ptc_cfg['JELLYFIN_URL'] ?>" placeholder="http://192.168.1.100:8096" autocomplete="off">
-                </div>
-            </div>
-            <div class="form-pair">
-                <label>API Key:</label>
-                <div class="form-input-wrapper">
-                    <input type="password" name="JELLYFIN_API_KEY" value="<?= $ptc_cfg['JELLYFIN_API_KEY'] ?>" onmouseover="this.type='text'" onmouseout="this.type='password'" autocomplete="new-password">
-                </div>
-            </div>
+            <div class="form-pair"><label><?= $txt[$lang]['enable'] ?></label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_JELLYFIN" value="True" <?= $ptc_cfg['ENABLE_JELLYFIN'] == 'True' ? 'checked' : '' ?> ></div></div>
+            <div class="form-pair"><label>URL:</label><div class="form-input-wrapper"><input type="text" name="JELLYFIN_URL" value="<?= $ptc_cfg['JELLYFIN_URL'] ?>" autocomplete="off"></div></div>
+            <div class="form-pair"><label>API Key:</label><div class="form-input-wrapper"><input type="password" name="JELLYFIN_API_KEY" value="<?= $ptc_cfg['JELLYFIN_API_KEY'] ?>" onmouseover="this.type='text'" onmouseout="this.type='password'" autocomplete="new-password"></div></div>
 
-            <!-- STORAGE -->
             <div class="section-header"><i class="fa fa-folder-open"></i> <?= $txt[$lang]['paths'] ?></div>
-            <div class="form-pair">
-                <label><?= $txt[$lang]['host'] ?>:</label>
-                <div class="form-input-wrapper">
-                    <input type="text" name="ARRAY_ROOT" value="<?= $ptc_cfg['ARRAY_ROOT'] ?>" autocomplete="off">
-                </div>
-            </div>
-            <div class="form-pair">
-                <label>Cache Root:</label>
-                <div class="form-input-wrapper">
-                    <input type="text" name="CACHE_ROOT" value="<?= $ptc_cfg['CACHE_ROOT'] ?>" autocomplete="off">
-                </div>
-            </div>
-            <div class="form-pair">
-                <label><?= $txt[$lang]['exclude'] ?></label>
-                <div class="form-input-wrapper">
-                    <input type="text" name="EXCLUDE_DIRS" value="<?= $ptc_cfg['EXCLUDE_DIRS'] ?>" placeholder="temp,downloads" autocomplete="off">
-                </div>
-            </div>
+            <div class="form-pair"><label><?= $txt[$lang]['host'] ?>:</label><div class="form-input-wrapper"><input type="text" name="ARRAY_ROOT" value="<?= $ptc_cfg['ARRAY_ROOT'] ?>"></div></div>
+            <div class="form-pair"><label>Cache Root:</label><div class="form-input-wrapper"><input type="text" name="CACHE_ROOT" value="<?= $ptc_cfg['CACHE_ROOT'] ?>"></div></div>
+            <div class="form-pair"><label><?= $txt[$lang]['exclude'] ?></label><div class="form-input-wrapper"><input type="text" name="EXCLUDE_DIRS" value="<?= $ptc_cfg['EXCLUDE_DIRS'] ?>"></div></div>
 
-            <!-- MAPPINGS -->
             <div class="section-header"><i class="fa fa-exchange"></i> <?= $txt[$lang]['mappings'] ?></div>
             <table id="mapping_table">
                 <thead>
                     <tr>
-                        <th style="width: 45%;"><?= $txt[$lang]['docker'] ?></th>
                         <th style="width: 45%;"><?= $txt[$lang]['host'] ?></th>
+                        <th style="width: 45%;"><?= $txt[$lang]['docker'] ?></th>
                         <th style="width: 10%;"></th>
                     </tr>
                 </thead>
@@ -253,104 +190,53 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
             </table>
             <button type="button" class="btn-add" onclick="addMappingRow()">+ Mapping</button>
 
-            <!-- TUNING -->
             <div class="section-header"><i class="fa fa-cogs"></i> <?= $txt[$lang]['tuning'] ?></div>
-            <div class="form-pair">
-                <label><?= $txt[$lang]['interval'] ?></label>
-                <div class="form-input-wrapper">
-                    <input type="number" name="CHECK_INTERVAL" value="<?= $ptc_cfg['CHECK_INTERVAL'] ?>" style="width: 100px;">
-                    <span class="help-text"><?= $txt[$lang]['unit_sec'] ?></span>
-                </div>
-            </div>
-            <div class="form-pair">
-                <label><?= $txt[$lang]['delay'] ?></label>
-                <div class="form-input-wrapper">
-                    <input type="number" name="COPY_DELAY" value="<?= $ptc_cfg['COPY_DELAY'] ?>" style="width: 100px;">
-                    <span class="help-text"><?= $txt[$lang]['unit_sec'] ?></span>
-                </div>
-            </div>
-            <div class="form-pair">
-                <label><?= $txt[$lang]['max_cache'] ?></label>
-                <div class="form-input-wrapper">
-                    <input type="number" name="CACHE_MAX_USAGE" value="<?= $ptc_cfg['CACHE_MAX_USAGE'] ?>" style="width: 100px;">
-                    <span class="help-text"><?= $txt[$lang]['unit_percent'] ?></span>
-                </div>
-            </div>
-            <div class="form-pair">
-                <label><?= $txt[$lang]['smart'] ?></label>
-                <div class="form-input-wrapper">
-                    <input type="checkbox" name="ENABLE_SMART_CLEANUP" value="True" <?= $ptc_cfg['ENABLE_SMART_CLEANUP'] == 'True' ? 'checked' : '' ?> >
-                </div>
-            </div>
-            <div class="form-pair">
-                <label><?= $txt[$lang]['del_delay'] ?></label>
-                <div class="form-input-wrapper">
-                    <input type="number" name="MOVIE_DELETE_DELAY" value="<?= $ptc_cfg['MOVIE_DELETE_DELAY'] ?>" style="width: 100px;">
-                    <span class="help-text"><?= $txt[$lang]['unit_sec'] ?></span>
-                </div>
-            </div>
-            <div class="form-pair">
-                <label><?= $txt[$lang]['keep'] ?></label>
-                <div class="form-input-wrapper">
-                    <input type="number" name="EPISODE_KEEP_PREVIOUS" value="<?= $ptc_cfg['EPISODE_KEEP_PREVIOUS'] ?>" style="width: 100px;">
-                    <span class="help-text"><?= $txt[$lang]['unit_count'] ?></span>
-                </div>
-            </div>
-
+            <div class="form-pair"><label><?= $txt[$lang]['interval'] ?></label><div class="form-input-wrapper"><input type="number" name="CHECK_INTERVAL" value="<?= $ptc_cfg['CHECK_INTERVAL'] ?>" style="width: 80px;"><span class="help-text"><?= $txt[$lang]['unit_sec'] ?></span></div></div>
+            <div class="form-pair"><label><?= $txt[$lang]['delay'] ?></label><div class="form-input-wrapper"><input type="number" name="COPY_DELAY" value="<?= $ptc_cfg['COPY_DELAY'] ?>" style="width: 80px;"><span class="help-text"><?= $txt[$lang]['unit_sec'] ?></span></div></div>
+            <div class="form-pair"><label><?= $txt[$lang]['max_cache'] ?></label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= $ptc_cfg['CACHE_MAX_USAGE'] ?>" style="width: 80px;"><span class="help-text"><?= $txt[$lang]['unit_percent'] ?></span></div></div>
+            <div class="form-pair"><label><?= $txt[$lang]['smart'] ?></label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_SMART_CLEANUP" value="True" <?= $ptc_cfg['ENABLE_SMART_CLEANUP'] == 'True' ? 'checked' : '' ?> ></div></div>
+            <div class="form-pair"><label><?= $txt[$lang]['del_delay'] ?></label><div class="form-input-wrapper"><input type="number" name="MOVIE_DELETE_DELAY" value="<?= $ptc_cfg['MOVIE_DELETE_DELAY'] ?>" style="width: 80px;"><span class="help-text"><?= $txt[$lang]['unit_sec'] ?></span></div></div>
+            <div class="form-pair"><label><?= $txt[$lang]['keep'] ?></label><div class="form-input-wrapper"><input type="number" name="EPISODE_KEEP_PREVIOUS" value="<?= $ptc_cfg['EPISODE_KEEP_PREVIOUS'] ?>" style="width: 80px;"></div></div>
         </form>
     </div>
 
-    <!-- RIGHT COLUMN: LOGS -->
     <div id="ptc-log-container">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 15px;">
             <h3 style="margin:0; color:var(--primary-blue);"><i class="fa fa-terminal"></i> <?= $txt[$lang]['log'] ?></h3>
-            <button class="btn-add" onclick="location.reload();" style="margin:0;">Refresh</button>
+            <div style="display:flex; align-items:center; gap:10px;">
+                <label style="color:#888; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:5px;">
+                    <input type="checkbox" id="auto_refresh" checked style="width:14px;height:14px;"> Auto Refresh
+                </label>
+                <button class="btn-add" onclick="refreshLog();" style="margin:0;">Refresh</button>
+            </div>
         </div>
-        <div id="ptc-log">
-            <?php
-            if (file_exists($ptc_log_file)) {
-                $output = shell_exec("tail -n 100 " . escapeshellarg($ptc_log_file));
-                if (empty($output)) {
-                    echo "Log file exists but is empty. Service starting...";
-                } else {
-                    echo nl2br(htmlspecialchars((string)$output));
-                }
-            } else {
-                echo "Log file not found at $ptc_log_file. Service might be stopped or starting...";
-            }
-            ?>
-        </div>
+        <div id="ptc-log">Loading Logs...</div>
     </div>
-
 </div>
 
 <script>
+function refreshLog() {
+    $.get(window.location.href, { action: 'get_log' }, function(data) {
+        var logDiv = $('#ptc-log');
+        logDiv.text(data);
+        logDiv.scrollTop(logDiv[0].scrollHeight);
+    });
+}
 function addMappingRow(dockerVal = '', hostVal = '') {
     var table = document.getElementById('mapping_table').getElementsByTagName('tbody')[0];
     var row = table.insertRow(-1);
     var cell1 = row.insertCell(0);
     var cell2 = row.insertCell(1);
     var cell3 = row.insertCell(2);
-    
-    cell1.innerHTML = '<input type="text" name="mapping_docker[]" value="' + dockerVal + '" placeholder="/movies" style="width:100%; background:#111; border:1px solid var(--primary-blue); color:#fff; padding:6px; border-radius:4px;" autocomplete="off">';
-    cell2.innerHTML = '<input type="text" name="mapping_host[]" value="' + hostVal + '" placeholder="/mnt/user/Media/Movies" style="width:100%; background:#111; border:1px solid var(--primary-blue); color:#fff; padding:6px; border-radius:4px;" autocomplete="off">';
-    cell3.innerHTML = '<a href="#" onclick="deleteRow(this); return false;" style="color:#ff4444; font-size:18px;"><i class="fa fa-minus-circle"></i></a>';
-    cell3.style.textAlign = "center";
+    cell1.innerHTML = '<input type="text" name="mapping_host[]" value="' + hostVal + '" style="width:100%; background:#111; border:1px solid var(--primary-blue); color:#fff; padding:6px; border-radius:4px;">';
+    cell2.innerHTML = '<input type="text" name="mapping_docker[]" value="' + dockerVal + '" style="width:100%; background:#111; border:1px solid var(--primary-blue); color:#fff; padding:6px; border-radius:4px;">';
+    cell3.innerHTML = '<a href="#" onclick="deleteRow(this); return false;" style="color:#ff4444; font-size:18px; display:block; text-align:center;"><i class="fa fa-minus-circle"></i></a>';
 }
-
-function deleteRow(btn) {
-    var row = btn.parentNode.parentNode;
-    row.parentNode.removeChild(row);
-}
-
-// Init rows
+function deleteRow(btn) { var row = btn.parentNode.parentNode; row.parentNode.removeChild(row); }
 $(function() {
-    <?php foreach ($mappings_pairs as $pair): ?>
-    addMappingRow('<?= addslashes($pair[0]) ?>', '<?= addslashes($pair[1]) ?>');
-    <?php endforeach; ?>
-    // Don't add an empty row if we already have some
-    if (document.getElementById('mapping_table').rows.length <= 1) {
-        addMappingRow();
-    }
+    <?php foreach ($mappings_pairs as $pair): ?> addMappingRow('<?= addslashes($pair[0]) ?>', '<?= addslashes($pair[1]) ?>'); <?php endforeach; ?>
+    if (document.getElementById('mapping_table').rows.length <= 1) { addMappingRow(); }
+    refreshLog();
+    setInterval(function() { if ($('#auto_refresh').is(':checked')) refreshLog(); }, 3000);
 });
 </script>
