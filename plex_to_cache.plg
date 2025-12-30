@@ -2,20 +2,15 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2025.12.30v">
+<!ENTITY version   "2025.12.30w">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
-<PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;">
+<PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" icon="server">
 
-<FILE Name="/usr/local/emhttp/plugins/&name;/README.md">
-<INLINE>
-<![CDATA[
-### Plex to Cache
-Automatically moves media from Unraid array to cache when a stream starts in Plex, Emby or Jellyfin. Includes smart cleanup and season-ahead caching.
-]]>
-</INLINE>
-</FILE>
+<DESCRIPTION>
+Automatically moves media from Unraid array to cache when a stream starts in Plex, Emby or Jellyfin. Includes smart cleanup, permission mirroring and season-ahead caching to ensure smooth playback without disk spin-up delays.
+</DESCRIPTION>
 
 <FILE Name="/usr/local/emhttp/plugins/&name;/log.php">
 <INLINE>
@@ -89,7 +84,7 @@ $txt = [
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     foreach ($ptc_cfg as $key => $val) {
-        if (isset($_POST[$key])) { $ptc_cfg[$key] = $_POST[$key]; }
+        if (isset($_POST[$key])) { $ptc_cfg[$key] = $_POST[$key]; } 
         else { if (strpos($key, "ENABLE_") === 0 || $key === "ENABLE_SMART_CLEANUP") { $ptc_cfg[$key] = "False"; } }
     }
     $m_str = "";
@@ -154,12 +149,12 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
             <div class="section-header"><?= $txt[$lang]['emby'] ?></div>
             <div class="form-pair"><label><?= $txt[$lang]['enable'] ?></label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_EMBY" value="True" <?= $ptc_cfg['ENABLE_EMBY'] == 'True' ? 'checked' : '' ?> ></div></div>
             <div class="form-pair"><label>URL:</label><div class="form-input-wrapper"><input type="text" name="EMBY_URL" value="<?= $ptc_cfg['EMBY_URL'] ?>" autocomplete="off"></div></div>
-            <div class="form-pair"><label>API Key:</label><div class="form-input-wrapper"><input type="password" name="EMBY_API_KEY" value="<?= $ptc_cfg['EMBY_API_KEY'] ?>" autocomplete="new-password"></div></div>
+            <div class="form-pair"><label>API Key:</label><div class="form-input-wrapper"><input type="password" name="EMBY_API_KEY" value="<?= $ptc_cfg['EMBY_API_KEY'] ?>" onmouseover="this.type='text'" onmouseout="this.type='password'" autocomplete="new-password"></div></div>
             
             <div class="section-header"><?= $txt[$lang]['jelly'] ?></div>
             <div class="form-pair"><label><?= $txt[$lang]['enable'] ?></label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_JELLYFIN" value="True" <?= $ptc_cfg['ENABLE_JELLYFIN'] == 'True' ? 'checked' : '' ?> ></div></div>
             <div class="form-pair"><label>URL:</label><div class="form-input-wrapper"><input type="text" name="JELLYFIN_URL" value="<?= $ptc_cfg['JELLYFIN_URL'] ?>" autocomplete="off"></div></div>
-            <div class="form-pair"><label>API Key:</label><div class="form-input-wrapper"><input type="password" name="JELLYFIN_API_KEY" value="<?= $ptc_cfg['JELLYFIN_API_KEY'] ?>" autocomplete="new-password"></div></div>
+            <div class="form-pair"><label>API Key:</label><div class="form-input-wrapper"><input type="password" name="JELLYFIN_API_KEY" value="<?= $ptc_cfg['JELLYFIN_API_KEY'] ?>" onmouseover="this.type='text'" onmouseout="this.type='password'" autocomplete="new-password"></div></div>
             
             <div class="section-header"><?= $txt[$lang]['paths'] ?></div>
             <div class="form-pair"><label>Array Root:</label><div class="form-input-wrapper"><input type="text" name="ARRAY_ROOT" value="<?= $ptc_cfg['ARRAY_ROOT'] ?>"></div></div>
@@ -223,6 +218,7 @@ $(function() {
 import requests, os, shutil, subprocess, time, sys, re, fcntl, signal
 from pathlib import Path
 
+# --- ORIGINAL LOGIC ---
 CONFIG_FILE = "/boot/config/plugins/plex_to_cache/settings.cfg"
 LOCK_FILE_PATH = "/tmp/media_cache_cleaner.lock"
 PERMS_ROOT = "/mnt/user0" 
@@ -252,7 +248,6 @@ def load_plugin_config():
                     k, v = line.split("=", 1)
                     CONF[k.strip()] = v.strip().strip('"').strip("'")
         except: pass
-    
     parsed_docker_mappings.clear()
     m_str = CONF.get("DOCKER_MAPPINGS", "")
     if m_str:
@@ -306,17 +301,14 @@ def get_active_sessions():
                             for med in m.get('Media', []):
                                 for p in med.get('Part', []):
                                     if p.get('file'): found_file = p['file']; break
-                if found_file:
-                    metadata_path_cache[rating_key] = found_file
-                    active_items[found_file] = {'service': 'plex', 'id': rating_key}
-    
+                if found_file: metadata_path_cache[rating_key] = found_file; active_items[found_file] = 'plex'
     for svc in [("ENABLE_EMBY", "EMBY_API_KEY", "EMBY_URL", "emby"), ("ENABLE_JELLYFIN", "JELLYFIN_API_KEY", "JELLYFIN_URL", "jellyfin")]:
         if get_b(svc[0]):
             data = emby_api_get("/Sessions", CONF[svc[1]], CONF[svc[2]])
             if data:
                 for s in data:
                     p = s.get('NowPlayingItem', {}).get('Path')
-                    if p: active_items[p] = {'service': svc[3], 'id': s['NowPlayingItem'].get('Id'), 'user': s.get('UserId')}
+                    if p: active_items[p] = svc[3]
     return active_items
 
 def translate_path(docker_path):
@@ -338,7 +330,6 @@ def cache_file_if_needed(source_path):
     try:
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         subprocess.run(["rsync", "-a", source_path, dest_path], check=True, stdout=subprocess.DEVNULL)
-        # Permissions
         src_perms = source_path.replace(CONF["ARRAY_ROOT"], PERMS_ROOT, 1)
         if os.path.exists(src_perms):
             st = os.stat(src_perms)
@@ -396,19 +387,21 @@ PYTHON_SCRIPT="/usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py"
 PID_FILE="/var/run/plex_to_cache.pid"
 LOG_FILE="/var/log/plex_to_cache.log"
 start() {
-    if [ -f "$PID_FILE" ] && ps -p $(cat "$PID_FILE") > /dev/null; then return; fi
+    if [ -f "$PID_FILE" ] && ps -p $(cat "$PID_FILE") > /dev/null; then return;
+    fi
     touch "$LOG_FILE" && chmod 666 "$LOG_FILE"
     nohup python3 "$PYTHON_SCRIPT" >> "$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
 }
 stop() {
-    if [ -f "$PID_FILE" ]; then kill -9 $(cat "$PID_FILE") 2>/dev/null; rm "$PID_FILE"; fi
+    if [ -f "$PID_FILE" ]; then kill -9 $(cat "$PID_FILE") 2>/dev/null; rm "$PID_FILE";
+    fi
     pkill -f plex_to_cache.py 2>/dev/null
 }
 case "$1" in
-    start) start ;; 
-    stop) stop ;; 
-    restart) stop; sleep 2; start ;; 
+    start) start ;;
+    stop) stop ;;
+    restart) stop; sleep 2; start ;;
 esac
 ]]>
 </INLINE>
@@ -435,7 +428,7 @@ mkdir -p /boot/config/plugins/plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart
-echo "Update v2025.12.30v installiert."
+echo "Update v2025.12.30w installiert."
 ]]>
 </INLINE>
 </FILE>
