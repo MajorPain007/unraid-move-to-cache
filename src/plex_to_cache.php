@@ -39,8 +39,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     file_put_contents($ptc_cfg_file, $content);
     shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart > /dev/null 2>&1 &");
     
-    // Use JS for reliable redirect in Unraid context
-    echo "<script>window.location.href = window.location.href;</script>";
+    // Redirect to prevent blank page and form resubmission
+    echo "<script>window.location.href = window.location.pathname + window.location.search;</script>";
     exit;
 }
 
@@ -58,29 +58,28 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 #ptc-col-tuning { flex: 0 0 32%; }
 #ptc-col-log { flex: 0 0 39%; }
 
-.section-header { color: var(--primary-blue); font-size: 18px; font-weight: bold; margin-bottom: 15px; margin-top: 20px; border-bottom: 1px solid #333; padding-bottom: 5px; display: flex; align-items: center; gap: 8px; }
+.section-header { color: var(--primary-blue); font-size: 16px; font-weight: bold; margin-bottom: 15px; margin-top: 20px; border-bottom: 1px solid #333; padding-bottom: 5px; display: flex; align-items: center; gap: 8px; }
 .section-header:first-of-type { margin-top: 0; }
-.form-pair { display: flex; align-items: center; margin-bottom: 12px; gap: 8px; }
-.form-pair label { flex: 0 0 130px; color: var(--primary-blue); font-weight: bold; font-size: 15px; }
+.form-pair { display: flex; align-items: center; margin-bottom: 10px; gap: 8px; }
+.form-pair label { flex: 0 0 120px; color: var(--primary-blue); font-weight: bold; font-size: 13px; }
 .form-input-wrapper { flex: 1; display: flex; align-items: center; }
 
-/* Unified Input Style */
-.ptc-input { background: #111 !important; border: 1px solid #444 !important; border-radius: 4px !important; color: #fff !important; padding: 8px !important; width: 100% !important; box-sizing: border-box !important; font-size: 15px !important; }
+.ptc-input { background: #111 !important; border: 1px solid #444 !important; border-radius: 4px !important; color: #fff !important; padding: 6px !important; width: 100% !important; box-sizing: border-box !important; font-size: 13px !important; }
 .ptc-input:focus { border-color: var(--primary-blue) !important; outline: none !important; }
 
-.form-input-wrapper input[type="checkbox"] { accent-color: var(--primary-blue); width: 20px; height: 20px; cursor: pointer; }
-.help-text { font-size: 12px; color: #777; margin-left: 5px; font-style: italic; }
+.form-input-wrapper input[type="checkbox"] { accent-color: var(--primary-blue); width: 18px; height: 18px; cursor: pointer; }
+.help-text { font-size: 11px; color: #777; margin-left: 5px; font-style: italic; }
 
 #mapping_table { width: 100%; border-collapse: collapse; margin-top: 5px; }
-#mapping_table th { text-align: left; color: var(--primary-blue); padding: 6px; border-bottom: 1px solid #333; font-size: 14px; }
+#mapping_table th { text-align: left; color: var(--primary-blue); padding: 6px; border-bottom: 1px solid #333; font-size: 12px; }
 #mapping_table td { padding: 4px; }
 
-.btn-save { background: var(--primary-blue); color: #fff; border: none; border-radius: 4px; padding: 12px 20px; cursor: pointer; font-weight: bold; font-size: 16px; transition: all 0.2s; width: 100%; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.4); }
-.btn-save:hover { filter: brightness(1.2); transform: translateY(-1px); }
-.btn-add { background: transparent; color: var(--primary-blue); border: 1px solid var(--primary-blue); padding: 6px 12px; border-radius: 4px; cursor: pointer; margin-top: 10px; font-size: 14px; }
+.btn-save { background: var(--primary-blue); color: #fff; border: none; border-radius: 4px; padding: 10px 20px; cursor: pointer; font-weight: bold; font-size: 14px; transition: background 0.2s; width: 100%; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); }
+.btn-save:hover { background: #0088dd; }
+.btn-add { background: transparent; color: var(--primary-blue); border: 1px solid var(--primary-blue); padding: 4px 8px; border-radius: 4px; cursor: pointer; margin-top: 8px; font-size: 12px; }
 .btn-add:hover { background: rgba(0, 170, 255, 0.1); }
 
-#ptc-log { background: #000; border: 1px solid #333; border-radius: 8px; color: #00ffaa; font-family: 'Courier New', monospace; font-size: 14px; padding: 15px; flex-grow: 1; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin-top: 10px; min-height: 650px; }
+#ptc-log { background: #000; border: 1px solid #333; border-radius: 8px; color: #00ffaa; font-family: 'Courier New', monospace; font-size: 12px; padding: 12px; flex-grow: 1; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin-top: 10px; min-height: 600px; }
 @media (max-width: 1250px) { #ptc-wrapper { flex-wrap: wrap; } .ptc-col { flex: 1 1 45%; } #ptc-col-log { flex: 1 1 100%; } }
 </style>
 
@@ -129,10 +128,10 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
         <!-- COL 3: LOG -->
         <div class="ptc-col" id="ptc-col-log">
             <div style="display:flex; justify-content:space-between; align-items:center;">
-                <h3 style="margin:0; color:var(--primary-blue); font-size: 18px;"><i class="fa fa-terminal"></i> Live Log</h3>
+                <h3 style="margin:0; color:var(--primary-blue); font-size: 16px;"><i class="fa fa-terminal"></i> Live Log</h3>
                 <div style="display:flex; align-items:center; gap:8px;">
-                    <label style="color:#888; font-size:13px; cursor:pointer; display:flex; align-items:center; gap:4px;">
-                        <input type="checkbox" id="auto_refresh" checked style="width:14px;height:14px;"> Auto
+                    <label style="color:#888; font-size:11px; cursor:pointer; display:flex; align-items:center; gap:4px;">
+                        <input type="checkbox" id="auto_refresh" checked style="width:12px;height:12px;"> Auto
                     </label>
                     <button type="button" class="btn-add" onclick="refreshLog();" style="margin:0;">Refresh</button>
                 </div>
@@ -148,9 +147,9 @@ function addMappingRow(dockerVal = '', hostVal = '') {
     var table = document.getElementById('mapping_table').getElementsByTagName('tbody')[0];
     var row = table.insertRow(-1);
     var cell1 = row.insertCell(0); var cell2 = row.insertCell(1); var cell3 = row.insertCell(2);
-    cell1.innerHTML = '<input type="text" name="mapping_host[]" value="' + hostVal + '" class="ptc-input" style="padding:6px !important; font-size:13px !important;">';
-    cell2.innerHTML = '<input type="text" name="mapping_docker[]" value="' + dockerVal + '" class="ptc-input" style="padding:6px !important; font-size:13px !important;">';
-    cell3.innerHTML = '<a href="#" onclick="deleteRow(this); return false;" style="color:#ff4444; font-size:20px; display:block; text-align:center; padding-left:5px;"><i class="fa fa-minus-circle"></i></a>';
+    cell1.innerHTML = '<input type="text" name="mapping_host[]" value="' + hostVal + '" class="ptc-input" style="padding:4px !important; font-size:12px !important;">';
+    cell2.innerHTML = '<input type="text" name="mapping_docker[]" value="' + dockerVal + '" class="ptc-input" style="padding:4px !important; font-size:12px !important;">';
+    cell3.innerHTML = '<a href="#" onclick="deleteRow(this); return false;" style="color:#ff4444; font-size:18px;"><i class="fa fa-minus-circle"></i></a>';
 }
 function deleteRow(btn) { var row = btn.parentNode.parentNode; row.parentNode.removeChild(row); }
 $(function() {
