@@ -2,14 +2,14 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2025.12.30.10">
+<!ENTITY version   "2025.12.30.11">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" icon="server">
 
 <DESCRIPTION>
-Automatically moves media from Unraid array to cache when a stream starts in Plex, Emby or Jellyfin. Includes smart cleanup, permission mirroring and season-ahead caching.
+Automatically moves media from Unraid array to cache when a stream starts in Plex, Emby or Jellyfin. Features smart cleanup and season-ahead caching.
 </DESCRIPTION>
 
 <FILE Name="/tmp/plex_to_cache_install/plex_to_cache.page">
@@ -62,7 +62,7 @@ if (file_exists($ptc_cfg_file)) {
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     foreach ($ptc_cfg as $key => $val) {
-        if (isset($_POST[$key])) { $ptc_cfg[$key] = $_POST[$key]; } 
+        if (isset($_POST[$key])) { $ptc_cfg[$key] = $_POST[$key]; }
         else { if (strpos($key, "ENABLE_") === 0 || $key === "ENABLE_SMART_CLEANUP") { $ptc_cfg[$key] = "False"; } }
     }
     $m_str = "";
@@ -78,8 +78,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     foreach ($ptc_cfg as $key => $val) { $content .= "$key=\"$val\"\n"; }
     if (!is_dir(dirname($ptc_cfg_file))) mkdir(dirname($ptc_cfg_file), 0777, true);
     file_put_contents($ptc_cfg_file, $content);
-    shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart");
-    echo "<script>window.location.reload();</script>";
+    shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart > /dev/null 2>&1 &");
+    header("Location: " . $_SERVER['REQUEST_URI']);
+    exit;
 }
 
 $mappings_pairs = [];
@@ -90,25 +91,24 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 ?>
 <style>
 :root { --primary-blue: #00aaff; --bg-dark: #111; }
-#ptc-wrapper { display: flex; flex-wrap: nowrap; align-items: stretch; justify-content: space-between; gap: 10px; width: 100%; box-sizing: border-box; padding: 10px 0; }
-.ptc-col { background: var(--bg-dark); border-radius: 12px; box-shadow: 0 0 12px rgba(0, 170, 255, 0.15); color: #f0f8ff; padding: 18px; box-sizing: border-box; display: flex; flex-direction: column; flex: 1; }
+#ptc-wrapper { display: flex; flex-wrap: nowrap; align-items: stretch; justify-content: space-between; gap: 6px; width: 100%; box-sizing: border-box; padding: 5px 0; }
+.ptc-col { background: var(--bg-dark); border-radius: 10px; box-shadow: 0 0 10px rgba(0, 170, 255, 0.15); color: #f0f8ff; padding: 15px; box-sizing: border-box; display: flex; flex-direction: column; flex: 1; }
 #ptc-col-servers { flex: 0 0 28%; }
 #ptc-col-tuning { flex: 0 0 32%; }
-#ptc-col-log { flex: 0 0 38%; }
-.section-header { color: var(--primary-blue); font-size: 16px; font-weight: bold; margin-bottom: 12px; margin-top: 20px; border-bottom: 1px solid #333; padding-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+#ptc-col-log { flex: 0 0 39%; }
+.section-header { color: var(--primary-blue); font-size: 17px; font-weight: bold; margin-bottom: 12px; margin-top: 18px; border-bottom: 1px solid #333; padding-bottom: 4px; display: flex; align-items: center; gap: 8px; }
 .section-header:first-of-type { margin-top: 0; }
-.form-pair { display: flex; align-items: center; margin-bottom: 10px; gap: 8px; }
-.form-pair label { flex: 0 0 110px; color: var(--primary-blue); font-weight: bold; font-size: 13px; }
+.form-pair { display: flex; align-items: center; margin-bottom: 12px; gap: 8px; }
+.form-pair label { flex: 0 0 120px; color: var(--primary-blue); font-weight: bold; font-size: 14px; }
 .form-input-wrapper { flex: 1; display: flex; align-items: center; }
-.form-input-wrapper input[type="text"], .form-input-wrapper input[type="password"], .form-input-wrapper input[type="number"] { background: #111; border: 1px solid #444; border-radius: 4px; color: #fff; padding: 6px; width: 100%; box-sizing: border-box; font-size: 13px; }
-.form-input-wrapper input[type="checkbox"] { accent-color: var(--primary-blue); width: 16px; height: 16px; cursor: pointer; }
-.help-text { font-size: 11px; color: #777; margin-left: 5px; font-style: italic; }
+.form-input-wrapper input[type="text"], .form-input-wrapper input[type="password"], .form-input-wrapper input[type="number"] { background: #111; border: 1px solid #444; border-radius: 4px; color: #fff; padding: 8px; width: 100%; box-sizing: border-box; font-size: 14px; }
+.form-input-wrapper input[type="checkbox"] { accent-color: var(--primary-blue); width: 18px; height: 18px; cursor: pointer; }
 #mapping_table { width: 100%; border-collapse: collapse; margin-top: 5px; }
-#mapping_table th { text-align: left; color: var(--primary-blue); padding: 6px; border-bottom: 1px solid #333; font-size: 12px; }
+#mapping_table th { text-align: left; color: var(--primary-blue); padding: 6px; border-bottom: 1px solid #333; font-size: 13px; }
 #mapping_table td { padding: 4px; }
-.btn-save { background: var(--primary-blue); color: #fff; border: none; border-radius: 4px; padding: 10px 20px; cursor: pointer; font-weight: bold; font-size: 14px; transition: all 0.2s; width: 100%; margin-bottom: 20px; }
+.btn-save { background: var(--primary-blue); color: #fff; border: none; border-radius: 4px; padding: 12px 20px; cursor: pointer; font-weight: bold; font-size: 15px; transition: all 0.2s; width: 100%; margin-bottom: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
 .btn-save:hover { filter: brightness(1.2); }
-.btn-add { background: transparent; color: var(--primary-blue); border: 1px solid var(--primary-blue); padding: 4px 8px; border-radius: 4px; cursor: pointer; margin-top: 8px; font-size: 12px; }
+.btn-add { background: transparent; color: var(--primary-blue); border: 1px solid var(--primary-blue); padding: 5px 10px; border-radius: 4px; cursor: pointer; margin-top: 8px; font-size: 13px; }
 #ptc-log { background: #000; border: 1px solid #333; border-radius: 8px; color: #00ffaa; font-family: 'Courier New', monospace; font-size: 13px; padding: 12px; flex-grow: 1; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin-top: 10px; min-height: 600px; }
 @media (max-width: 1250px) { #ptc-wrapper { flex-wrap: wrap; } .ptc-col { flex: 1 1 45%; } #ptc-col-log { flex: 1 1 100%; } }
 </style>
@@ -138,15 +138,15 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
             <table id="mapping_table"><thead><tr><th>Host (Unraid)</th><th>Docker (Container)</th><th></th></tr></thead><tbody></tbody></table>
             <button type="button" class="btn-add" onclick="addMappingRow()">+ Mapping</button>
             <div class="section-header"><i class="fa fa-cogs"></i> Tuning & Cleanup</div>
-            <div class="form-pair"><label>Check Interval:</label><div class="form-input-wrapper"><input type="number" name="CHECK_INTERVAL" value="<?= $ptc_cfg['CHECK_INTERVAL'] ?>"><span class="help-text">sec</span></div></div>
-            <div class="form-pair"><label>Copy Delay:</label><div class="form-input-wrapper"><input type="number" name="COPY_DELAY" value="<?= $ptc_cfg['COPY_DELAY'] ?>"><span class="help-text">sec</span></div></div>
-            <div class="form-pair"><label>Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= $ptc_cfg['CACHE_MAX_USAGE'] ?>"><span class="help-text">%</span></div></div>
+            <div class="form-pair"><label>Check Interval:</label><div class="form-input-wrapper"><input type="number" name="CHECK_INTERVAL" value="<?= $ptc_cfg['CHECK_INTERVAL'] ?>"><span style="margin-left:5px;font-size:12px;color:#777;">sec</span></div></div>
+            <div class="form-pair"><label>Copy Delay:</label><div class="form-input-wrapper"><input type="number" name="COPY_DELAY" value="<?= $ptc_cfg['COPY_DELAY'] ?>"><span style="margin-left:5px;font-size:12px;color:#777;">sec</span></div></div>
+            <div class="form-pair"><label>Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= $ptc_cfg['CACHE_MAX_USAGE'] ?>"><span style="margin-left:5px;font-size:12px;color:#777;">%</span></div></div>
             <div class="form-pair"><label>Smart Cleanup:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_SMART_CLEANUP" value="True" <?= $ptc_cfg['ENABLE_SMART_CLEANUP'] == 'True' ? 'checked' : '' ?> ></div></div>
-            <div class="form-pair"><label>Delete Delay:</label><div class="form-input-wrapper"><input type="number" name="MOVIE_DELETE_DELAY" value="<?= $ptc_cfg['MOVIE_DELETE_DELAY'] ?>"><span class="help-text">sec</span></div></div>
+            <div class="form-pair"><label>Delete Delay:</label><div class="form-input-wrapper"><input type="number" name="MOVIE_DELETE_DELAY" value="<?= $ptc_cfg['MOVIE_DELETE_DELAY'] ?>"><span style="margin-left:5px;font-size:12px;color:#777;">sec</span></div></div>
             <div class="form-pair"><label>Keep Episodes:</label><div class="form-input-wrapper"><input type="number" name="EPISODE_KEEP_PREVIOUS" value="<?= $ptc_cfg['EPISODE_KEEP_PREVIOUS'] ?>"></div></div>
         </div>
         <div class="ptc-col" id="ptc-col-log">
-            <div style="display:flex; justify-content:space-between; align-items:center;"><h3 style="margin:0; color:var(--primary-blue); font-size: 16px;"><i class="fa fa-terminal"></i> Live Log</h3><div style="display:flex; align-items:center; gap:8px;"><label style="color:#888; font-size:11px; cursor:pointer; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="auto_refresh" checked style="width:12px;height:12px;"> Auto</label><button type="button" class="btn-add" onclick="refreshLog();" style="margin:0;">Refresh</button></div></div>
+            <div style="display:flex; justify-content:space-between; align-items:center;"><h3 style="margin:0; color:var(--primary-blue); font-size: 17px;"><i class="fa fa-terminal"></i> Live Log Output</h3><div style="display:flex; align-items:center; gap:8px;"><label style="color:#888; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="auto_refresh" checked style="width:14px;height:14px;"> Auto</label><button type="button" class="btn-add" onclick="refreshLog();" style="margin:0;">Refresh</button></div></div>
             <div id="ptc-log">Loading Logs...</div>
         </div>
     </div>
@@ -157,9 +157,9 @@ function addMappingRow(dockerVal = '', hostVal = '') {
     var table = document.getElementById('mapping_table').getElementsByTagName('tbody')[0];
     var row = table.insertRow(-1);
     var cell1 = row.insertCell(0); var cell2 = row.insertCell(1); var cell3 = row.insertCell(2);
-    cell1.innerHTML = '<input type="text" name="mapping_host[]" value="' + hostVal + '" style="background:#111; border:1px solid #444; color:#fff; padding:4px; border-radius:4px; width:100%; font-size:12px;">';
-    cell2.innerHTML = '<input type="text" name="mapping_docker[]" value="' + dockerVal + '" style="background:#111; border:1px solid #444; color:#fff; padding:4px; border-radius:4px; width:100%; font-size:12px;">';
-    cell3.innerHTML = '<a href="#" onclick="deleteRow(this); return false;" style="color:#ff4444; font-size:16px;"><i class="fa fa-minus-circle"></i></a>';
+    cell1.innerHTML = '<input type="text" name="mapping_host[]" value="' + hostVal + '" style="background:#111; border:1px solid #444; color:#fff; padding:6px; border-radius:4px; width:100%; font-size:13px;">';
+    cell2.innerHTML = '<input type="text" name="mapping_docker[]" value="' + dockerVal + '" style="background:#111; border:1px solid #444; color:#fff; padding:6px; border-radius:4px; width:100%; font-size:13px;">';
+    cell3.innerHTML = '<a href="#" onclick="deleteRow(this); return false;" style="color:#ff4444; font-size:18px;"><i class="fa fa-minus-circle"></i></a>';
 }
 function deleteRow(btn) { var row = btn.parentNode.parentNode; row.parentNode.removeChild(row); }
 $(function() { <?php foreach ($mappings_pairs as $pair): ?> addMappingRow('<?= addslashes($pair[0]) ?>', '<?= addslashes($pair[1]) ?>'); <?php endforeach; ?> if (document.getElementById('mapping_table').rows.length <= 1) { addMappingRow(); } refreshLog(); setInterval(function() { if ($('#auto_refresh').is(':checked')) refreshLog(); }, 3000); });
@@ -475,7 +475,7 @@ stop() {
 case "$1" in
     start) start ;; 
     stop) stop ;; 
-    restart) stop; sleep 1; start ;;
+    restart) stop; sleep 1; start ;; 
 esac
 ]]>
 </INLINE>
@@ -503,7 +503,7 @@ mkdir -p /boot/config/plugins/plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart
-echo "Plex to Cache v2025.12.30.10 installed."
+echo "Plex to Cache v2025.12.30.11 installed."
 ]]>
 </INLINE>
 </FILE>
