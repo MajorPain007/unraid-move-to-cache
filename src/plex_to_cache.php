@@ -37,7 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     foreach ($ptc_cfg as $key => $val) { $content .= "$key=\"$val\"\n"; }
     if (!is_dir(dirname($ptc_cfg_file))) mkdir(dirname($ptc_cfg_file), 0777, true);
     file_put_contents($ptc_cfg_file, $content);
-    shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart > /dev/null 2>&1 &");
+    shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart > /dev/null 2>&1 & ");
     echo "<script>window.location.href = window.location.href;</script>";
     exit;
 }
@@ -53,18 +53,18 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 #ptc-wrapper { display: flex; flex-wrap: nowrap; align-items: stretch; justify-content: space-between; gap: 8px; width: 100%; box-sizing: border-box; padding: 10px 0; }
 .ptc-col { background: var(--bg-dark); border-radius: 8px; box-shadow: 0 0 10px rgba(0, 170, 255, 0.15); color: #f0f8ff; padding: 18px; box-sizing: border-box; display: flex; flex-direction: column; }
 
-/* Narrow columns as requested */
-#ptc-col-servers { flex: 0 0 25%; }
+/* Wide server column for long URL/Token fields */
+#ptc-col-servers { flex: 0 0 35%; }
 #ptc-col-tuning { flex: 0 0 25%; }
-#ptc-col-log { flex: 0 0 48%; }
+#ptc-col-log { flex: 0 0 38%; }
 
 .section-header { color: var(--primary-blue); font-size: 16px; font-weight: bold; margin-bottom: 12px; margin-top: 18px; border-bottom: 1px solid #333; padding-bottom: 4px; display: flex; align-items: center; gap: 8px; }
 .section-header:first-of-type { margin-top: 0; }
 .form-pair { display: flex; align-items: center; margin-bottom: 12px; gap: 8px; }
-.form-pair label { flex: 0 0 100px; color: var(--primary-blue); font-weight: bold; font-size: 13.5px; position: relative; cursor: help; }
+.form-pair label { flex: 0 0 110px; color: var(--primary-blue); font-weight: bold; font-size: 13.5px; position: relative; cursor: help; }
 .form-input-wrapper { flex: 1; display: flex; align-items: center; gap: 8px; }
 
-/* Tooltip Logic with 0.5s delay */
+/* Tooltip Logic */
 .form-pair label:after {
     content: attr(data-tooltip);
     position: absolute;
@@ -96,7 +96,7 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 .ptc-input:focus { border-color: var(--primary-blue) !important; outline: none !important; }
 .input-small { width: 65px !important; flex: 0 0 65px !important; }
 
-/* Tuning column right-alignment */
+/* Tuning column alignment */
 #ptc-col-tuning .form-input-wrapper { justify-content: flex-end; }
 #ptc-col-tuning .ptc-input.input-small { text-align: right; }
 #ptc-col-tuning .ptc-input:not(.input-small) { text-align: left; }
@@ -108,9 +108,12 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 #mapping_table th { text-align: left; color: var(--primary-blue); padding: 6px; border-bottom: 1px solid #333; font-size: 12px; }
 #mapping_table td { padding: 4px 0; }
 
-/* Default Unraid button style (no blue color) */
+/* No custom colors for buttons - use Unraid defaults */
 .btn-save-container { margin-bottom: 20px; }
 .btn-save-container input[type="submit"] { width: 100%; padding: 10px; font-weight: bold; text-transform: uppercase; cursor: pointer; }
+
+.btn-add { background: transparent; color: var(--primary-blue); border: 1px solid var(--primary-blue); border-radius: 4px; padding: 6px 12px; font-size: 11px; margin-top: 10px; cursor: pointer; }
+.btn-add:hover { background: rgba(0, 170, 255, 0.1); }
 
 #ptc-log { background: #000; border: 1px solid #333; border-radius: 8px; color: #00ffaa; font-family: 'Courier New', monospace; font-size: 12.5px; padding: 12px; flex-grow: 1; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin-top: 10px; min-height: 550px; }
 @media (max-width: 1250px) { #ptc-wrapper { flex-wrap: wrap; } .ptc-col { flex: 1 1 45%; } #ptc-col-log { flex: 1 1 100%; } }
@@ -146,17 +149,17 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
             <div class="form-pair"><label data-tooltip="Directory names to skip (comma separated).">Exclude:</label><div class="form-input-wrapper"><input type="text" name="EXCLUDE_DIRS" value="<?= $ptc_cfg['EXCLUDE_DIRS'] ?>" placeholder="temp,skip" class="ptc-input"></div></div>
 
             <div class="section-header"><i class="fa fa-exchange"></i> Docker Mappings</div>
-            <table id="mapping_table"><thead><tr><th>Host Path</th><th>Docker Path</th><th></th></tr></thead><tbody></tbody></table>
-            <button type="button" onclick="addMappingRow()" style="padding: 6px 12px; font-size: 11px; margin-top: 10px; cursor: pointer;">+ Mapping</button>
+            <table id="mapping_table"><thead><tr><th title="Path on host side">Host Path</th><th title="Path in Docker">Docker Path</th><th></th></tr></thead><tbody></tbody></table>
+            <button type="button" class="btn-add" onclick="addMappingRow()">+ Mapping</button>
 
             <div id="tuning-section">
                 <div class="section-header"><i class="fa fa-cogs"></i> Tuning & Cleanup</div>
                 <div class="form-pair"><label title="Seconds between session checks.">Interval:</label><div class="form-input-wrapper"><input type="number" name="CHECK_INTERVAL" value="<?= $ptc_cfg['CHECK_INTERVAL'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
                 <div class="form-pair"><label title="Wait seconds before moving file.">Copy Delay:</label><div class="form-input-wrapper"><input type="number" name="COPY_DELAY" value="<?= $ptc_cfg['COPY_DELAY'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
-                <div class="form-pair"><label title="Stop moving files if cache pool usage is above this percentage.">Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= $ptc_cfg['CACHE_MAX_USAGE'] ?>" class="ptc-input input-small"><span class="unit-label">%</span></div></div>
+                <div class="form-pair"><label title="Max usage % of cache pool.">Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= $ptc_cfg['CACHE_MAX_USAGE'] ?>" class="ptc-input input-small"><span class="unit-label">%</span></div></div>
                 <div class="form-pair"><label title="Auto removal from cache after watching.">Smart Clean:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_SMART_CLEANUP" value="True" <?= $ptc_cfg['ENABLE_SMART_CLEANUP'] == 'True' ? 'checked' : '' ?> ></div></div>
-                <div class="form-pair"><label title="Seconds to wait after a movie is watched before removal from cache.">Del Delay:</label><div class="form-input-wrapper"><input type="number" name="MOVIE_DELETE_DELAY" value="<?= $ptc_cfg['MOVIE_DELETE_DELAY'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
-                <div class="form-pair"><label title="Number of watched episodes to keep on cache.">Keep Prev:</label><div class="form-input-wrapper"><input type="number" name="EPISODE_KEEP_PREVIOUS" value="<?= $ptc_cfg['EPISODE_KEEP_PREVIOUS'] ?>" class="ptc-input input-small"><span class="unit-label">ep</span></div></div>
+                <div class="form-pair"><label title="Seconds to wait after a movie is watched.">Del Delay:</label><div class="form-input-wrapper"><input type="number" name="MOVIE_DELETE_DELAY" value="<?= $ptc_cfg['MOVIE_DELETE_DELAY'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
+                <div class="form-pair"><label title="Number of watched episodes to keep.">Keep Prev:</label><div class="form-input-wrapper"><input type="number" name="EPISODE_KEEP_PREVIOUS" value="<?= $ptc_cfg['EPISODE_KEEP_PREVIOUS'] ?>" class="ptc-input input-small"><span class="unit-label">ep</span></div></div>
             </div>
         </div>
 
@@ -168,7 +171,7 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
                     <label style="color:#888; font-size:11px; cursor:pointer; display:flex; align-items:center; gap:4px;">
                         <input type="checkbox" id="auto_refresh" checked style="width:12px;height:12px;"> Auto
                     </label>
-                    <button type="button" onclick="refreshLog();" style="margin:0; padding: 4px 8px; font-size: 11px; cursor: pointer;">Refresh</button>
+                    <button type="button" class="btn-add" onclick="refreshLog();" style="margin:0;">Refresh</button>
                 </div>
             </div>
             <div id="ptc-log">Loading Logs...</div>
