@@ -9,7 +9,7 @@
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" icon="server">
 
 <DESCRIPTION>
-Plex to Cache: Automatically moves media from array to cache on stream start. Features smart cleanup and season-ahead caching for Plex, Emby and Jellyfin.
+Plex to Cache: Automatically moves media from array to cache on stream start. Includes smart cleanup, permission mirroring and season-ahead caching for Plex, Emby and Jellyfin.
 </DESCRIPTION>
 
 <FILE Name="/tmp/plex_to_cache_install/plex_to_cache.page">
@@ -62,7 +62,7 @@ if (file_exists($ptc_cfg_file)) {
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     foreach ($ptc_cfg as $key => $val) {
-        if (isset($_POST[$key])) { $ptc_cfg[$key] = $_POST[$key]; }
+        if (isset($_POST[$key])) { $ptc_cfg[$key] = $_POST[$key]; } 
         else { if (strpos($key, "ENABLE_") === 0 || $key === "ENABLE_SMART_CLEANUP") { $ptc_cfg[$key] = "False"; } }
     }
     $m_str = "";
@@ -135,7 +135,7 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
         </div>
         <div class="ptc-col" id="ptc-col-tuning">
             <div class="section-header"><i class="fa fa-folder-open"></i> Storage Paths</div>
-            <div class="form-pair"><label data-tooltip="The main array path.">Array Root:</label><div class="form-input-wrapper"><input type="text" name="ARRAY_ROOT" value="<?= $ptc_cfg['ARRAY_ROOT'] ?>" class="ptc-input"></div></div>
+            <div class="form-pair"><label data-tooltip="The main array path (usually /mnt/user).">Array Root:</label><div class="form-input-wrapper"><input type="text" name="ARRAY_ROOT" value="<?= $ptc_cfg['ARRAY_ROOT'] ?>" class="ptc-input"></div></div>
             <div class="form-pair"><label data-tooltip="The cache pool path.">Cache Root:</label><div class="form-input-wrapper"><input type="text" name="CACHE_ROOT" value="<?= $ptc_cfg['CACHE_ROOT'] ?>" class="ptc-input"></div></div>
             <div class="form-pair"><label data-tooltip="Directory names to skip.">Exclude:</label><div class="form-input-wrapper"><input type="text" name="EXCLUDE_DIRS" value="<?= $ptc_cfg['EXCLUDE_DIRS'] ?>" placeholder="temp,skip" class="ptc-input"></div></div>
             <div class="section-header"><i class="fa fa-exchange"></i> Docker Mappings</div>
@@ -430,7 +430,7 @@ if __name__ == "__main__":
             active_paths = []
             for dp, s_data in curr_sessions.items():
                 rp = translate_path(dp)
-                if not rp.startswith(CONFIG["ARRAY_ROOT"]) or is_excluded(rp) or not is_trigger_filetype(os.basename(rp)): continue
+                if not rp.startswith(CONFIG["ARRAY_ROOT"]) or is_excluded(rp) or not is_trigger_filetype(os.path.basename(rp)): continue
                 active_paths.append(rp)
                 if rp not in stream_start_times:
                     log_info(f"[Stream] Aktiv: {os.path.basename(rp)}"); stream_start_times[rp] = time.time()
