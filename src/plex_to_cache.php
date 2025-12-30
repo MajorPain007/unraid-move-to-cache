@@ -37,10 +37,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     foreach ($ptc_cfg as $key => $val) { $content .= "$key=\"$val\"\n"; }
     if (!is_dir(dirname($ptc_cfg_file))) mkdir(dirname($ptc_cfg_file), 0777, true);
     file_put_contents($ptc_cfg_file, $content);
-    shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart > /dev/null 2>&1 &");
+    shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart > /dev/null 2>&1 & ");
     
-    // Redirect to prevent blank page and form resubmission
-    echo "<script>window.location.href = window.location.pathname + window.location.search;</script>";
+    echo "<script>window.location.href = window.location.href;</script>";
     exit;
 }
 
@@ -58,25 +57,27 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 #ptc-col-tuning { flex: 0 0 32%; }
 #ptc-col-log { flex: 0 0 39%; }
 
-.section-header { color: var(--primary-blue); font-size: 16px; font-weight: bold; margin-bottom: 15px; margin-top: 20px; border-bottom: 1px solid #333; padding-bottom: 5px; display: flex; align-items: center; gap: 8px; }
+.section-header { color: var(--primary-blue); font-size: 15px; font-weight: bold; margin-bottom: 10px; margin-top: 15px; border-bottom: 1px solid #333; padding-bottom: 4px; display: flex; align-items: center; gap: 8px; }
 .section-header:first-of-type { margin-top: 0; }
-.form-pair { display: flex; align-items: center; margin-bottom: 10px; gap: 8px; }
-.form-pair label { flex: 0 0 120px; color: var(--primary-blue); font-weight: bold; font-size: 13px; }
-.form-input-wrapper { flex: 1; display: flex; align-items: center; }
+.form-pair { display: flex; align-items: center; margin-bottom: 8px; gap: 8px; }
+.form-pair label { flex: 0 0 110px; color: var(--primary-blue); font-weight: bold; font-size: 12px; }
+.form-input-wrapper { flex: 1; display: flex; align-items: center; gap: 5px; }
 
-.ptc-input { background: #111 !important; border: 1px solid #444 !important; border-radius: 4px !important; color: #fff !important; padding: 6px !important; width: 100% !important; box-sizing: border-box !important; font-size: 13px !important; }
+/* Unified Input Style */
+.ptc-input { background: #111 !important; border: 1px solid #444 !important; border-radius: 4px !important; color: #fff !important; padding: 5px 8px !important; width: 100% !important; box-sizing: border-box !important; font-size: 12px !important; height: 28px !important; }
 .ptc-input:focus { border-color: var(--primary-blue) !important; outline: none !important; }
+.input-small { width: 60px !important; flex: 0 0 60px !important; }
 
-.form-input-wrapper input[type="checkbox"] { accent-color: var(--primary-blue); width: 18px; height: 18px; cursor: pointer; }
-.help-text { font-size: 11px; color: #777; margin-left: 5px; font-style: italic; }
+.form-input-wrapper input[type="checkbox"] { accent-color: var(--primary-blue); width: 16px; height: 16px; cursor: pointer; }
+.unit-label { font-size: 11px; color: #777; white-space: nowrap; }
 
 #mapping_table { width: 100%; border-collapse: collapse; margin-top: 5px; }
-#mapping_table th { text-align: left; color: var(--primary-blue); padding: 6px; border-bottom: 1px solid #333; font-size: 12px; }
-#mapping_table td { padding: 4px; }
+#mapping_table th { text-align: left; color: var(--primary-blue); padding: 4px; border-bottom: 1px solid #333; font-size: 11px; }
+#mapping_table td { padding: 3px 0; }
 
-.btn-save { background: var(--primary-blue); color: #fff; border: none; border-radius: 4px; padding: 10px 20px; cursor: pointer; font-weight: bold; font-size: 14px; transition: background 0.2s; width: 100%; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); }
-.btn-save:hover { background: #0088dd; }
-.btn-add { background: transparent; color: var(--primary-blue); border: 1px solid var(--primary-blue); padding: 4px 8px; border-radius: 4px; cursor: pointer; margin-top: 8px; font-size: 12px; }
+.btn-save { background: var(--primary-blue); color: #fff; border: 1px solid var(--primary-blue); border-radius: 4px; padding: 8px 12px; cursor: pointer; font-weight: bold; font-size: 13px; transition: all 0.2s; width: 100%; margin-bottom: 15px; }
+.btn-save:hover { background: rgba(0, 170, 255, 0.2); color: var(--primary-blue); }
+.btn-add { background: transparent; color: var(--primary-blue); border: 1px solid var(--primary-blue); padding: 4px 8px; border-radius: 4px; cursor: pointer; margin-top: 8px; font-size: 11px; transition: all 0.2s; }
 .btn-add:hover { background: rgba(0, 170, 255, 0.1); }
 
 #ptc-log { background: #000; border: 1px solid #333; border-radius: 8px; color: #00ffaa; font-family: 'Courier New', monospace; font-size: 12px; padding: 12px; flex-grow: 1; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin-top: 10px; min-height: 600px; }
@@ -113,22 +114,22 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
             <div class="form-pair"><label>Exclude:</label><div class="form-input-wrapper"><input type="text" name="EXCLUDE_DIRS" value="<?= $ptc_cfg['EXCLUDE_DIRS'] ?>" placeholder="temp,skip" class="ptc-input"></div></div>
 
             <div class="section-header"><i class="fa fa-exchange"></i> Docker Mappings</div>
-            <table id="mapping_table"><thead><tr><th>Host (Unraid)</th><th>Docker (Container)</th><th></th></tr></thead><tbody></tbody></table>
+            <table id="mapping_table"><thead><tr><th>Host Path</th><th>Docker Path</th><th></th></tr></thead><tbody></tbody></table>
             <button type="button" class="btn-add" onclick="addMappingRow()">+ Mapping</button>
 
             <div class="section-header"><i class="fa fa-cogs"></i> Tuning & Cleanup</div>
-            <div class="form-pair"><label>Check Interval:</label><div class="form-input-wrapper"><input type="number" name="CHECK_INTERVAL" value="<?= $ptc_cfg['CHECK_INTERVAL'] ?>" class="ptc-input"><span class="help-text">sec</span></div></div>
-            <div class="form-pair"><label>Copy Delay:</label><div class="form-input-wrapper"><input type="number" name="COPY_DELAY" value="<?= $ptc_cfg['COPY_DELAY'] ?>" class="ptc-input"><span class="help-text">sec</span></div></div>
-            <div class="form-pair"><label>Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= $ptc_cfg['CACHE_MAX_USAGE'] ?>" class="ptc-input"><span class="help-text">%</span></div></div>
-            <div class="form-pair"><label>Smart Cleanup:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_SMART_CLEANUP" value="True" <?= $ptc_cfg['ENABLE_SMART_CLEANUP'] == 'True' ? 'checked' : '' ?> ></div></div>
-            <div class="form-pair"><label>Delete Delay:</label><div class="form-input-wrapper"><input type="number" name="MOVIE_DELETE_DELAY" value="<?= $ptc_cfg['MOVIE_DELETE_DELAY'] ?>" class="ptc-input"><span class="help-text">sec</span></div></div>
-            <div class="form-pair"><label>Keep Episodes:</label><div class="form-input-wrapper"><input type="number" name="EPISODE_KEEP_PREVIOUS" value="<?= $ptc_cfg['EPISODE_KEEP_PREVIOUS'] ?>" class="ptc-input"></div></div>
+            <div class="form-pair"><label>Interval:</label><div class="form-input-wrapper"><input type="number" name="CHECK_INTERVAL" value="<?= $ptc_cfg['CHECK_INTERVAL'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
+            <div class="form-pair"><label>Copy Delay:</label><div class="form-input-wrapper"><input type="number" name="COPY_DELAY" value="<?= $ptc_cfg['COPY_DELAY'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
+            <div class="form-pair"><label>Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= $ptc_cfg['CACHE_MAX_USAGE'] ?>" class="ptc-input input-small"><span class="unit-label">%</span></div></div>
+            <div class="form-pair"><label>Smart Clean:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_SMART_CLEANUP" value="True" <?= $ptc_cfg['ENABLE_SMART_CLEANUP'] == 'True' ? 'checked' : '' ?> ></div></div>
+            <div class="form-pair"><label>Del Delay:</label><div class="form-input-wrapper"><input type="number" name="MOVIE_DELETE_DELAY" value="<?= $ptc_cfg['MOVIE_DELETE_DELAY'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
+            <div class="form-pair"><label>Keep:</label><div class="form-input-wrapper"><input type="number" name="EPISODE_KEEP_PREVIOUS" value="<?= $ptc_cfg['EPISODE_KEEP_PREVIOUS'] ?>" class="ptc-input input-small"><span class="unit-label">ep</span></div></div>
         </div>
 
         <!-- COL 3: LOG -->
         <div class="ptc-col" id="ptc-col-log">
             <div style="display:flex; justify-content:space-between; align-items:center;">
-                <h3 style="margin:0; color:var(--primary-blue); font-size: 16px;"><i class="fa fa-terminal"></i> Live Log</h3>
+                <h3 style="margin:0; color:var(--primary-blue); font-size: 15px;"><i class="fa fa-terminal"></i> Live Log</h3>
                 <div style="display:flex; align-items:center; gap:8px;">
                     <label style="color:#888; font-size:11px; cursor:pointer; display:flex; align-items:center; gap:4px;">
                         <input type="checkbox" id="auto_refresh" checked style="width:12px;height:12px;"> Auto
@@ -147,14 +148,10 @@ function addMappingRow(dockerVal = '', hostVal = '') {
     var table = document.getElementById('mapping_table').getElementsByTagName('tbody')[0];
     var row = table.insertRow(-1);
     var cell1 = row.insertCell(0); var cell2 = row.insertCell(1); var cell3 = row.insertCell(2);
-    cell1.innerHTML = '<input type="text" name="mapping_host[]" value="' + hostVal + '" class="ptc-input" style="padding:4px !important; font-size:12px !important;">';
-    cell2.innerHTML = '<input type="text" name="mapping_docker[]" value="' + dockerVal + '" class="ptc-input" style="padding:4px !important; font-size:12px !important;">';
-    cell3.innerHTML = '<a href="#" onclick="deleteRow(this); return false;" style="color:#ff4444; font-size:18px;"><i class="fa fa-minus-circle"></i></a>';
+    cell1.innerHTML = '<input type="text" name="mapping_host[]" value="' + hostVal + '" class="ptc-input" style="padding:4px !important;">';
+    cell2.innerHTML = '<input type="text" name="mapping_docker[]" value="' + dockerVal + '" class="ptc-input" style="padding:4px !important;">';
+    cell3.innerHTML = '<a href="#" onclick="deleteRow(this); return false;" style="color:#ff4444; font-size:16px; margin-left:5px;"><i class="fa fa-minus-circle"></i></a>';
 }
 function deleteRow(btn) { var row = btn.parentNode.parentNode; row.parentNode.removeChild(row); }
-$(function() {
-    <?php foreach ($mappings_pairs as $pair): ?> addMappingRow('<?= addslashes($pair[0]) ?>', '<?= addslashes($pair[1]) ?>'); <?php endforeach; ?>
-    if (document.getElementById('mapping_table').rows.length <= 1) { addMappingRow(); }
-    refreshLog(); setInterval(function() { if ($('#auto_refresh').is(':checked')) refreshLog(); }, 3000);
-});
+$(function() { <?php foreach ($mappings_pairs as $pair): ?> addMappingRow('<?= addslashes($pair[0]) ?>', '<?= addslashes($pair[1]) ?>'); <?php endforeach; ?> if (document.getElementById('mapping_table').rows.length <= 1) { addMappingRow(); } refreshLog(); setInterval(function() { if ($('#auto_refresh').is(':checked')) refreshLog(); }, 3000); });
 </script>
