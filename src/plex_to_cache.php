@@ -6,8 +6,8 @@ $ptc_log_file = "/var/log/plex_to_cache.log";
 // Defaults
 $ptc_cfg = [
     "ENABLE_PLEX" => "False", "PLEX_URL" => "http://localhost:32400", "PLEX_TOKEN" => "",
-    "ENABLE_EMBY" => "False", "EMBY_URL" => "http://localhost:8097", "EMBY_API_KEY" => "",
-    "ENABLE_JELLYFIN" => "False", "JELLYFIN_URL" => "http://localhost:8097", "JELLYFIN_API_KEY" => "",
+    "ENABLE_EMBY" => "False", "EMBY_URL" => "http://localhost:8096", "EMBY_API_KEY" => "",
+    "ENABLE_JELLYFIN" => "False", "JELLYFIN_URL" => "http://localhost:8096", "JELLYFIN_API_KEY" => "",
     "CHECK_INTERVAL" => "10", "CACHE_MAX_USAGE" => "80", "COPY_DELAY" => "30",
     "ENABLE_SMART_CLEANUP" => "False", "MOVIE_DELETE_DELAY" => "1800", "EPISODE_KEEP_PREVIOUS" => "2",
     "EXCLUDE_DIRS" => "", "MEDIA_FILETYPES" => ".mkv .mp4 .avi", "ARRAY_ROOT" => "/mnt/user",
@@ -21,7 +21,7 @@ if (file_exists($ptc_cfg_file)) {
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     foreach ($ptc_cfg as $key => $val) {
-        if (isset($_POST[$key])) { $ptc_cfg[$key] = $_POST[$key]; }
+        if (isset($_POST[$key])) { $ptc_cfg[$key] = $_POST[$key]; } 
         else { if (strpos($key, "ENABLE_") === 0 || $key === "ENABLE_SMART_CLEANUP") { $ptc_cfg[$key] = "False"; } }
     }
     $m_str = "";
@@ -37,7 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     foreach ($ptc_cfg as $key => $val) { $content .= "$key=\"$val\"\n"; }
     if (!is_dir(dirname($ptc_cfg_file))) mkdir(dirname($ptc_cfg_file), 0777, true);
     file_put_contents($ptc_cfg_file, $content);
-    shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart > /dev/null 2>&1 &");
+    shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart > /dev/null 2>&1 & ");
     echo "<script>window.location.href = window.location.href;</script>";
     exit;
 }
@@ -59,8 +59,36 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 .section-header { color: var(--primary-blue); font-size: 16px; font-weight: bold; margin-bottom: 12px; margin-top: 18px; border-bottom: 1px solid #333; padding-bottom: 4px; display: flex; align-items: center; gap: 8px; }
 .section-header:first-of-type { margin-top: 0; }
 .form-pair { display: flex; align-items: center; margin-bottom: 10px; gap: 8px; }
-.form-pair label { flex: 0 0 120px; color: var(--primary-blue); font-weight: bold; font-size: 13.5px; position: relative; }
+.form-pair label { flex: 0 0 120px; color: var(--primary-blue); font-weight: bold; font-size: 13.5px; position: relative; cursor: help; border-bottom: 1px dotted #444; }
 .form-input-wrapper { flex: 1; display: flex; align-items: center; gap: 6px; }
+
+/* Custom Tooltip Logic */
+.form-pair label:after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 130%;
+    left: 0;
+    background: #222;
+    color: #fff;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: normal;
+    width: 220px;
+    z-index: 999;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.5);
+    border: 1px solid var(--primary-blue);
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+    white-space: normal;
+    line-height: 1.4;
+}
+.form-pair label:hover:after {
+    visibility: visible;
+    opacity: 1;
+    transition: opacity 0.2s ease 0.5s;
+}
 
 .ptc-input { background: #111 !important; border: 1px solid #444 !important; border-radius: 4px !important; color: #fff !important; padding: 5px 8px !important; width: 100% !important; box-sizing: border-box !important; font-size: 13.5px !important; height: 30px !important; }
 .ptc-input:focus { border-color: var(--primary-blue) !important; outline: none !important; }
@@ -68,36 +96,6 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 
 .form-input-wrapper input[type="checkbox"] { accent-color: var(--primary-blue); width: 18px; height: 18px; cursor: pointer; }
 .unit-label { font-size: 12px; color: #777; white-space: nowrap; }
-
-/* Delayed Tooltip Logic */
-.ptc-desc { cursor: help; border-bottom: 1px dotted #444; position: relative; display: inline-block; }
-.ptc-desc:after {
-    content: attr(data-tooltip);
-    position: absolute;
-    bottom: 125%;
-    left: 50%;
-    transform: translateX(-50%);
-    background: #222;
-    color: #fff;
-    padding: 8px 12px;
-    border-radius: 6px;
-    font-size: 12px;
-    font-weight: normal;
-    white-space: normal;
-    width: 200px;
-    z-index: 999;
-    box-shadow: 0 5px 15px rgba(0,0,0,0.5);
-    border: 1px solid var(--primary-blue);
-    visibility: hidden;
-    opacity: 0;
-    transition: opacity 0.3s ease;
-    pointer-events: none;
-}
-.ptc-desc:hover:after {
-    visibility: visible;
-    opacity: 1;
-    transition-delay: 0.5s;
-}
 
 #mapping_table { width: 100%; border-collapse: collapse; margin-top: 5px; }
 #mapping_table th { text-align: left; color: var(--primary-blue); padding: 6px; border-bottom: 1px solid #333; font-size: 12px; }
@@ -109,68 +107,49 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 .btn-save { padding: 10px 15px; font-size: 13.5px; width: 100%; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 1px; }
 .btn-add { padding: 6px 12px; font-size: 12px; margin-top: 10px; }
 
-#ptc-log { background: #000; border: 1px solid #333; border-radius: 8px; color: #00ffaa; font-family: 'Courier New', monospace; font-size: 12.5px; padding: 12px; flex-grow: 1; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin-top: 10px; min-height: 500px; }
+#ptc-log { background: #000; border: 1px solid #333; border-radius: 8px; color: #00ffaa; font-family: 'Courier New', monospace; font-size: 12.5px; padding: 12px; flex-grow: 1; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin-top: 10px; min-height: 550px; }
 @media (max-width: 1250px) { #ptc-wrapper { flex-wrap: wrap; } .ptc-col { flex: 1 1 45%; } #ptc-col-log { flex: 1 1 100%; } }
 </style>
 
 <form method="post" autocomplete="off">
     <div id="ptc-wrapper">
-        <!-- COL 1: SERVERS -->
         <div class="ptc-col" id="ptc-col-servers">
             <button type="submit" class="btn-ptc btn-save">Save & Apply Settings</button>
-            
             <div class="section-header"><i class="fa fa-play-circle"></i> Plex Server</div>
-            <div class="form-pair"><label class="ptc-desc" data-tooltip="Check to enable Plex stream monitoring.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_PLEX" value="True" <?= $ptc_cfg['ENABLE_PLEX'] == 'True' ? 'checked' : '' ?> ></div></div>
-            <div class="form-pair"><label class="ptc-desc" data-tooltip="URL of your Plex Server (e.g. http://192.168.1.100:32400).">URL:</label><div class="form-input-wrapper"><input type="text" name="PLEX_URL" value="<?= $ptc_cfg['PLEX_URL'] ?>" class="ptc-input"></div></div>
-            <div class="form-pair"><label class="ptc-desc" data-tooltip="Your Plex X-Plex-Token.">Token:</label><div class="form-input-wrapper"><input type="password" name="PLEX_TOKEN" value="<?= $ptc_cfg['PLEX_TOKEN'] ?>" class="ptc-input" onmouseover="this.type='text'" onmouseout="this.type='password'" autocomplete="new-password"></div></div>
-
+            <div class="form-pair"><label data-tooltip="Check to enable Plex stream monitoring.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_PLEX" value="True" <?= $ptc_cfg['ENABLE_PLEX'] == 'True' ? 'checked' : '' ?> ></div></div>
+            <div class="form-pair"><label data-tooltip="URL of your Plex Server (e.g. http://192.168.1.100:32400).">URL:</label><div class="form-input-wrapper"><input type="text" name="PLEX_URL" value="<?= $ptc_cfg['PLEX_URL'] ?>" class="ptc-input"></div></div>
+            <div class="form-pair"><label data-tooltip="Your Plex X-Plex-Token.">Token:</label><div class="form-input-wrapper"><input type="password" name="PLEX_TOKEN" value="<?= $ptc_cfg['PLEX_TOKEN'] ?>" class="ptc-input" onmouseover="this.type='text'" onmouseout="this.type='password'" autocomplete="new-password"></div></div>
             <div class="section-header"><i class="fa fa-server"></i> Emby Server</div>
-            <div class="form-pair"><label class="ptc-desc" data-tooltip="Check to enable Emby stream monitoring.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_EMBY" value="True" <?= $ptc_cfg['ENABLE_EMBY'] == 'True' ? 'checked' : '' ?> ></div></div>
-            <div class="form-pair"><label class="ptc-desc" data-tooltip="URL of your Emby Server.">URL:</label><div class="form-input-wrapper"><input type="text" name="EMBY_URL" value="<?= $ptc_cfg['EMBY_URL'] ?>" class="ptc-input"></div></div>
-            <div class="form-pair"><label class="ptc-desc" data-tooltip="Your Emby API Key.">API Key:</label><div class="form-input-wrapper"><input type="password" name="EMBY_API_KEY" value="<?= $ptc_cfg['EMBY_API_KEY'] ?>" class="ptc-input" autocomplete="new-password"></div></div>
-
+            <div class="form-pair"><label data-tooltip="Check to enable Emby stream monitoring.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_EMBY" value="True" <?= $ptc_cfg['ENABLE_EMBY'] == 'True' ? 'checked' : '' ?> ></div></div>
+            <div class="form-pair"><label data-tooltip="URL of your Emby Server.">URL:</label><div class="form-input-wrapper"><input type="text" name="EMBY_URL" value="<?= $ptc_cfg['EMBY_URL'] ?>" class="ptc-input"></div></div>
+            <div class="form-pair"><label data-tooltip="Your Emby API Key.">API Key:</label><div class="form-input-wrapper"><input type="password" name="EMBY_API_KEY" value="<?= $ptc_cfg['EMBY_API_KEY'] ?>" class="ptc-input" autocomplete="new-password"></div></div>
             <div class="section-header"><i class="fa fa-film"></i> Jellyfin Server</div>
-            <div class="form-pair"><label class="ptc-desc" data-tooltip="Check to enable Jellyfin stream monitoring.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_JELLYFIN" value="True" <?= $ptc_cfg['ENABLE_JELLYFIN'] == 'True' ? 'checked' : '' ?> ></div></div>
-            <div class="form-pair"><label class="ptc-desc" data-tooltip="URL of your Jellyfin Server.">URL:</label><div class="form-input-wrapper"><input type="text" name="JELLYFIN_URL" value="<?= $ptc_cfg['JELLYFIN_URL'] ?>" class="ptc-input"></div></div>
-            <div class="form-pair"><label class="ptc-desc" data-tooltip="Your Jellyfin API Key.">API Key:</label><div class="form-input-wrapper"><input type="password" name="JELLYFIN_API_KEY" value="<?= $ptc_cfg['JELLYFIN_API_KEY'] ?>" class="ptc-input" autocomplete="new-password"></div></div>
+            <div class="form-pair"><label data-tooltip="Check to enable Jellyfin stream monitoring.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_JELLYFIN" value="True" <?= $ptc_cfg['ENABLE_JELLYFIN'] == 'True' ? 'checked' : '' ?> ></div></div>
+            <div class="form-pair"><label data-tooltip="URL of your Jellyfin Server.">URL:</label><div class="form-input-wrapper"><input type="text" name="JELLYFIN_URL" value="<?= $ptc_cfg['JELLYFIN_URL'] ?>" class="ptc-input"></div></div>
+            <div class="form-pair"><label data-tooltip="Your Jellyfin API Key.">API Key:</label><div class="form-input-wrapper"><input type="password" name="JELLYFIN_API_KEY" value="<?= $ptc_cfg['JELLYFIN_API_KEY'] ?>" class="ptc-input" autocomplete="new-password"></div></div>
         </div>
-
-        <!-- COL 2: PATHS & TUNING -->
         <div class="ptc-col" id="ptc-col-tuning">
             <div class="section-header"><i class="fa fa-folder-open"></i> Storage Paths</div>
-            <div class="form-pair"><label class="ptc-desc" data-tooltip="The root directory of your Unraid array (usually /mnt/user).">Array Root:</label><div class="form-input-wrapper"><input type="text" name="ARRAY_ROOT" value="<?= $ptc_cfg['ARRAY_ROOT'] ?>" class="ptc-input"></div></div>
-            <div class="form-pair"><label class="ptc-desc" data-tooltip="The root directory of your cache pool (e.g. /mnt/cache).">Cache Root:</label><div class="form-input-wrapper"><input type="text" name="CACHE_ROOT" value="<?= $ptc_cfg['CACHE_ROOT'] ?>" class="ptc-input"></div></div>
-            <div class="form-pair"><label class="ptc-desc" data-tooltip="Directory names to ignore (comma separated).">Exclude:</label><div class="form-input-wrapper"><input type="text" name="EXCLUDE_DIRS" value="<?= $ptc_cfg['EXCLUDE_DIRS'] ?>" placeholder="temp,skip" class="ptc-input"></div></div>
-
+            <div class="form-pair"><label data-tooltip="The root directory of your Unraid array (usually /mnt/user).">Array Root:</label><div class="form-input-wrapper"><input type="text" name="ARRAY_ROOT" value="<?= $ptc_cfg['ARRAY_ROOT'] ?>" class="ptc-input"></div></div>
+            <div class="form-pair"><label data-tooltip="The root directory of your cache pool (e.g. /mnt/cache).">Cache Root:</label><div class="form-input-wrapper"><input type="text" name="CACHE_ROOT" value="<?= $ptc_cfg['CACHE_ROOT'] ?>" class="ptc-input"></div></div>
+            <div class="form-pair"><label data-tooltip="Directory names to ignore (comma separated).">Exclude:</label><div class="form-input-wrapper"><input type="text" name="EXCLUDE_DIRS" value="<?= $ptc_cfg['EXCLUDE_DIRS'] ?>" placeholder="temp,skip" class="ptc-input"></div></div>
             <div class="section-header"><i class="fa fa-exchange"></i> Docker Mappings</div>
-            <table id="mapping_table"><thead><tr><th title="Path on host side">Host Path</th><th title="Path in Docker">Docker Path</th><th></th></tr></thead><tbody></tbody></table>
+            <table id="mapping_table"><thead><tr><th>Host Path</th><th>Docker Path</th><th></th></tr></thead><tbody></tbody></table>
             <button type="button" class="btn-ptc btn-add" onclick="addMappingRow()">+ Mapping</button>
-
             <div class="section-header"><i class="fa fa-cogs"></i> Tuning & Cleanup</div>
-            <div class="form-pair"><label class="ptc-desc" data-tooltip="Seconds between session checks.">Interval:</label><div class="form-input-wrapper"><input type="number" name="CHECK_INTERVAL" value="<?= $ptc_cfg['CHECK_INTERVAL'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
-            <div class="form-pair"><label class="ptc-desc" data-tooltip="Wait this many seconds after playback starts before moving file to cache.">Copy Delay:</label><div class="form-input-wrapper"><input type="number" name="COPY_DELAY" value="<?= $ptc_cfg['COPY_DELAY'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
-            <div class="form-pair"><label class="ptc-desc" data-tooltip="Stop moving files if cache pool usage is above this percentage.">Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= $ptc_cfg['CACHE_MAX_USAGE'] ?>" class="ptc-input input-small"><span class="unit-label">%</span></div></div>
-            <div class="form-pair"><label class="ptc-desc" data-tooltip="Automatically remove files from cache after they have been watched.">Smart Clean:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_SMART_CLEANUP" value="True" <?= $ptc_cfg['ENABLE_SMART_CLEANUP'] == 'True' ? 'checked' : '' ?> ></div></div>
-            <div class="form-pair"><label class="ptc-desc" data-tooltip="Seconds to wait after a movie is watched before removal from cache.">Del Delay:</label><div class="form-input-wrapper"><input type="number" name="MOVIE_DELETE_DELAY" value="<?= $ptc_cfg['MOVIE_DELETE_DELAY'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
-            <div class="form-pair"><label class="ptc-desc" data-tooltip="Number of watched episodes to keep on cache.">Keep Prev:</label><div class="form-input-wrapper"><input type="number" name="EPISODE_KEEP_PREVIOUS" value="<?= $ptc_cfg['EPISODE_KEEP_PREVIOUS'] ?>" class="ptc-input input-small"><span class="unit-label">ep</span></div></div>
+            <div class="form-pair"><label data-tooltip="Seconds between session checks.">Interval:</label><div class="form-input-wrapper"><input type="number" name="CHECK_INTERVAL" value="<?= $ptc_cfg['CHECK_INTERVAL'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
+            <div class="form-pair"><label data-tooltip="Wait this many seconds after playback starts before moving file to cache.">Copy Delay:</label><div class="form-input-wrapper"><input type="number" name="COPY_DELAY" value="<?= $ptc_cfg['COPY_DELAY'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
+            <div class="form-pair"><label data-tooltip="Stop moving files if cache pool usage is above this percentage.">Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= $ptc_cfg['CACHE_MAX_USAGE'] ?>" class="ptc-input input-small"><span class="unit-label">%</span></div></div>
+            <div class="form-pair"><label data-tooltip="Auto removal from cache after watching.">Smart Clean:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_SMART_CLEANUP" value="True" <?= $ptc_cfg['ENABLE_SMART_CLEANUP'] == 'True' ? 'checked' : '' ?> ></div></div>
+            <div class="form-pair"><label data-tooltip="Seconds to wait after a movie is watched before removal from cache.">Del Delay:</label><div class="form-input-wrapper"><input type="number" name="MOVIE_DELETE_DELAY" value="<?= $ptc_cfg['MOVIE_DELETE_DELAY'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
+            <div class="form-pair"><label data-tooltip="Number of watched episodes to keep on cache.">Keep Prev:</label><div class="form-input-wrapper"><input type="number" name="EPISODE_KEEP_PREVIOUS" value="<?= $ptc_cfg['EPISODE_KEEP_PREVIOUS'] ?>" class="ptc-input input-small"><span class="unit-label">ep</span></div></div>
         </div>
-
-        <!-- COL 3: LOG -->
         <div class="ptc-col" id="ptc-col-log">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-                <h3 style="margin:0; color:var(--primary-blue); font-size: 16px;"><i class="fa fa-terminal"></i> Live Log</h3>
-                <div style="display:flex; align-items:center; gap:8px;">
-                    <label style="color:#888; font-size:11px; cursor:pointer; display:flex; align-items:center; gap:4px;">
-                        <input type="checkbox" id="auto_refresh" checked style="width:12px;height:12px;"> Auto
-                    </label>
-                    <button type="button" class="btn-ptc btn-add" onclick="refreshLog();" style="margin:0;">Refresh</button>
-                </div>
-            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center;"><h3 style="margin:0; color:var(--primary-blue); font-size: 16px;"><i class="fa fa-terminal"></i> Live Log</h3><div style="display:flex; align-items:center; gap:8px;"><label style="color:#888; font-size:11px; cursor:pointer; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="auto_refresh" checked style="width:12px;height:12px;"> Auto</label><button type="button" class="btn-ptc btn-add" onclick="refreshLog();" style="margin:0;">Refresh</button></div></div>
             <div id="ptc-log">Loading Logs...</div>
         </div>
     </div>
 </form>
-
 <script>
 function refreshLog() { $.get('/plugins/plex_to_cache/get_log.php', function(data) { var logDiv = $('#ptc-log'); logDiv.text(data); logDiv.scrollTop(logDiv[0].scrollHeight); }); }
 function addMappingRow(dockerVal = '', hostVal = '') {
