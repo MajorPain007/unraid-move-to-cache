@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2025.12.30.01">
+<!ENTITY version   "2025.12.30.02">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -12,7 +12,6 @@
 Automatically moves media from Unraid array to cache when a stream starts in Plex, Emby or Jellyfin. Includes smart cleanup, permission mirroring and season-ahead caching.
 </DESCRIPTION>
 
-<!-- LOG HELPER -->
 <FILE Name="/usr/local/emhttp/plugins/&name;/log.php">
 <INLINE>
 <![CDATA[
@@ -117,8 +116,8 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 #ptc-settings, #ptc-log-container { background: var(--bg-dark); border-radius: 12px; box-shadow: 0 0 12px rgba(0, 170, 255, 0.2); color: #f0f8ff; padding: 20px; box-sizing: border-box; }
 #ptc-settings { flex: 0 0 48%; }
 #ptc-log-container { flex: 0 0 50%; display: flex; flex-direction: column; min-height: 850px; }
-.section-header { color: var(--primary-blue); font-size: 18px; font-weight: bold; margin-bottom: 15px; margin-top: 25px; border-bottom: 1px solid #333; padding-bottom: 5px; }
-.form-pair { display: flex; align-items: center; margin-bottom: 12px; gap: 10px; }
+.section-header { color: var(--primary-blue); font-size: 18px; font-weight: bold; margin-bottom: 12px; margin-top: 20px; border-bottom: 1px solid #333; padding-bottom: 5px; }
+.form-pair { display: flex; align-items: center; margin-bottom: 10px; gap: 10px; }
 .form-pair label { flex: 0 0 140px; color: var(--primary-blue); font-weight: bold; font-size: 14px; }
 .form-input-wrapper { flex: 1; display: flex; align-items: center; }
 .form-input-wrapper input[type="text"], .form-input-wrapper input[type="password"], .form-input-wrapper input[type="number"], .form-input-wrapper select { background: #111; border: 1px solid var(--primary-blue); border-radius: 5px; color: #fff; padding: 8px; width: 100%; box-sizing: border-box; }
@@ -145,7 +144,7 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
             <div class="section-header"><?= $txt[$lang]['plex'] ?></div>
             <div class="form-pair"><label><?= $txt[$lang]['enable'] ?></label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_PLEX" value="True" <?= $ptc_cfg['ENABLE_PLEX'] == 'True' ? 'checked' : '' ?> ></div></div>
             <div class="form-pair"><label>URL:</label><div class="form-input-wrapper"><input type="text" name="PLEX_URL" value="<?= $ptc_cfg['PLEX_URL'] ?>" autocomplete="off"></div></div>
-            <div class="form-pair"><label>Token:</label><div class="form-input-wrapper"><input type="password" name="PLEX_TOKEN" value="<?= $ptc_cfg['PLEX_TOKEN'] ?>" autocomplete="new-password"></div></div>
+            <div class="form-pair"><label>Token:</label><div class="form-input-wrapper"><input type="password" name="PLEX_TOKEN" value="<?= $ptc_cfg['PLEX_TOKEN'] ?>" onmouseover="this.type='text'" onmouseout="this.type='password'" autocomplete="new-password"></div></div>
             
             <div class="section-header"><?= $txt[$lang]['emby'] ?></div>
             <div class="form-pair"><label><?= $txt[$lang]['enable'] ?></label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_EMBY" value="True" <?= $ptc_cfg['ENABLE_EMBY'] == 'True' ? 'checked' : '' ?> ></div></div>
@@ -219,7 +218,7 @@ $(function() {
 import requests, os, shutil, subprocess, time, sys, re, fcntl, signal
 from pathlib import Path
 
-# --- ORIGINAL CORE LOGIC ---
+# --- ORIGINAL CORE LOGIC (V2025.12.30.02) ---
 CONFIG_FILE = "/boot/config/plugins/plex_to_cache/settings.cfg"
 LOCK_FILE_PATH = "/tmp/media_cache_cleaner.lock"
 PERMS_ROOT = "/mnt/user0" 
@@ -279,7 +278,8 @@ def clone_rights_from_disk(dst_path):
         st = os.stat(src_path)
         os.chown(dst_path, st.st_uid, st.st_gid)
         os.chmod(dst_path, st.st_mode)
-    except: pass
+    except Exception as e:
+        log_info(f"[Perms Error] {e}")
 
 def ensure_directory_structure_mirror(full_cache_file_path):
     CACHE_ROOT = CONF["CACHE_ROOT"]
@@ -291,9 +291,43 @@ def ensure_directory_structure_mirror(full_cache_file_path):
         if not part or part == ".": continue
         current_cache_path = os.path.join(current_cache_path, part)
         if not os.path.exists(current_cache_path):
-            try: os.mkdir(current_cache_path)
+            try: 
+                os.mkdir(current_cache_path)
+                clone_rights_from_disk(current_cache_path)
             except: pass
-        clone_rights_from_disk(current_cache_path)
+
+# --- CLEANUP LOGIK ---
+
+def cleanup_empty_parent_dirs(path):
+    parent_dir, CACHE_ROOT = os.path.dirname(path), CONF["CACHE_ROOT"]
+    protected = [os.path.join(CACHE_ROOT, m.strip("/")) for m in parsed_docker_mappings.values()]
+    while parent_dir.startswith(CACHE_ROOT) and len(parent_dir) > len(CACHE_ROOT):
+        if parent_dir in protected: break
+        try:
+            os.rmdir(parent_dir); parent_dir = os.path.dirname(parent_dir)
+        except OSError: break
+
+def move_to_array(cache_path):
+    CACHE_ROOT = CONF["CACHE_ROOT"]
+    dest_path = os.path.join(PERMS_ROOT, cache_path.replace(CACHE_ROOT, "").lstrip("/"))
+    log_info(f"[Mover] -> Array: {os.path.basename(cache_path)}")
+    try:
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        subprocess.run(["rsync", "-a", "--remove-source-files", cache_path, dest_path], check=True, stdout=subprocess.DEVNULL)
+        cleanup_empty_parent_dirs(cache_path)
+    except Exception as e: log_info(f"[Error] Mover: {e}")
+
+def smart_manage_cache_file(cache_path, reason="Cleanup"):
+    if not os.path.exists(cache_path): return
+    rel_path = cache_path.replace(CONF["CACHE_ROOT"], "").lstrip("/")
+    array_path = os.path.join(PERMS_ROOT, rel_path)
+    if os.path.exists(array_path):
+        if os.path.getsize(cache_path) == os.path.getsize(array_path):
+            os.remove(cache_path); log_info(f"[{reason}] Gelöscht: {os.path.basename(cache_path)}")
+            cleanup_empty_parent_dirs(cache_path)
+    else: move_to_array(cache_path)
+
+# --- MEDIA HANDLING ---
 
 def plex_api_get(endpoint):
     headers = {'X-Plex-Token': CONF["PLEX_TOKEN"], 'Accept': 'application/json'}
@@ -309,36 +343,54 @@ def emby_api_get(endpoint, key, url):
         return r.json()
     except: return None
 
-def check_connection():
-    if get_b("ENABLE_PLEX"):
-        log_info(f"Plex Check: {CONF['PLEX_URL']}")
-        if plex_api_get("/identity"): log_info("-> Plex OK")
-        else: log_info("-> Plex Fehler!")
-
 def get_active_sessions():
-    active_items = {}
+    active = {}
     if get_b("ENABLE_PLEX"):
         data = plex_api_get("/status/sessions")
         if data and 'MediaContainer' in data and 'Metadata' in data['MediaContainer']:
             for item in data['MediaContainer']['Metadata']:
-                rating_key = item.get('ratingKey')
-                found_file = None
-                if rating_key in metadata_path_cache: found_file = metadata_path_cache[rating_key]
-                if not found_file and 'Media' in item:
+                rk = item.get('ratingKey')
+                found = None
+                if rk in metadata_path_cache: found = metadata_path_cache[rk]
+                if not found and 'Media' in item:
                     for media in item['Media']:
                         for part in media.get('Part', []):
-                            if part.get('file'): found_file = part['file']; break
-                if not found_file and rating_key:
-                    meta = plex_api_get(f"/library/metadata/{rating_key}")
+                            if part.get('file'): found = p['file']; break
+                if not found and rk:
+                    meta = plex_api_get(f"/library/metadata/{rk}")
                     if meta and 'MediaContainer' in meta and 'Metadata' in meta['MediaContainer']:
                         for m in meta['MediaContainer']['Metadata']:
                             for med in m.get('Media', []):
                                 for p in med.get('Part', []):
-                                    if p.get('file'): found_file = p['file']; break
-                if found_file:
-                    metadata_path_cache[rating_key] = found_file
-                    active_items[found_file] = {'service': 'plex', 'id': rating_key}
-    return active_items
+                                    if p.get('file'): found = p['file']; break
+                if found: metadata_path_cache[rk] = found; active[found] = {'service': 'plex', 'id': rk}
+    
+    for svc in [("ENABLE_EMBY", "EMBY_API_KEY", "EMBY_URL", "emby"), ("ENABLE_JELLYFIN", "JELLYFIN_API_KEY", "JELLYFIN_URL", "jellyfin")]:
+        if get_b(svc[0]):
+            data = emby_api_get("/Sessions", CONF[svc[1]], CONF[svc[2]])
+            if data:
+                for s in data:
+                    p = s.get('NowPlayingItem', {}).get('Path')
+                    if p: active[p] = {'service': svc[3], 'id': s['NowPlayingItem'].get('Id'), 'user': s.get('UserId')}
+    return active
+
+def check_is_watched(session_data):
+    if not session_data: return False
+    service = session_data.get('service')
+    if service == 'plex':
+        rk = session_data.get('id')
+        data = plex_api_get(f"/library/metadata/{rk}")
+        if data and 'MediaContainer' in data and 'Metadata' in data['MediaContainer']:
+            meta = data['MediaContainer']['Metadata'][0]
+            if 'viewCount' in meta and meta['viewCount'] > 0: return True
+    elif service in ['emby', 'jellyfin']:
+        item_id, user_id = session_data.get('id'), session_data.get('user')
+        url = CONF["EMBY_URL"] if service == 'emby' else CONF["JELLYFIN_URL"]
+        key = CONF["EMBY_API_KEY"] if service == 'emby' else CONF["JELLYFIN_API_KEY"]
+        if item_id and user_id:
+            data = emby_api_get(f"/Users/{user_id}/Items/{item_id}", key, url)
+            if data and 'UserData' in data: return data['UserData'].get('Played', False)
+    return False
 
 def translate_path(docker_path):
     clean = docker_path.replace('\\', '/')
@@ -349,6 +401,10 @@ def translate_path(docker_path):
             if hp.startswith(ARRAY_ROOT): return os.path.join(hp, rel).replace('//', '/')
             else: return os.path.join(ARRAY_ROOT, hp.lstrip('/'), rel).replace('//', '/')
     return clean
+
+def parse_episode_number(filename):
+    match = re.search(r"[sS]\d+[eE](\d+)", filename)
+    return int(match.group(1)) if match else None
 
 def cache_file_if_needed(source_path):
     rel_path = source_path.replace(CONF["ARRAY_ROOT"], "").lstrip("/")
@@ -364,44 +420,86 @@ def cache_file_if_needed(source_path):
         clone_rights_from_disk(dest_path)
     except Exception as e: log_info(f"[Error] Copy: {e}")
 
-def handle_media(src):
-    match = re.search(r"[sS]\d+[eE](\d+)", os.path.basename(src))
-    ep = int(match.group(1)) if match else None
-    if ep is not None:
-        folder = os.path.dirname(src)
-        if os.path.exists(folder):
-            for f in sorted(os.listdir(folder)):
-                m = re.search(r"[sS]\d+[eE](\d+)", f)
-                f_ep = int(m.group(1)) if m else None
-                if f_ep is not None and f_ep >= ep: cache_file_if_needed(os.path.join(folder, f))
-    else:
-        folder, stem = os.path.dirname(src), os.path.splitext(os.path.basename(src))[0]
+def handle_series_logic_smart(playing_real_path):
+    filename = os.path.basename(playing_real_path)
+    current_ep = parse_episode_number(filename)
+    if current_ep is None: return handle_movie_logic(playing_real_path)
+    season_dir_array = os.path.dirname(playing_real_path)
+    season_dir_cache = os.path.join(CONF["CACHE_ROOT"], season_dir_array.replace(CONF["ARRAY_ROOT"], "").lstrip("/"))
+    if get_b("ENABLE_SMART_CLEANUP") and os.path.exists(season_dir_cache):
+        threshold_ep = current_ep - get_i("EPISODE_KEEP_PREVIOUS")
+        for f in os.listdir(season_dir_cache):
+            ep_num = parse_episode_number(f)
+            if ep_num is not None and ep_num < threshold_ep:
+                smart_manage_cache_file(os.path.join(season_dir_cache, f), reason="Smart Cleanup")
+    try:
+        if os.path.exists(season_dir_array):
+            for f in sorted(os.listdir(season_dir_array)):
+                ep_num = parse_episode_number(f)
+                if ep_num is not None and ep_num >= current_ep: cache_file_if_needed(os.path.join(season_dir_array, f))
+    except: pass
+
+def handle_movie_logic(movie_real_path):
+    cache_file_if_needed(movie_real_path)
+    try:
+        folder, stem = os.path.dirname(movie_real_path), os.path.splitext(os.path.basename(movie_real_path))[0]
         if os.path.exists(folder):
             for f in os.listdir(folder):
                 if f.startswith(stem): cache_file_if_needed(os.path.join(folder, f))
+    except: pass
+
+def handle_movie_cleanup_smart(active_paths):
+    if not get_b("ENABLE_SMART_CLEANUP"): return
+    current_time = time.time()
+    for movie in active_paths:
+        rel = movie.replace(CONF["ARRAY_ROOT"], "").lstrip("/")
+        c_path = os.path.join(CONF["CACHE_ROOT"], rel)
+        if c_path in movie_deletion_queue: del movie_deletion_queue[c_path]
+    for cache_path, timestamp in list(movie_deletion_queue.items()):
+        if current_time - timestamp > get_i("MOVIE_DELETE_DELAY"):
+            smart_manage_cache_file(cache_path, reason="Deletion Timer")
+            del movie_deletion_queue[cache_path]
 
 if __name__ == "__main__":
     lock_file = open(LOCK_FILE_PATH, 'w')
     try: fcntl.lockf(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except: sys.exit(0)
     load_plugin_config()
+    signal.signal(signal.SIGHUP, lambda s, f: load_plugin_config())
     log_info("Dienst gestartet. Warte auf Streams...")
-    check_connection()
-    last_sessions = set()
+    if get_b("ENABLE_PLEX"):
+        log_info(f"Plex Check: {CONF['PLEX_URL']}")
+        if plex_api_get("/identity"): log_info("-> Plex OK")
+        else: log_info("-> Plex Fehler!")
+    
+    last_loop_sessions = {}
     while True:
         try:
-            active_sessions = get_active_sessions()
-            curr_paths = set(active_sessions.keys())
-            for p in curr_paths - last_sessions: log_info(f"[Stream] Aktiv: {os.path.basename(p)}")
-            for dp in active_sessions:
+            current_sessions = get_active_sessions()
+            active_real_paths = []
+            for dp, s_data in current_sessions.items():
                 rp = translate_path(dp)
-                if rp.startswith(CONF["ARRAY_ROOT"]):
-                    if rp not in stream_start_times: stream_start_times[rp] = time.time()
-                    if time.time() - stream_start_times[rp] >= get_i("COPY_DELAY"): handle_media(rp)
-            for p in list(stream_start_times.keys()):
-                if p not in [translate_path(x) for x in curr_paths]: del stream_start_times[p]
-            last_sessions = curr_paths
-        except: pass
+                if not rp.startswith(CONF["ARRAY_ROOT"]): continue
+                active_real_paths.append(rp)
+                if rp not in stream_start_times:
+                    log_info(f"[Stream] Aktiv: {os.path.basename(rp)}")
+                    stream_start_times[rp] = time.time(); continue 
+                if time.time() - stream_start_times[rp] >= get_i("COPY_DELAY"):
+                    if parse_episode_number(os.path.basename(rp)) is not None: handle_series_logic_smart(rp)
+                    else: handle_movie_logic(rp) 
+            for path in list(stream_start_times.keys()):
+                if path not in set(active_real_paths): del stream_start_times[path]
+            if get_b("ENABLE_SMART_CLEANUP"):
+                stopped = set(last_loop_sessions.keys()) - set(current_sessions.keys())
+                for d_path in stopped:
+                    s_data, rp = last_loop_sessions[d_path], translate_path(d_path)
+                    if check_is_watched(s_data):
+                        rel = rp.replace(CONF["ARRAY_ROOT"], "").lstrip("/")
+                        c_path = os.path.join(CONF["CACHE_ROOT"], rel)
+                        if os.path.exists(c_path): movie_deletion_queue[c_path] = time.time()
+                handle_movie_cleanup_smart(active_real_paths)
+            last_loop_sessions = current_sessions
+        except Exception as e: log_info(f"[Error] Loop: {e}")
         time.sleep(get_i("CHECK_INTERVAL"))
 ]]>
 </INLINE>
@@ -415,15 +513,13 @@ PYTHON_SCRIPT="/usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py"
 PID_FILE="/var/run/plex_to_cache.pid"
 LOG_FILE="/var/log/plex_to_cache.log"
 start() {
-    if [ -f "$PID_FILE" ] && ps -p $(cat "$PID_FILE") > /dev/null; then return;
-    fi
+    if [ -f "$PID_FILE" ] && ps -p $(cat "$PID_FILE") > /dev/null; then return; fi
     touch "$LOG_FILE" && chmod 666 "$LOG_FILE"
     nohup python3 "$PYTHON_SCRIPT" >> "$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
 }
 stop() {
-    if [ -f "$PID_FILE" ]; then kill -9 $(cat "$PID_FILE") 2>/dev/null; rm "$PID_FILE";
-    fi
+    if [ -f "$PID_FILE" ]; then kill -9 $(cat "$PID_FILE") 2>/dev/null; rm "$PID_FILE"; fi
     pkill -f plex_to_cache.py 2>/dev/null
 }
 case "$1" in
@@ -438,13 +534,10 @@ esac
 <FILE Run="/bin/bash">
 <INLINE>
 <![CDATA[
-# Dependencies
+# Dependencies using the requested curl method
 if ! python3 -c "import requests" 2>/dev/null; then
-    if ! command -v pip3 >/dev/null 2>&1;
-then
-        curl -s https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
-        python3 /tmp/get-pip.py >/dev/null 2>&1
-    fi
+    curl -s https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+    python3 /tmp/get-pip.py >/dev/null 2>&1
     pip3 install requests >/dev/null 2>&1
 fi
 
@@ -456,7 +549,7 @@ mkdir -p /boot/config/plugins/plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart
-echo "Update v2025.12.30.01 installiert."
+echo "Update v2025.12.30.02 installiert."
 ]]>
 </INLINE>
 </FILE>
