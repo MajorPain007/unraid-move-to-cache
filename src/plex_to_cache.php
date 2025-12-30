@@ -37,7 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     foreach ($ptc_cfg as $key => $val) { $content .= "$key=\"$val\"\n"; }
     if (!is_dir(dirname($ptc_cfg_file))) mkdir(dirname($ptc_cfg_file), 0777, true);
     file_put_contents($ptc_cfg_file, $content);
-    shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart > /dev/null 2>&1 &");
+    shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart > /dev/null 2>&1 & ");
     echo "<script>window.location.href = window.location.href;</script>";
     exit;
 }
@@ -50,11 +50,13 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 ?>
 <style>
 :root { --primary-blue: #00aaff; --bg-dark: #111; }
-#ptc-wrapper { display: flex; flex-wrap: nowrap; align-items: stretch; justify-content: space-between; gap: 6px; width: 100%; box-sizing: border-box; padding: 10px 0; }
+#ptc-wrapper { display: flex; flex-wrap: nowrap; align-items: stretch; justify-content: space-between; gap: 8px; width: 100%; box-sizing: border-box; padding: 10px 0; }
 .ptc-col { background: var(--bg-dark); border-radius: 8px; box-shadow: 0 0 10px rgba(0, 170, 255, 0.15); color: #f0f8ff; padding: 18px; box-sizing: border-box; display: flex; flex-direction: column; }
-#ptc-col-servers { flex: 0 0 27%; }
-#ptc-col-tuning { flex: 0 0 27%; }
-#ptc-col-log { flex: 0 0 45%; }
+
+/* Adjusted widths to make URL/Token fields longer */
+#ptc-col-servers { flex: 0 0 35%; }
+#ptc-col-tuning { flex: 0 0 25%; }
+#ptc-col-log { flex: 0 0 38%; }
 
 .section-header { color: var(--primary-blue); font-size: 16px; font-weight: bold; margin-bottom: 12px; margin-top: 18px; border-bottom: 1px solid #333; padding-bottom: 4px; display: flex; align-items: center; gap: 8px; }
 .section-header:first-of-type { margin-top: 0; }
@@ -94,10 +96,9 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 .ptc-input:focus { border-color: var(--primary-blue) !important; outline: none !important; }
 .input-small { width: 65px !important; flex: 0 0 65px !important; }
 
-/* Layout refinements */
-#ptc-col-tuning .form-input-wrapper { justify-content: flex-end; }
-#ptc-col-tuning .ptc-input { text-align: right; }
-#ptc-col-tuning .ptc-input:not(.input-small) { text-align: left; }
+/* Tuning column right-alignment for numbers only */
+#tuning-section .form-input-wrapper { justify-content: flex-end; }
+#tuning-section .ptc-input.input-small { text-align: right; }
 
 .form-input-wrapper input[type="checkbox"] { accent-color: var(--primary-blue); width: 18px; height: 18px; cursor: pointer; }
 .unit-label { font-size: 12px; color: #777; white-space: nowrap; }
@@ -106,7 +107,7 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 #mapping_table th { text-align: left; color: var(--primary-blue); padding: 6px; border-bottom: 1px solid #333; font-size: 12px; }
 #mapping_table td { padding: 4px 0; }
 
-/* Default Unraid Button Style */
+/* Use default Unraid button style */
 .btn-save-container { margin-bottom: 20px; }
 .btn-save-container input[type="submit"] { width: 100%; padding: 10px; font-weight: bold; text-transform: uppercase; cursor: pointer; }
 

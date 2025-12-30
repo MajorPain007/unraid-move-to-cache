@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2025.12.30.26">
+<!ENTITY version   "2025.12.30.27">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -62,7 +62,7 @@ if (file_exists($ptc_cfg_file)) {
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     foreach ($ptc_cfg as $key => $val) {
-        if (isset($_POST[$key])) { $ptc_cfg[$key] = $_POST[$key]; } 
+        if (isset($_POST[$key])) { $ptc_cfg[$key] = $_POST[$key]; }
         else { if (strpos($key, "ENABLE_") === 0 || $key === "ENABLE_SMART_CLEANUP") { $ptc_cfg[$key] = "False"; } }
     }
     $m_str = "";
@@ -91,11 +91,11 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 ?>
 <style>
 :root { --primary-blue: #00aaff; --bg-dark: #111; }
-#ptc-wrapper { display: flex; flex-wrap: nowrap; align-items: stretch; justify-content: space-between; gap: 6px; width: 100%; box-sizing: border-box; padding: 10px 0; }
+#ptc-wrapper { display: flex; flex-wrap: nowrap; align-items: stretch; justify-content: space-between; gap: 8px; width: 100%; box-sizing: border-box; padding: 10px 0; }
 .ptc-col { background: var(--bg-dark); border-radius: 8px; box-shadow: 0 0 10px rgba(0, 170, 255, 0.15); color: #f0f8ff; padding: 18px; box-sizing: border-box; display: flex; flex-direction: column; }
-#ptc-col-servers { flex: 0 0 27%; }
-#ptc-col-tuning { flex: 0 0 27%; }
-#ptc-col-log { flex: 0 0 45%; }
+#ptc-col-servers { flex: 0 0 35%; }
+#ptc-col-tuning { flex: 0 0 25%; }
+#ptc-col-log { flex: 0 0 38%; }
 .section-header { color: var(--primary-blue); font-size: 16px; font-weight: bold; margin-bottom: 12px; margin-top: 18px; border-bottom: 1px solid #333; padding-bottom: 4px; display: flex; align-items: center; gap: 8px; }
 .section-header:first-of-type { margin-top: 0; }
 .form-pair { display: flex; align-items: center; margin-bottom: 12px; gap: 8px; }
@@ -105,9 +105,9 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 .ptc-input { background: #111 !important; border: 1px solid #444 !important; border-radius: 4px !important; color: #fff !important; padding: 5px 8px !important; width: 100% !important; box-sizing: border-box !important; font-size: 13px !important; height: 30px !important; }
 .ptc-input:focus { border-color: var(--primary-blue) !important; outline: none !important; }
 .input-small { width: 65px !important; flex: 0 0 65px !important; }
-#ptc-col-tuning .form-input-wrapper { justify-content: flex-end; }
-#ptc-col-tuning .ptc-input { text-align: right; }
-#ptc-col-tuning .ptc-input:not(.input-small) { text-align: left; }
+#tuning-section .form-input-wrapper { justify-content: flex-end; }
+#tuning-section .ptc-input.input-small { text-align: right; }
+#tuning-section .ptc-input:not(.input-small) { text-align: left; }
 .form-input-wrapper input[type="checkbox"] { accent-color: var(--primary-blue); width: 18px; height: 18px; cursor: pointer; }
 .unit-label { font-size: 12px; color: #777; white-space: nowrap; }
 .btn-save-container { margin-bottom: 20px; }
@@ -139,7 +139,7 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
             <div class="form-pair"><label data-tooltip="The cache pool path.">Cache Root:</label><div class="form-input-wrapper"><input type="text" name="CACHE_ROOT" value="<?= $ptc_cfg['CACHE_ROOT'] ?>" class="ptc-input"></div></div>
             <div class="form-pair"><label data-tooltip="Directory names to skip.">Exclude:</label><div class="form-input-wrapper"><input type="text" name="EXCLUDE_DIRS" value="<?= $ptc_cfg['EXCLUDE_DIRS'] ?>" placeholder="temp,skip" class="ptc-input"></div></div>
             <div class="section-header"><i class="fa fa-exchange"></i> Docker Mappings</div>
-            <table id="mapping_table"><thead><tr><th title="Path on host">Host Path</th><th title="Path in Docker">Docker Path</th><th></th></tr></thead><tbody></tbody></table>
+            <table id="mapping_table"><thead><tr><th title="Path on host side">Host Path</th><th title="Path in Docker">Docker Path</th><th></th></tr></thead><tbody></tbody></table>
             <button type="button" class="btn-add" onclick="addMappingRow()">+ Mapping</button>
             <div id="tuning-section">
                 <div class="section-header"><i class="fa fa-cogs"></i> Tuning & Cleanup</div>
@@ -147,7 +147,7 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
                 <div class="form-pair"><label title="Wait seconds before moving file.">Copy Delay:</label><div class="form-input-wrapper"><input type="number" name="COPY_DELAY" value="<?= $ptc_cfg['COPY_DELAY'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
                 <div class="form-pair"><label title="Max usage % of cache pool.">Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= $ptc_cfg['CACHE_MAX_USAGE'] ?>" class="ptc-input input-small"><span class="unit-label">%</span></div></div>
                 <div class="form-pair"><label title="Auto removal from cache after watching.">Smart Clean:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_SMART_CLEANUP" value="True" <?= $ptc_cfg['ENABLE_SMART_CLEANUP'] == 'True' ? 'checked' : '' ?> ></div></div>
-                <div class="form-pair"><label title="Delay before deleting watched movies.">Del Delay:</label><div class="form-input-wrapper"><input type="number" name="MOVIE_DELETE_DELAY" value="<?= $ptc_cfg['MOVIE_DELETE_DELAY'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
+                <div class="form-pair"><label title="Seconds to wait after a movie is watched.">Del Delay:</label><div class="form-input-wrapper"><input type="number" name="MOVIE_DELETE_DELAY" value="<?= $ptc_cfg['MOVIE_DELETE_DELAY'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
                 <div class="form-pair"><label title="Number of watched episodes to keep.">Keep Prev:</label><div class="form-input-wrapper"><input type="number" name="EPISODE_KEEP_PREVIOUS" value="<?= $ptc_cfg['EPISODE_KEEP_PREVIOUS'] ?>" class="ptc-input input-small"><span class="unit-label">ep</span></div></div>
             </div>
         </div>
@@ -511,7 +511,7 @@ mkdir -p /boot/config/plugins/plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart
-echo "Plex to Cache v2025.12.30.26 installed."
+echo "Plex to Cache v2025.12.30.27 installed."
 ]]>
 </INLINE>
 </FILE>
