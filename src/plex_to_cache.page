@@ -1,3 +1,5 @@
 Menu="Utilities"
 Icon="server"
 Title="Plex to Cache"
+---
+<?php include '/usr/local/emhttp/plugins/plex_to_cache/plex_to_cache.php'; ?>
