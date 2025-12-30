@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2025.12.30.05">
+<!ENTITY version   "2025.12.30.06">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -24,6 +24,21 @@ Title="Plex to Cache"
 </INLINE>
 </FILE>
 
+<FILE Name="/tmp/plex_to_cache_install/get_log.php">
+<INLINE>
+<![CDATA[
+<?php
+$log_file = "/var/log/plex_to_cache.log";
+if (file_exists($log_file)) {
+    echo shell_exec("tail -n 200 " . escapeshellarg($log_file));
+} else {
+    echo "Log file not found. Service might be starting...";
+}
+?>
+]]>
+</INLINE>
+</FILE>
+
 <FILE Name="/tmp/plex_to_cache_install/plex_to_cache.php">
 <INLINE>
 <![CDATA[
@@ -31,13 +46,6 @@ Title="Plex to Cache"
 $ptc_plugin = "plex_to_cache";
 $ptc_cfg_file = "/boot/config/plugins/$ptc_plugin/settings.cfg";
 $ptc_log_file = "/var/log/plex_to_cache.log";
-
-if (isset($_GET['action']) && $_GET['action'] == 'get_log') {
-    if (file_exists($ptc_log_file)) {
-        echo shell_exec("tail -n 200 " . escapeshellarg($ptc_log_file));
-    } else { echo "Log file not found. Service might be starting..."; }
-    exit;
-}
 
 $ptc_cfg = [
     "LANGUAGE" => "EN",
@@ -114,7 +122,7 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 #ptc-wrapper { display: flex; flex-wrap: nowrap; align-items: flex-start; justify-content: space-between; gap: 20px; width: 100%; box-sizing: border-box; padding: 10px 0; }
 #ptc-settings, #ptc-log-container { background: var(--bg-dark); border-radius: 12px; box-shadow: 0 0 12px rgba(0, 170, 255, 0.2); color: #f0f8ff; padding: 20px; box-sizing: border-box; }
 #ptc-settings { flex: 0 0 48%; }
-#ptc-log-container { flex: 0 0 50%; display: flex; flex-direction: column; min-height: 850px; }
+#ptc-log-container { flex: 0 0 50%; display: flex; flex-direction: column; height: 850px; }
 .section-header { color: var(--primary-blue); font-size: 18px; font-weight: bold; margin-bottom: 15px; margin-top: 25px; border-bottom: 1px solid #333; padding-bottom: 5px; }
 .section-header:first-of-type { margin-top: 0; }
 .form-pair { display: flex; align-items: center; margin-bottom: 15px; gap: 10px; }
@@ -130,7 +138,7 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 .btn-save:hover { filter: brightness(1.1); }
 .btn-add { background: transparent; color: var(--primary-blue); border: 1px solid var(--primary-blue); padding: 5px 10px; border-radius: 4px; cursor: pointer; margin-top: 10px; }
 .btn-add:hover { background: rgba(0, 170, 255, 0.1); }
-#ptc-log { background: #000; border: 1px solid var(--primary-blue); border-radius: 8px; color: #00ffaa; font-family: monospace; font-size: 12px; padding: 15px; flex-grow: 1; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+#ptc-log { background: #000; border: 1px solid var(--primary-blue); border-radius: 8px; color: #00ffaa; font-family: monospace; font-size: 12px; padding: 15px; flex-grow: 1; overflow-y: auto; white-space: pre-wrap; word-break: break-all; min-height: 600px; max-height: 750px; }
 @media (max-width: 1100px) { #ptc-wrapper { flex-wrap: wrap; } #ptc-settings, #ptc-log-container { flex: 1 1 100%; } }
 </style>
 <div id="ptc-wrapper">
@@ -140,7 +148,8 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
                 <h2 style="margin:0; color:var(--primary-blue);"><?= $txt[$lang]['settings'] ?></h2>
                 <input type="submit" value="<?= $txt[$lang]['save'] ?>" class="btn-save">
             </div>
-            <div class="form-pair"><label><?= $txt[$lang]['lang'] ?>:</label><div class="form-input-wrapper"><select name="LANGUAGE" onchange="this.form.submit()"><option value="EN" <?= $lang == 'EN' ? 'selected' : '' ?>>English</option><option value="DE" <?= $lang == 'DE' ? 'selected' : '' ?>>Deutsch</option></select></div></div>
+            <div class="form-pair"><label><?= $txt[$lang]['lang'] ?>:</label><div class="form-input-wrapper"><select name="LANGUAGE" onchange="this.form.submit()">
+            <option value="EN" <?= $lang == 'EN' ? 'selected' : '' ?>>English</option><option value="DE" <?= $lang == 'DE' ? 'selected' : '' ?>>Deutsch</option></select></div></div>
             <div class="section-header"><i class="fa fa-play-circle"></i> <?= $txt[$lang]['plex'] ?></div>
             <div class="form-pair"><label><?= $txt[$lang]['enable'] ?></label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_PLEX" value="True" <?= $ptc_cfg['ENABLE_PLEX'] == 'True' ? 'checked' : '' ?> ></div></div>
             <div class="form-pair"><label>URL:</label><div class="form-input-wrapper"><input type="text" name="PLEX_URL" value="<?= $ptc_cfg['PLEX_URL'] ?>" autocomplete="off"></div></div>
@@ -178,7 +187,7 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
     </div>
 </div>
 <script>
-function refreshLog() { $.get(window.location.href, { action: 'get_log' }, function(data) { var logDiv = $('#ptc-log'); logDiv.text(data); logDiv.scrollTop(logDiv[0].scrollHeight); }); }
+function refreshLog() { $.get('/plugins/plex_to_cache/get_log.php', function(data) { var logDiv = $('#ptc-log'); logDiv.text(data); logDiv.scrollTop(logDiv[0].scrollHeight); }); }
 function addMappingRow(dockerVal = '', hostVal = '') {
     var table = document.getElementById('mapping_table').getElementsByTagName('tbody')[0];
     var row = table.insertRow(-1);
@@ -215,8 +224,8 @@ CONFIG = {
     "ENABLE_JELLYFIN": "False", "JELLYFIN_URL": "http://localhost:8096", "JELLYFIN_API_KEY": "",
     "CHECK_INTERVAL": "10", "CACHE_MAX_USAGE": "80", "COPY_DELAY": "30",
     "ENABLE_SMART_CLEANUP": "False", "MOVIE_DELETE_DELAY": "1800", "EPISODE_KEEP_PREVIOUS": "2",
-    "EXCLUDE_DIRS": "", "MEDIA_FILETYPES": ".mkv .mp4 .avi", "ARRAY_ROOT" => "/mnt/user",
-    "CACHE_ROOT" => "/mnt/cache", "DOCKER_MAPPINGS": ""
+    "EXCLUDE_DIRS": "", "MEDIA_FILETYPES": ".mkv .mp4 .avi", "ARRAY_ROOT": "/mnt/user",
+    "CACHE_ROOT": "/mnt/cache", "DOCKER_MAPPINGS": ""
 }
 
 movie_deletion_queue, stream_start_times, metadata_path_cache, parsed_docker_mappings = {}, {}, {}, {}
@@ -409,7 +418,7 @@ def cache_file_if_needed(sp):
     try:
         u = shutil.disk_usage(CONFIG["CACHE_ROOT"])
         if (u.used / u.total) * 100 >= get_config_int("CACHE_MAX_USAGE"): return
-    except: pass
+    except: return
     log_info(f"[Copy] -> {os.path.basename(sp)}")
     try:
         ensure_structure(dp)
@@ -524,6 +533,7 @@ rm -rf /usr/local/emhttp/plugins/plex_to_cache
 mkdir -p /usr/local/emhttp/plugins/plex_to_cache/scripts
 mv /tmp/plex_to_cache_install/plex_to_cache.page /usr/local/emhttp/plugins/plex_to_cache/
 mv /tmp/plex_to_cache_install/plex_to_cache.php /usr/local/emhttp/plugins/plex_to_cache/
+mv /tmp/plex_to_cache_install/get_log.php /usr/local/emhttp/plugins/plex_to_cache/
 mv /tmp/plex_to_cache_install/scripts/* /usr/local/emhttp/plugins/plex_to_cache/scripts/
 rm -rf /tmp/plex_to_cache_install
 chmod +x /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache
@@ -532,7 +542,7 @@ mkdir -p /boot/config/plugins/plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart
-echo "Plex to Cache v2025.12.30.05 installed."
+echo "Plex to Cache v2025.12.30.06 installed."
 ]]>
 </INLINE>
 </FILE>

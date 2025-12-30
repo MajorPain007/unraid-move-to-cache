@@ -135,7 +135,7 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 .btn-save:hover { filter: brightness(1.1); }
 .btn-add { background: transparent; color: var(--primary-blue); border: 1px solid var(--primary-blue); padding: 5px 10px; border-radius: 4px; cursor: pointer; margin-top: 10px; }
 .btn-add:hover { background: rgba(0, 170, 255, 0.1); }
-#ptc-log { background: #000; border: 1px solid var(--primary-blue); border-radius: 8px; color: #00ffaa; font-family: monospace; font-size: 12px; padding: 15px; flex-grow: 1; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+#ptc-log { background: #000; border: 1px solid var(--primary-blue); border-radius: 8px; color: #00ffaa; font-family: monospace; font-size: 12px; padding: 15px; height: 750px; overflow-y: scroll; white-space: pre-wrap; word-break: break-all; }
 @media (max-width: 1100px) { #ptc-wrapper { flex-wrap: wrap; } #ptc-settings, #ptc-log-container { flex: 1 1 100%; } }
 </style>
 
@@ -147,15 +147,7 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
                 <input type="submit" value="<?= $txt[$lang]['save'] ?>" class="btn-save">
             </div>
 
-            <div class="form-pair">
-                <label><?= $txt[$lang]['lang'] ?>:</label>
-                <div class="form-input-wrapper">
-                    <select name="LANGUAGE" onchange="this.form.submit()">
-                        <option value="EN" <?= $lang == 'EN' ? 'selected' : '' ?>>English</option>
-                        <option value="DE" <?= $lang == 'DE' ? 'selected' : '' ?>>Deutsch</option>
-                    </select>
-                </div>
-            </div>
+            <div class="form-pair"><label><?= $txt[$lang]['lang'] ?>:</label><div class="form-input-wrapper"><select name="LANGUAGE" onchange="this.form.submit()"><option value="EN" <?= $lang == 'EN' ? 'selected' : '' ?>>English</option><option value="DE" <?= $lang == 'DE' ? 'selected' : '' ?>>Deutsch</option></select></div></div>
 
             <div class="section-header"><i class="fa fa-play-circle"></i> <?= $txt[$lang]['plex'] ?></div>
             <div class="form-pair"><label><?= $txt[$lang]['enable'] ?></label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_PLEX" value="True" <?= $ptc_cfg['ENABLE_PLEX'] == 'True' ? 'checked' : '' ?> ></div></div>
@@ -178,16 +170,7 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
             <div class="form-pair"><label><?= $txt[$lang]['exclude'] ?></label><div class="form-input-wrapper"><input type="text" name="EXCLUDE_DIRS" value="<?= $ptc_cfg['EXCLUDE_DIRS'] ?>"></div></div>
 
             <div class="section-header"><i class="fa fa-exchange"></i> <?= $txt[$lang]['mappings'] ?></div>
-            <table id="mapping_table">
-                <thead>
-                    <tr>
-                        <th style="width: 45%;"><?= $txt[$lang]['host'] ?></th>
-                        <th style="width: 45%;"><?= $txt[$lang]['docker'] ?></th>
-                        <th style="width: 10%;"></th>
-                    </tr>
-                </thead>
-                <tbody></tbody>
-            </table>
+            <table id="mapping_table"><thead><tr><th style="width: 45%;"><?= $txt[$lang]['host'] ?></th><th style="width: 45%;"><?= $txt[$lang]['docker'] ?></th><th style="width: 10%;"></th></tr></thead><tbody></tbody></table>
             <button type="button" class="btn-add" onclick="addMappingRow()">+ Mapping</button>
 
             <div class="section-header"><i class="fa fa-cogs"></i> <?= $txt[$lang]['tuning'] ?></div>
@@ -215,19 +198,11 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 </div>
 
 <script>
-function refreshLog() {
-    $.get(window.location.href, { action: 'get_log' }, function(data) {
-        var logDiv = $('#ptc-log');
-        logDiv.text(data);
-        logDiv.scrollTop(logDiv[0].scrollHeight);
-    });
-}
+function refreshLog() { $.get('/plugins/plex_to_cache/get_log.php', function(data) { var logDiv = $('#ptc-log'); logDiv.text(data); logDiv.scrollTop(logDiv[0].scrollHeight); }); }
 function addMappingRow(dockerVal = '', hostVal = '') {
     var table = document.getElementById('mapping_table').getElementsByTagName('tbody')[0];
     var row = table.insertRow(-1);
-    var cell1 = row.insertCell(0);
-    var cell2 = row.insertCell(1);
-    var cell3 = row.insertCell(2);
+    var cell1 = row.insertCell(0); var cell2 = row.insertCell(1); var cell3 = row.insertCell(2);
     cell1.innerHTML = '<input type="text" name="mapping_host[]" value="' + hostVal + '" style="width:100%; background:#111; border:1px solid var(--primary-blue); color:#fff; padding:6px; border-radius:4px;">';
     cell2.innerHTML = '<input type="text" name="mapping_docker[]" value="' + dockerVal + '" style="width:100%; background:#111; border:1px solid var(--primary-blue); color:#fff; padding:6px; border-radius:4px;">';
     cell3.innerHTML = '<a href="#" onclick="deleteRow(this); return false;" style="color:#ff4444; font-size:18px; display:block; text-align:center;"><i class="fa fa-minus-circle"></i></a>';
@@ -236,7 +211,6 @@ function deleteRow(btn) { var row = btn.parentNode.parentNode; row.parentNode.re
 $(function() {
     <?php foreach ($mappings_pairs as $pair): ?> addMappingRow('<?= addslashes($pair[0]) ?>', '<?= addslashes($pair[1]) ?>'); <?php endforeach; ?>
     if (document.getElementById('mapping_table').rows.length <= 1) { addMappingRow(); }
-    refreshLog();
-    setInterval(function() { if ($('#auto_refresh').is(':checked')) refreshLog(); }, 3000);
+    refreshLog(); setInterval(function() { if ($('#auto_refresh').is(':checked')) refreshLog(); }, 3000);
 });
 </script>
