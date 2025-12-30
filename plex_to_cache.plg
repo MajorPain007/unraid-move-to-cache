@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2025.12.30.06">
+<!ENTITY version   "2025.12.30.07">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -514,7 +514,7 @@ stop() {
 case "$1" in
     start) start ;; 
     stop) stop ;; 
-    restart) stop; sleep 1; start ;; 
+    restart) stop; sleep 1; start ;;
 esac
 ]]>
 </INLINE>
@@ -542,7 +542,7 @@ mkdir -p /boot/config/plugins/plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart
-echo "Plex to Cache v2025.12.30.06 installed."
+echo "Plex to Cache v2025.12.30.07 installed."
 ]]>
 </INLINE>
 </FILE>
