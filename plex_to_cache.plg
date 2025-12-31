@@ -2,33 +2,27 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2025.12.31.01"> <!ENTITY launch    "Utilities/plex_to_cache">
+<!ENTITY version   "2025.12.31.02">
+<!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" icon="server">
 
-<DESCRIPTION>
-Plex to Cache: Automatically moves media from array to cache on stream start. Includes smart cleanup, permission mirroring and season-ahead caching for Plex, Emby and Jellyfin.
-</DESCRIPTION>
+<DESCRIPTION>Plex to Cache: Automatically moves media from array to cache on stream start. Includes smart cleanup, permission mirroring and season-ahead caching for Plex, Emby and Jellyfin.</DESCRIPTION>
 
 <CHANGES>
+### 2025.12.31.02
+- Fix: Description Tag formatted (Single Line)
+
 ### 2025.12.31.01
-- Fix: GUI Layout optimiert (Eingabefelder nutzen nun volle Breite)
-- Fix: Installationspfad der .page Datei korrigiert (Beschreibung wird nun angezeigt)
-- Fix: .plg Datei Struktur bereinigt (direkte Installation nach /usr/local/emhttp)
-
-### 2025.12.30.41
-- Added: Emby und Jellyfin Support
-- Added: Smart Cleanup Logik
-
-### 2025.12.30.01
-- Initial Release
+- Fix: GUI Layout optimiert
+- Fix: Installationspfad der .page Datei korrigiert
 </CHANGES>
 
 <README>
 ### Plex to Cache Mover
 
-This plugin monitors Plex, Emby, and Jellyfin streams. When playback starts, it automatically copies the media file from the slow array to the fast cache to prevent buffering.
+This plugin monitors Plex, Emby, and Jellyfin streams. When playback starts, it automatically copies the media file from the slow array to the fast cache.
 
 **Features:**
 * **Multi-Platform:** Supports Plex, Emby, and Jellyfin.
