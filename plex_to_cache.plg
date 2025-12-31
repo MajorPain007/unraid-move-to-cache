@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2025.12.31.06">
+<!ENTITY version   "2025.12.31.07">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,13 +13,14 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
+### 2025.12.31.07
+- UI: Fixed middle column width by restoring global input expansion force
+- UI: Symmetric 3-column layout (24/24/50)
+- Fix: Preserving settings.cfg during update/removal
+
 ### 2025.12.31.06
 - UI: Finalized symmetric 3-column layout (24/24/50)
 - UI: Restored English descriptions and tooltips
-- Fix: Settings preserved during plugin update/removal
-
-### 2025.12.31.05
-- Fix: Preserving settings.cfg during update/removal
 </CHANGES>
 
 <README>
@@ -141,8 +142,7 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 .section-header:first-of-type { margin-top: 0; }
 .form-pair { display: flex; align-items: center; margin-bottom: 12px; gap: 10px; width: 100%; }
 .form-pair label { flex: 0 0 110px; color: var(--primary-blue); font-weight: bold; font-size: 14px; position: relative; cursor: help; }
-.form-input-wrapper { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.expand-row .form-input-wrapper { flex: 1; }
+.form-input-wrapper { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
 .expand-row input { width: 100% !important; max-width: none !important; box-sizing: border-box !important; }
 .form-pair label:after { content: attr(data-tooltip); position: absolute; bottom: 130%; left: 0; background: #222; color: #fff; padding: 10px 14px; border-radius: 6px; font-size: 12.5px; font-weight: normal; width: 280px; z-index: 999; box-shadow: 0 5px 20px rgba(0,0,0,0.6); border: 1px solid var(--primary-blue); visibility: hidden; opacity: 0; pointer-events: none; white-space: normal; line-height: 1.5; text-transform: none; }
 .form-pair label:hover:after { visibility: visible; opacity: 1; transition: opacity 0.2s ease 0.5s; }
