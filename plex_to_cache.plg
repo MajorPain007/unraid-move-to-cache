@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2025.12.30.42"> <!ENTITY launch    "Utilities/plex_to_cache">
+<!ENTITY version   "2025.12.31.01"> <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" icon="server">
@@ -11,6 +11,20 @@
 Plex to Cache: Automatically moves media from array to cache on stream start. Includes smart cleanup, permission mirroring and season-ahead caching for Plex, Emby and Jellyfin.
 </DESCRIPTION>
 
+<CHANGES>
+### 2025.12.31.01
+- Fix: GUI Layout optimiert (Eingabefelder nutzen nun volle Breite)
+- Fix: Installationspfad der .page Datei korrigiert (Beschreibung wird nun angezeigt)
+- Fix: .plg Datei Struktur bereinigt (direkte Installation nach /usr/local/emhttp)
+
+### 2025.12.30.41
+- Added: Emby und Jellyfin Support
+- Added: Smart Cleanup Logik
+
+### 2025.12.30.01
+- Initial Release
+</CHANGES>
+
 <README>
 ### Plex to Cache Mover
 
@@ -18,16 +32,15 @@ This plugin monitors Plex, Emby, and Jellyfin streams. When playback starts, it 
 
 **Features:**
 * **Multi-Platform:** Supports Plex, Emby, and Jellyfin.
-* **Smart Caching:** Caches the current movie or the current and next episodes for TV series.
-* **Smart Cleanup:** Automatically manages cache space and removes watched items.
-* **Permission Mirroring:** Ensures cache files have correct permissions.
+* **Smart Caching:** Caches the current movie or the current and next episodes.
+* **Smart Cleanup:** Automatically manages cache space.
 * **GUI Configuration:** Full configuration via Unraid Settings.
 </README>
 
 <FILE Run="/bin/bash">
 <INLINE>
 <![CDATA[
-# Stop service if running
+# Stop service
 if [ -f /var/run/plex_to_cache.pid ]; then
     kill $(cat /var/run/plex_to_cache.pid) 2>/dev/null
     rm /var/run/plex_to_cache.pid
@@ -561,4 +574,3 @@ echo "Plex to Cache uninstalled."
 </FILE>
 
 </PLUGIN>
-
