@@ -1,9 +1,6 @@
 Menu="Utilities"
 Icon="server"
 Title="Plex to Cache"
+Description="Verschiebt gesehene Medien automatisch vom Array in den Cache für schnelleres Streaming."
 ---
-<div style="margin-top: 10px; margin-bottom: 20px; padding: 15px; background: #111; border-left: 4px solid #00aaff; border-radius: 4px; color: #f0f8ff; font-size: 14px; line-height: 1.5;">
-    <strong>Plex to Cache</strong> automatically optimizes your Unraid storage by moving media files from the array to your cache drive as soon as playback starts. This reduces array spin-ups, enhances performance, and includes features like smart cleanup and ahead-of-time caching for your favorite media servers (Plex, Emby, Jellyfin).
-</div>
-
 <?php include '/usr/local/emhttp/plugins/plex_to_cache/plex_to_cache.php'; ?>
