@@ -12,13 +12,26 @@
 Plex to Cache: Automatically moves media from array to cache on stream start. Includes smart cleanup, permission mirroring and season-ahead caching for Plex, Emby and Jellyfin.
 </DESCRIPTION>
 
+<README>
+### Plex to Cache Mover
+
+This plugin monitors Plex, Emby, and Jellyfin streams. When playback starts, it automatically copies the media file from the slow array to the fast cache to prevent buffering.
+
+**Features:**
+* **Multi-Platform:** Supports Plex, Emby, and Jellyfin.
+* **Smart Caching:** Caches the current movie or the current and next episodes for TV series.
+* **Smart Cleanup:** Automatically manages cache space and removes watched items or oldest episodes.
+* **Permission Mirroring:** Ensures cache files have the correct permissions derived from the array.
+* **GUI Configuration:** Full configuration via the Unraid web interface.
+</README>
+
 <FILE Name="/tmp/plex_to_cache_install/plex_to_cache.page">
 <INLINE>
 <![CDATA[
 Menu="Utilities"
 Icon="server"
 Title="Plex to Cache"
-Description="Verschiebt gesehene Medien automatisch vom Array in den Cache für schnelleres Streaming."
+Description="Automatically moves active media from the array to the cache for faster streaming."
 ---
 <?php include '/usr/local/emhttp/plugins/plex_to_cache/plex_to_cache.php'; ?>
 ]]>
