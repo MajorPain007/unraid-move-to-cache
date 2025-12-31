@@ -37,7 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     foreach ($ptc_cfg as $key => $val) { $content .= "$key=\"$val\"\n"; }
     if (!is_dir(dirname($ptc_cfg_file))) mkdir(dirname($ptc_cfg_file), 0777, true);
     file_put_contents($ptc_cfg_file, $content);
-    shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart > /dev/null 2>&1 &");
+    shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart > /dev/null 2>&1 & ");
     echo "<script>window.location.href = window.location.href;</script>";
     exit;
 }
@@ -62,10 +62,9 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 .section-header:first-of-type { margin-top: 0; }
 .form-pair { display: flex; align-items: center; margin-bottom: 12px; gap: 10px; width: 100%; }
 .form-pair label { flex: 0 0 110px; color: var(--primary-blue); font-weight: bold; font-size: 14px; position: relative; cursor: help; }
-.form-input-wrapper { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.form-input-wrapper { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
 
 /* Expansion Class for long fields */
-.expand-row .form-input-wrapper { flex: 1; }
 .expand-row input { width: 100% !important; max-width: none !important; box-sizing: border-box !important; }
 
 /* Custom Tooltip Logic */
@@ -100,6 +99,9 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 .ptc-input { background: #111 !important; border: 1px solid #444 !important; border-radius: 4px !important; color: #fff !important; padding: 6px 10px !important; font-size: 14px !important; height: 32px !important; }
 .ptc-input:focus { border-color: var(--primary-blue) !important; outline: none !important; }
 .input-small { width: 70px !important; flex: 0 0 70px !important; text-align: right; }
+
+/* Tuning column right-alignment for numerical fields */
+#ptc-col-tuning .form-input-wrapper { justify-content: flex-end; }
 
 .form-input-wrapper input[type="checkbox"] { accent-color: var(--primary-blue); width: 18px; height: 18px; cursor: pointer; }
 .unit-label { font-size: 12px; color: #777; white-space: nowrap; }
