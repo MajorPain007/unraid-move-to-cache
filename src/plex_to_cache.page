@@ -1,6 +1,6 @@
 Menu="Utilities"
 Icon="server"
 Title="Plex to Cache"
-Description="Verschiebt gesehene Medien automatisch vom Array in den Cache für schnelleres Streaming."
+Description="Automatically moves viewed media from the array to the cache for faster streaming."
 ---
 <?php include '/usr/local/emhttp/plugins/plex_to_cache/plex_to_cache.php'; ?>
