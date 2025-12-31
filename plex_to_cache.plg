@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2025.12.30.35">
+<!ENTITY version   "2025.12.30.36">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -92,7 +92,7 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 <style>
 :root { --primary-blue: #00aaff; --bg-dark: #111; }
 #ptc-wrapper { display: flex; flex-wrap: nowrap; align-items: stretch; justify-content: space-between; gap: 10px; width: 100%; box-sizing: border-box; padding: 10px 0; }
-.ptc-col { background: var(--bg-dark); border-radius: 8px; box-shadow: 0 0 10px rgba(0, 170, 255, 0.15); color: #f0f8ff; padding: 10px; box-sizing: border-box; display: flex; flex-direction: column; }
+.ptc-col { background: var(--bg-dark); border-radius: 8px; box-shadow: 0 0 10px rgba(0, 170, 255, 0.15); color: #f0f8ff; padding: 20px 5px 20px 20px; box-sizing: border-box; display: flex; flex-direction: column; }
 #ptc-col-servers { flex: 0 0 24%; }
 #ptc-col-tuning { flex: 0 0 24%; }
 #ptc-col-log { flex: 0 0 50%; }
@@ -116,7 +116,7 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
         <div class="ptc-col" id="ptc-col-servers">
             <div style="margin-bottom: 25px;"><input type="submit" value="Save & Apply Settings" style="width:100%; padding:12px; font-weight:bold; text-transform:uppercase; cursor:pointer;"></div>
             <div class="section-header"><i class="fa fa-play-circle"></i> Plex Server</div>
-            <div class="form-pair"><label data-tooltip="Enable monitoring for Plex.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_PLEX" value="True" <?= $ptc_cfg['ENABLE_PLEX'] == 'True' ? 'checked' : '' ?> ></div></div>
+            <div class="form-pair"><label data-tooltip="Enable monitoring for Plex Media Server.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_PLEX" value="True" <?= $ptc_cfg['ENABLE_PLEX'] == 'True' ? 'checked' : '' ?> ></div></div>
             <div class="form-pair"><label data-tooltip="Your Plex Server URL.">URL:</label><div class="form-input-wrapper"><input type="text" name="PLEX_URL" value="<?= $ptc_cfg['PLEX_URL'] ?>" class="ptc-input"></div></div>
             <div class="form-pair"><label data-tooltip="Your Plex X-Token.">Token:</label><div class="form-input-wrapper"><input type="password" name="PLEX_TOKEN" value="<?= $ptc_cfg['PLEX_TOKEN'] ?>" class="ptc-input" onmouseover="this.type='text'" onmouseout="this.type='password'" autocomplete="new-password"></div></div>
             <div class="section-header"><i class="fa fa-server"></i> Emby Server</div>
@@ -309,7 +309,7 @@ def translate_path(p):
     c = p.replace('\\', '/')
     A = CONFIG["ARRAY_ROOT"]
     for dp, hp in parsed_docker_mappings.items():
-        if c.startswith(dp): 
+        if c.startswith(dp):
             rel = c[len(dp):].lstrip('/')
             return os.path.join(hp if hp.startswith(A) else os.path.join(A, hp.lstrip('/')), rel).replace('//', '/')
     return c
@@ -340,7 +340,7 @@ def cleanup_empty_parent_dirs(p):
 
 def move_to_array(cp):
     R = CONFIG["CACHE_ROOT"]
-    dest = os.path.join(PERMS_ROOT, cp.replace(R, "", 1).lstrip('/'))
+    dest = os.path.join(PERMS_ROOT, cp.replace(R, "", 1).lstrip("/"))
     log_info(f"[Mover] -> Array: {os.path.basename(cp)}")
     try:
         os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -350,7 +350,7 @@ def move_to_array(cp):
 
 def smart_manage_cache_file(cp, reason="Cleanup"):
     if not os.path.exists(cp): return
-    ap = os.path.join(PERMS_ROOT, cp.replace(CONFIG["CACHE_ROOT"], "", 1).lstrip('/'))
+    ap = os.path.join(PERMS_ROOT, cp.replace(CONFIG["CACHE_ROOT"], "", 1).lstrip("/"))
     if os.path.exists(ap) and os.path.getsize(cp) == os.path.getsize(ap):
         os.remove(cp); log_info(f"[{reason}] Gelöscht: {os.path.basename(cp)}")
         cleanup_empty_parent_dirs(cp)
@@ -369,7 +369,7 @@ def ensure_structure(fcp):
             except: pass
 
 def cache_file_if_needed(sp):
-    rel = sp.replace(CONFIG["ARRAY_ROOT"], "").lstrip('/')
+    rel = sp.replace(CONFIG["ARRAY_ROOT"], "").lstrip("/")
     if not rel or is_excluded(rel): return
     dp = os.path.join(CONFIG["CACHE_ROOT"], rel)
     if os.path.exists(dp) and os.path.getsize(sp) == os.path.getsize(dp):
@@ -390,7 +390,7 @@ def handle_series_smart(rp):
     curr = parse_episode_number(os.path.basename(rp))
     if curr is None: return handle_movie_logic(rp)
     sd_array = os.path.dirname(rp)
-    sd_cache = os.path.join(CONFIG["CACHE_ROOT"], sd_array.replace(CONFIG["ARRAY_ROOT"], "").lstrip('/'))
+    sd_cache = os.path.join(CONFIG["CACHE_ROOT"], sd_array.replace(CONFIG["ARRAY_ROOT"], "").lstrip("/"))
     if get_config_bool("ENABLE_SMART_CLEANUP") and os.path.exists(sd_cache):
         th = curr - get_config_int("EPISODE_KEEP_PREVIOUS")
         for f in os.listdir(sd_cache):
@@ -423,7 +423,7 @@ if __name__ == "__main__":
             active_paths = []
             for dp, s_data in curr_sessions.items():
                 rp = translate_path(dp)
-                if not rp.startswith(CONFIG["ARRAY_ROOT"]) or is_excluded(rp) or not is_trigger_filetype(os.path.basename(rp)): continue
+                if not rp.startswith(CONFIG["ARRAY_ROOT"]) or is_excluded(rp) or not is_trigger_filetype(os.basename(rp)): continue
                 active_paths.append(rp)
                 if rp not in stream_start_times:
                     log_info(f"[Stream] Aktiv: {os.path.basename(rp)}"); stream_start_times[rp] = time.time()
@@ -438,18 +438,45 @@ if __name__ == "__main__":
                 for d_p in stopped:
                     s_d, r_p = last_loop[d_p], translate_path(d_p)
                     if check_is_watched(s_d):
-                        cp = os.path.join(CONFIG["CACHE_ROOT"], r_p.replace(CONFIG["ARRAY_ROOT"], "").lstrip('/'))
+                        cp = os.path.join(CONFIG["CACHE_ROOT"], r_p.replace(CONFIG["ARRAY_ROOT"], "").lstrip("/"))
                         if cp and os.path.exists(cp):
                             if parse_episode_number(os.path.basename(r_p)) is None: movie_deletion_queue[cp] = time.time()
                             elif is_last_episode(r_p):
                                 for f in os.listdir(os.path.dirname(cp)):
                                     movie_deletion_queue[os.path.join(os.path.dirname(cp), f)] = time.time()
                 for c_p, ts in list(movie_deletion_queue.items()):
-                    if time.time() - ts > get_config_int("MOVIE_DELETE_DELAY"): 
+                    if time.time() - ts > get_config_int("MOVIE_DELETE_DELAY"):
                         smart_manage_cache_file(c_p, "Deletion Timer"); del movie_deletion_queue[c_p]
             last_loop = curr_sessions
         except: pass
         time.sleep(get_config_int("CHECK_INTERVAL"))
+]]>
+</INLINE>
+</FILE>
+
+<FILE Name="/tmp/plex_to_cache_install/scripts/rc.plex_to_cache">
+<INLINE>
+<![CDATA[
+#!/bin/bash
+PYTHON_SCRIPT="/usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py"
+PID_FILE="/var/run/plex_to_cache.pid"
+LOG_FILE="/var/log/plex_to_cache.log"
+start() {
+    if [ -f "$PID_FILE" ] && ps -p $(cat "$PID_FILE") > /dev/null; then return;
+    fi
+    echo "Starting Plex to Cache Service..."
+    nohup python3 "$PYTHON_SCRIPT" > "$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
+}
+stop() {
+    if [ -f "$PID_FILE" ]; then kill $(cat "$PID_FILE") 2>/dev/null; rm "$PID_FILE"; fi
+    pkill -f plex_to_cache.py 2>/dev/null
+}
+case "$1" in 
+    start) start ;; 
+    stop) stop ;; 
+    restart) stop; sleep 1; start ;; 
+esac
 ]]>
 </INLINE>
 </FILE>
@@ -477,7 +504,7 @@ mkdir -p /boot/config/plugins/plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart
-echo "Plex to Cache v2025.12.30.35 installed."
+echo "Plex to Cache v2025.12.30.36 installed."
 ]]>
 </INLINE>
 </FILE>
