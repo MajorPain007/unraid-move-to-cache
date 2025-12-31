@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2025.12.31.04">
+<!ENTITY version   "2025.12.31.05">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,30 +13,20 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
+### 2025.12.31.05
+- Fix: Preserving settings.cfg during update/removal
+- UI: Enforced 3-column layout and full-width inputs
+- UI: English tooltips and description
+
 ### 2025.12.31.04
 - UI: Symmetric 3-column layout (24/24/50)
 - UI: Full-width inputs for URL/Token
 - UI: Tooltips on hover (0.5s delay) in English
-- PLG: Restored intentional metadata and install scripts
-
-### 2025.12.31.02
-- Fix: Description Tag formatted (Single Line)
-
-### 2025.12.31.01
-- Fix: GUI Layout optimized
-- Fix: Corrected .page installation path
 </CHANGES>
 
 <README>
 ### Plex to Cache Mover
-
 This plugin monitors Plex, Emby, and Jellyfin streams. When playback starts, it automatically copies the media file from the slow array to the fast cache.
-
-**Features:**
-* **Multi-Platform:** Supports Plex, Emby, and Jellyfin.
-* **Smart Caching:** Caches the current movie or the current and next episodes.
-* **Smart Cleanup:** Automatically manages cache space.
-* **GUI Configuration:** Full configuration via Unraid Settings.
 </README>
 
 <FILE Run="/bin/bash">
@@ -49,7 +39,7 @@ if [ -f /var/run/plex_to_cache.pid ]; then
 fi
 pkill -f plex_to_cache.py 2>/dev/null
 
-# Create Directories
+# Create Directories (ensure config dir is NOT deleted)
 mkdir -p /usr/local/emhttp/plugins/plex_to_cache/scripts
 mkdir -p /boot/config/plugins/plex_to_cache
 
@@ -565,12 +555,11 @@ if [ -f /var/run/plex_to_cache.pid ]; then
 fi
 pkill -f plex_to_cache.py 2>/dev/null
 
-# Remove Plugin Files
+# Remove Plugin Files (ONLY EMHTTP FILES, NOT CONFIG)
 rm -rf /usr/local/emhttp/plugins/plex_to_cache
-rm -rf /boot/config/plugins/plex_to_cache
 rm /var/log/plex_to_cache.log
 
-echo "Plex to Cache uninstalled."
+echo "Plex to Cache uninstalled. Settings were preserved in /boot/config/plugins/plex_to_cache."
 ]]>
 </INLINE>
 </FILE>
