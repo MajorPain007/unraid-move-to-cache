@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2025.12.31.05">
+<!ENTITY version   "2025.12.31.06">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,15 +13,13 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
+### 2025.12.31.06
+- UI: Finalized symmetric 3-column layout (24/24/50)
+- UI: Restored English descriptions and tooltips
+- Fix: Settings preserved during plugin update/removal
+
 ### 2025.12.31.05
 - Fix: Preserving settings.cfg during update/removal
-- UI: Enforced 3-column layout and full-width inputs
-- UI: English tooltips and description
-
-### 2025.12.31.04
-- UI: Symmetric 3-column layout (24/24/50)
-- UI: Full-width inputs for URL/Token
-- UI: Tooltips on hover (0.5s delay) in English
 </CHANGES>
 
 <README>
@@ -39,7 +37,7 @@ if [ -f /var/run/plex_to_cache.pid ]; then
 fi
 pkill -f plex_to_cache.py 2>/dev/null
 
-# Create Directories (ensure config dir is NOT deleted)
+# Create Directories
 mkdir -p /usr/local/emhttp/plugins/plex_to_cache/scripts
 mkdir -p /boot/config/plugins/plex_to_cache
 
@@ -531,13 +529,13 @@ esac
 <FILE Run="/bin/bash">
 <INLINE>
 <![CDATA[
-# Berechtigungen
+# Permissions
 chmod +x /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache
 chmod +x /usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 
-# Service starten
+# Start Service
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart
 
 echo "Plex to Cache v&version; installed successfully."
