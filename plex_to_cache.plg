@@ -2,14 +2,14 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2025.12.30.26">
+<!ENTITY version   "2025.12.30.35">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" icon="server">
 
 <DESCRIPTION>
-Plex to Cache: Automatically moves media from array to cache on stream start. Features smart cleanup and season-ahead caching for Plex, Emby and Jellyfin.
+Plex to Cache: Automatically moves media from array to cache on stream start. Includes smart cleanup, permission mirroring and season-ahead caching for Plex, Emby and Jellyfin.
 </DESCRIPTION>
 
 <FILE Name="/tmp/plex_to_cache_install/plex_to_cache.page">
@@ -75,4 +75,411 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     $ptc_cfg['DOCKER_MAPPINGS'] = $m_str;
     $content = "";
-    foreach ($ptc_cfg as $key => $val) { $content .= "$key=\\
+    foreach ($ptc_cfg as $key => $val) { $content .= "$key=\"$val\"\n"; }
+    if (!is_dir(dirname($ptc_cfg_file))) mkdir(dirname($ptc_cfg_file), 0777, true);
+    file_put_contents($ptc_cfg_file, $content);
+    shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart > /dev/null 2>&1 &");
+    echo "<script>window.location.href = window.location.href;</script>";
+    exit;
+}
+
+$mappings_pairs = [];
+if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
+    $pairs = explode(";", $ptc_cfg['DOCKER_MAPPINGS']);
+    foreach ($pairs as $p) { if (strpos($p, ":") !== false) { $mappings_pairs[] = explode(":", $p, 2); } }
+}
+?>
+<style>
+:root { --primary-blue: #00aaff; --bg-dark: #111; }
+#ptc-wrapper { display: flex; flex-wrap: nowrap; align-items: stretch; justify-content: space-between; gap: 10px; width: 100%; box-sizing: border-box; padding: 10px 0; }
+.ptc-col { background: var(--bg-dark); border-radius: 8px; box-shadow: 0 0 10px rgba(0, 170, 255, 0.15); color: #f0f8ff; padding: 10px; box-sizing: border-box; display: flex; flex-direction: column; }
+#ptc-col-servers { flex: 0 0 24%; }
+#ptc-col-tuning { flex: 0 0 24%; }
+#ptc-col-log { flex: 0 0 50%; }
+.section-header { color: var(--primary-blue); font-size: 18px; font-weight: bold; margin-bottom: 15px; margin-top: 20px; border-bottom: 1px solid #333; padding-bottom: 5px; display: flex; align-items: center; gap: 8px; }
+.section-header:first-of-type { margin-top: 0; }
+.form-pair { display: flex; align-items: center; margin-bottom: 12px; gap: 10px; }
+.form-pair label { flex: 0 0 130px; color: var(--primary-blue); font-weight: bold; font-size: 14px; position: relative; cursor: help; }
+.form-input-wrapper { flex: 1; display: flex; align-items: center; gap: 8px; }
+.form-pair label:after { content: attr(data-tooltip); position: absolute; bottom: 130%; left: 0; background: #222; color: #fff; padding: 8px 12px; border-radius: 6px; font-size: 12px; font-weight: normal; width: 250px; z-index: 999; box-shadow: 0 5px 15px rgba(0,0,0,0.5); border: 1px solid var(--primary-blue); visibility: hidden; opacity: 0; pointer-events: none; white-space: normal; line-height: 1.4; }
+.form-pair label:hover:after { visibility: visible; opacity: 1; transition: opacity 0.2s ease 0.5s; }
+.ptc-input { background: #111 !important; border: 1px solid #444 !important; border-radius: 4px !important; color: #fff !important; padding: 6px 10px !important; width: 100% !important; box-sizing: border-box !important; font-size: 14px !important; height: 32px !important; }
+.ptc-input:focus { border-color: var(--primary-blue) !important; outline: none !important; }
+.input-small { width: 70px !important; flex: 0 0 70px !important; text-align: right; }
+.form-input-wrapper input[type="checkbox"] { accent-color: var(--primary-blue); width: 18px; height: 18px; cursor: pointer; }
+.unit-label { font-size: 12px; color: #777; white-space: nowrap; }
+#ptc-log { background: #000; border: 1px solid #333; border-radius: 8px; color: #00ffaa; font-family: 'Courier New', monospace; font-size: 13px; padding: 15px; flex-grow: 1; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin-top: 10px; min-height: 600px; }
+@media (max-width: 1250px) { #ptc-wrapper { flex-wrap: wrap; } .ptc-col { flex: 1 1 100%; } }
+</style>
+<form method="post" autocomplete="off">
+    <div id="ptc-wrapper">
+        <div class="ptc-col" id="ptc-col-servers">
+            <div style="margin-bottom: 25px;"><input type="submit" value="Save & Apply Settings" style="width:100%; padding:12px; font-weight:bold; text-transform:uppercase; cursor:pointer;"></div>
+            <div class="section-header"><i class="fa fa-play-circle"></i> Plex Server</div>
+            <div class="form-pair"><label data-tooltip="Enable monitoring for Plex.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_PLEX" value="True" <?= $ptc_cfg['ENABLE_PLEX'] == 'True' ? 'checked' : '' ?> ></div></div>
+            <div class="form-pair"><label data-tooltip="Your Plex Server URL.">URL:</label><div class="form-input-wrapper"><input type="text" name="PLEX_URL" value="<?= $ptc_cfg['PLEX_URL'] ?>" class="ptc-input"></div></div>
+            <div class="form-pair"><label data-tooltip="Your Plex X-Token.">Token:</label><div class="form-input-wrapper"><input type="password" name="PLEX_TOKEN" value="<?= $ptc_cfg['PLEX_TOKEN'] ?>" class="ptc-input" onmouseover="this.type='text'" onmouseout="this.type='password'" autocomplete="new-password"></div></div>
+            <div class="section-header"><i class="fa fa-server"></i> Emby Server</div>
+            <div class="form-pair"><label data-tooltip="Enable monitoring for Emby.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_EMBY" value="True" <?= $ptc_cfg['ENABLE_EMBY'] == 'True' ? 'checked' : '' ?> ></div></div>
+            <div class="form-pair"><label data-tooltip="URL of your Emby server.">URL:</label><div class="form-input-wrapper"><input type="text" name="EMBY_URL" value="<?= $ptc_cfg['EMBY_URL'] ?>" class="ptc-input"></div></div>
+            <div class="form-pair"><label data-tooltip="Your Emby API Key.">API Key:</label><div class="form-input-wrapper"><input type="password" name="EMBY_API_KEY" value="<?= $ptc_cfg['EMBY_API_KEY'] ?>" class="ptc-input" autocomplete="new-password"></div></div>
+            <div class="section-header"><i class="fa fa-film"></i> Jellyfin Server</div>
+            <div class="form-pair"><label data-tooltip="Enable monitoring for Jellyfin.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_JELLYFIN" value="True" <?= $ptc_cfg['ENABLE_JELLYFIN'] == 'True' ? 'checked' : '' ?> ></div></div>
+            <div class="form-pair"><label data-tooltip="URL of your Jellyfin server.">URL:</label><div class="form-input-wrapper"><input type="text" name="JELLYFIN_URL" value="<?= $ptc_cfg['JELLYFIN_URL'] ?>" class="ptc-input"></div></div>
+            <div class="form-pair"><label data-tooltip="Your Jellyfin API Key.">API Key:</label><div class="form-input-wrapper"><input type="password" name="JELLYFIN_API_KEY" value="<?= $ptc_cfg['JELLYFIN_API_KEY'] ?>" class="ptc-input" autocomplete="new-password"></div></div>
+        </div>
+        <div class="ptc-col" id="ptc-col-tuning">
+            <div class="section-header"><i class="fa fa-folder-open"></i> Storage Paths</div>
+            <div class="form-pair"><label data-tooltip="Main array path.">Array Root:</label><div class="form-input-wrapper"><input type="text" name="ARRAY_ROOT" value="<?= $ptc_cfg['ARRAY_ROOT'] ?>" class="ptc-input"></div></div>
+            <div class="form-pair"><label data-tooltip="Cache pool path.">Cache Root:</label><div class="form-input-wrapper"><input type="text" name="CACHE_ROOT" value="<?= $ptc_cfg['CACHE_ROOT'] ?>" class="ptc-input"></div></div>
+            <div class="form-pair"><label data-tooltip="Directory names to skip.">Exclude:</label><div class="form-input-wrapper"><input type="text" name="EXCLUDE_DIRS" value="<?= $ptc_cfg['EXCLUDE_DIRS'] ?>" placeholder="temp,skip" class="ptc-input"></div></div>
+            <div class="section-header"><i class="fa fa-exchange"></i> Docker Mappings</div>
+            <table id="mapping_table"><thead><tr><th>Host Path</th><th>Docker Path</th><th></th></tr></thead><tbody></tbody></table>
+            <button type="button" onclick="addMappingRow()" style="padding: 6px 12px; font-size: 12px; margin-top: 10px; cursor: pointer;">+ Add Mapping</button>
+            <div class="section-header"><i class="fa fa-cogs"></i> Tuning & Cleanup</div>
+            <div class="form-pair"><label data-tooltip="Seconds between checks.">Interval:</label><div class="form-input-wrapper"><input type="number" name="CHECK_INTERVAL" value="<?= $ptc_cfg['CHECK_INTERVAL'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
+            <div class="form-pair"><label data-tooltip="Seconds to wait before move.">Copy Delay:</label><div class="form-input-wrapper"><input type="number" name="COPY_DELAY" value="<?= $ptc_cfg['COPY_DELAY'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
+            <div class="form-pair"><label data-tooltip="Max usage % of cache.">Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= $ptc_cfg['CACHE_MAX_USAGE'] ?>" class="ptc-input input-small"><span class="unit-label">%</span></div></div>
+            <div class="form-pair"><label data-tooltip="Auto removal from cache.">Smart Clean:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_SMART_CLEANUP" value="True" <?= $ptc_cfg['ENABLE_SMART_CLEANUP'] == 'True' ? 'checked' : '' ?> ></div></div>
+            <div class="form-pair"><label data-tooltip="Wait seconds before deletion.">Del Delay:</label><div class="form-input-wrapper"><input type="number" name="MOVIE_DELETE_DELAY" value="<?= $ptc_cfg['MOVIE_DELETE_DELAY'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
+            <div class="form-pair"><label data-tooltip="Watched episodes to keep.">Keep Prev:</label><div class="form-input-wrapper"><input type="number" name="EPISODE_KEEP_PREVIOUS" value="<?= $ptc_cfg['EPISODE_KEEP_PREVIOUS'] ?>" class="ptc-input input-small"><span class="unit-label">ep</span></div></div>
+        </div>
+        <div class="ptc-col" id="ptc-col-log">
+            <div style="display:flex; justify-content:space-between; align-items:center;"><h3 style="margin:0; color:var(--primary-blue); font-size: 18px;"><i class="fa fa-terminal"></i> Live Log Output</h3><div style="display:flex; align-items:center; gap:8px;"><label style="color:#888; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="auto_refresh" checked style="width:14px;height:14px;"> Auto Refresh</label><button type="button" onclick="refreshLog();" style="padding: 4px 10px; font-size: 12px; cursor: pointer;">Refresh</button></div></div>
+            <div id="ptc-log">Loading Logs...</div>
+        </div>
+    </div>
+</form>
+<script>
+function refreshLog() { $.get('/plugins/plex_to_cache/get_log.php', function(data) { var logDiv = $('#ptc-log'); logDiv.text(data); logDiv.scrollTop(logDiv[0].scrollHeight); }); }
+function addMappingRow(dockerVal = '', hostVal = '') {
+    var table = document.getElementById('mapping_table').getElementsByTagName('tbody')[0];
+    var row = table.insertRow(-1);
+    var cell1 = row.insertCell(0); var cell2 = row.insertCell(1); var cell3 = row.insertCell(2);
+    cell1.innerHTML = '<input type="text" name="mapping_host[]" value="' + hostVal + '" class="ptc-input" style="padding:4px !important; height:26px !important;">';
+    cell2.innerHTML = '<input type="text" name="mapping_docker[]" value="' + dockerVal + '" class="ptc-input" style="padding:4px !important; height:26px !important;">';
+    cell3.innerHTML = '<a href="#" onclick="deleteRow(this); return false;" style="color:#ff4444; font-size:16px; margin-left:5px;"><i class="fa fa-minus-circle"></i></a>';
+}
+function deleteRow(btn) { var row = btn.parentNode.parentNode; row.parentNode.removeChild(row); }
+$(function() { <?php foreach ($mappings_pairs as $pair): ?> addMappingRow('<?= addslashes($pair[0]) ?>', '<?= addslashes($pair[1]) ?>'); <?php endforeach; ?> if (document.getElementById('mapping_table').rows.length <= 1) { addMappingRow(); } refreshLog(); setInterval(function() { if ($('#auto_refresh').is(':checked')) refreshLog(); }, 3000); });
+</script>
+]]>
+</INLINE>
+</FILE>
+
+<FILE Name="/tmp/plex_to_cache_install/scripts/plex_to_cache.py">
+<INLINE>
+<![CDATA[
+#!/usr/bin/python3
+import requests, os, shutil, subprocess, time, sys, re, fcntl, signal
+from pathlib import Path
+
+CONFIG_FILE = "/boot/config/plugins/plex_to_cache/settings.cfg"
+LOCK_FILE_PATH = "/tmp/media_cache_cleaner.lock"
+PERMS_ROOT = "/mnt/user0"
+
+CONFIG = {
+    "ENABLE_PLEX": "False", "PLEX_URL": "http://localhost:32400", "PLEX_TOKEN": "",
+    "ENABLE_EMBY": "False", "EMBY_URL": "http://localhost:8096", "EMBY_API_KEY": "",
+    "ENABLE_JELLYFIN": "False", "JELLYFIN_URL": "http://localhost:8096", "JELLYFIN_API_KEY": "",
+    "CHECK_INTERVAL": "10", "CACHE_MAX_USAGE": "80", "COPY_DELAY": "30",
+    "ENABLE_SMART_CLEANUP": "False", "MOVIE_DELETE_DELAY": "1800", "EPISODE_KEEP_PREVIOUS": "2",
+    "EXCLUDE_DIRS": "", "MEDIA_FILETYPES": ".mkv .mp4 .avi", "ARRAY_ROOT": "/mnt/user",
+    "CACHE_ROOT": "/mnt/cache", "DOCKER_MAPPINGS": ""
+}
+
+movie_deletion_queue, stream_start_times, metadata_path_cache, parsed_docker_mappings = {}, {}, {}, {}
+
+def log_info(msg): print(msg, flush=True)
+
+def parse_docker_mappings(mapping_str):
+    m = {}
+    if not mapping_str: return m
+    for p in mapping_str.split(';'):
+        if ':' in p:
+            k, v = p.split(':', 1)
+            m[k.strip()] = v.strip()
+    return m
+
+def load_config():
+    global CONFIG, parsed_docker_mappings
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                for l in f:
+                    l = l.strip()
+                    if not l or l.startswith("#") or "=" not in l: continue
+                    k, v = l.split("=", 1)
+                    CONFIG[k.strip()] = v.strip().strip('"').strip("'")
+        except: pass
+    parsed_docker_mappings = parse_docker_mappings(CONFIG.get("DOCKER_MAPPINGS", ""))
+
+def get_config_bool(k): return CONFIG.get(k, "False").lower() in ["true", "1"]
+def get_config_int(k):
+    try: return int(CONFIG.get(k, 0))
+    except: return 0
+
+def acquire_lock():
+    global lock_file
+    lock_file = open(LOCK_FILE_PATH, 'w')
+    try: fcntl.lockf(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except: sys.exit(1)
+
+def clone_rights_from_disk(dst):
+    CACHE_ROOT = CONFIG["CACHE_ROOT"]
+    if dst.startswith(CACHE_ROOT):
+        src = dst.replace(CACHE_ROOT, PERMS_ROOT, 1)
+        if os.path.exists(src):
+            try:
+                st = os.stat(src)
+                os.chown(dst, st.st_uid, st.st_gid)
+                os.chmod(dst, st.st_mode)
+            except: pass
+
+def is_excluded(p):
+    E = CONFIG["EXCLUDE_DIRS"]
+    if not E: return False
+    parts = p.split(os.sep)
+    for exc in [x.strip() for x in E.split(',')]:
+        if exc and exc in parts: return True
+    return False
+
+def is_trigger_filetype(f):
+    T = CONFIG["MEDIA_FILETYPES"]
+    if not T: return True
+    valid = [x.strip().lower() for x in T.split()]
+    for ext in valid:
+        if f.lower().endswith(ext): return True
+    return False
+
+def plex_api_get(e):
+    h = {'X-Plex-Token': CONFIG["PLEX_TOKEN"], 'Accept': 'application/json'}
+    try: return requests.get(f"{CONFIG['PLEX_URL']}{e}", headers=h, timeout=5, verify=False).json()
+    except: return None
+
+def emby_api_get(e, k, u):
+    h = {'X-Emby-Token': k, 'Accept': 'application/json'}
+    try: return requests.get(f"{u}{e}", headers=h, timeout=5, verify=False).json()
+    except: return None
+
+def get_active_sessions():
+    active = {}
+    if get_config_bool("ENABLE_PLEX"):
+        data = plex_api_get("/status/sessions")
+        if data and 'MediaContainer' in data and 'Metadata' in data['MediaContainer']:
+            for item in data['MediaContainer']['Metadata']:
+                rk = item.get('ratingKey')
+                found = metadata_path_cache.get(rk)
+                if not found and 'Media' in item:
+                    for m in item['Media']:
+                        for p in m.get('Part', []):
+                            if p.get('file'): found = p['file']; break
+                if not found and rk:
+                    meta = plex_api_get(f"/library/metadata/{rk}")
+                    if meta and 'MediaContainer' in meta and 'Metadata' in meta['MediaContainer']:
+                        for med in meta['MediaContainer']['Metadata'][0].get('Media', []):
+                            for pt in med.get('Part', []):
+                                if pt.get('file'): found = pt['file']; break
+                if found: metadata_path_cache[rk] = found; active[found] = {'service': 'plex', 'id': rk}
+    
+    for svc in [("ENABLE_EMBY", "EMBY_API_KEY", "EMBY_URL", "emby"), ("ENABLE_JELLYFIN", "JELLYFIN_API_KEY", "JELLYFIN_URL", "jellyfin")]:
+        if get_config_bool(svc[0]):
+            data = emby_api_get("/Sessions", CONFIG[svc[1]], CONFIG[svc[2]])
+            if data:
+                for s in data:
+                    p = s.get('NowPlayingItem', {}).get('Path')
+                    if p: active[p] = {'service': svc[3], 'id': s['NowPlayingItem'].get('Id'), 'user': s.get('UserId')}
+    return active
+
+def check_is_watched(s):
+    if not s: return False
+    svc = s.get('service')
+    if svc == 'plex':
+        d = plex_api_get(f"/library/metadata/{s.get('id')}")
+        if d and 'MediaContainer' in d and 'Metadata' in d['MediaContainer']:
+            if d['MediaContainer']['Metadata'][0].get('viewCount', 0) > 0: return True
+    elif svc in ['emby', 'jellyfin']:
+        u = CONFIG["EMBY_URL"] if svc == 'emby' else CONFIG["JELLYFIN_URL"]
+        k = CONFIG["EMBY_API_KEY"] if svc == 'emby' else CONFIG["JELLYFIN_API_KEY"]
+        d = emby_api_get(f"/Users/{s.get('user')}/Items/{s.get('id')}", k, u)
+        if d and 'UserData' in d: return d['UserData'].get('Played', False)
+    return False
+
+def translate_path(p):
+    c = p.replace('\\', '/')
+    A = CONFIG["ARRAY_ROOT"]
+    for dp, hp in parsed_docker_mappings.items():
+        if c.startswith(dp): 
+            rel = c[len(dp):].lstrip('/')
+            return os.path.join(hp if hp.startswith(A) else os.path.join(A, hp.lstrip('/')), rel).replace('//', '/')
+    return c
+
+def parse_episode_number(f):
+    m = re.search(r"[sS]\d+[eE](\d+)", f)
+    return int(m.group(1)) if m else None
+
+def is_last_episode(p):
+    try:
+        e = parse_episode_number(os.path.basename(p))
+        if e is None: return False
+        folder, max_e = os.path.dirname(p), 0
+        if os.path.exists(folder):
+            for f in os.listdir(folder):
+                num = parse_episode_number(f)
+                if num and num > max_e: max_e = num
+        return e >= max_e
+    except: return False
+
+def cleanup_empty_parent_dirs(p):
+    P, R = os.path.dirname(p), CONFIG["CACHE_ROOT"]
+    prot = [os.path.join(R, m.strip("/")) for m in parsed_docker_mappings.values()]
+    while P.startswith(R) and len(P) > len(R):
+        if P in prot: break
+        try: os.rmdir(P); P = os.path.dirname(P)
+        except: break
+
+def move_to_array(cp):
+    R = CONFIG["CACHE_ROOT"]
+    dest = os.path.join(PERMS_ROOT, cp.replace(R, "", 1).lstrip('/'))
+    log_info(f"[Mover] -> Array: {os.path.basename(cp)}")
+    try:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        subprocess.run(["rsync", "-a", "--remove-source-files", cp, dest], check=True, stdout=subprocess.DEVNULL)
+        cleanup_empty_parent_dirs(cp)
+    except: pass
+
+def smart_manage_cache_file(cp, reason="Cleanup"):
+    if not os.path.exists(cp): return
+    ap = os.path.join(PERMS_ROOT, cp.replace(CONFIG["CACHE_ROOT"], "", 1).lstrip('/'))
+    if os.path.exists(ap) and os.path.getsize(cp) == os.path.getsize(ap):
+        os.remove(cp); log_info(f"[{reason}] Gelöscht: {os.path.basename(cp)}")
+        cleanup_empty_parent_dirs(cp)
+    else: move_to_array(cp)
+
+def ensure_structure(fcp):
+    R = CONFIG["CACHE_ROOT"]
+    try: rel = os.path.relpath(os.path.dirname(fcp), R)
+    except: return
+    curr = R
+    for part in rel.split(os.sep):
+        if not part or part == ".": continue
+        curr = os.path.join(curr, part)
+        if not os.path.exists(curr):
+            try: os.mkdir(curr); clone_rights_from_disk(curr)
+            except: pass
+
+def cache_file_if_needed(sp):
+    rel = sp.replace(CONFIG["ARRAY_ROOT"], "").lstrip('/')
+    if not rel or is_excluded(rel): return
+    dp = os.path.join(CONFIG["CACHE_ROOT"], rel)
+    if os.path.exists(dp) and os.path.getsize(sp) == os.path.getsize(dp):
+        if dp in movie_deletion_queue: del movie_deletion_queue[dp]
+        return
+    try:
+        u = shutil.disk_usage(CONFIG["CACHE_ROOT"])
+        if (u.used / u.total) * 100 >= get_config_int("CACHE_MAX_USAGE"): return
+    except: return
+    log_info(f"[Copy] -> {os.path.basename(sp)}")
+    try:
+        ensure_structure(dp)
+        subprocess.run(["rsync", "-a", sp, dp], check=True, stdout=subprocess.DEVNULL)
+        clone_rights_from_disk(dp)
+    except: pass
+
+def handle_series_smart(rp):
+    curr = parse_episode_number(os.path.basename(rp))
+    if curr is None: return handle_movie_logic(rp)
+    sd_array = os.path.dirname(rp)
+    sd_cache = os.path.join(CONFIG["CACHE_ROOT"], sd_array.replace(CONFIG["ARRAY_ROOT"], "").lstrip('/'))
+    if get_config_bool("ENABLE_SMART_CLEANUP") and os.path.exists(sd_cache):
+        th = curr - get_config_int("EPISODE_KEEP_PREVIOUS")
+        for f in os.listdir(sd_cache):
+            num = parse_episode_number(f)
+            if num is not None and num < th: smart_manage_cache_file(os.path.join(sd_cache, f), "Smart Cleanup")
+    try:
+        if os.path.exists(sd_array):
+            for f in sorted(os.listdir(sd_array)):
+                num = parse_episode_number(f)
+                if num is not None and num >= curr: cache_file_if_needed(os.path.join(sd_array, f))
+    except: pass
+
+def handle_movie_logic(rp):
+    cache_file_if_needed(rp)
+    try:
+        folder, stem = os.path.dirname(rp), os.path.splitext(os.path.basename(rp))[0]
+        if os.path.exists(folder):
+            for f in os.listdir(folder):
+                if f.startswith(stem): cache_file_if_needed(os.path.join(folder, f))
+    except: pass
+
+if __name__ == "__main__":
+    load_config(); acquire_lock()
+    signal.signal(signal.SIGHUP, lambda s, f: load_config())
+    log_info("Dienst gestartet. Warte auf Streams...")
+    last_loop = {}
+    while True:
+        try:
+            curr_sessions = get_active_sessions()
+            active_paths = []
+            for dp, s_data in curr_sessions.items():
+                rp = translate_path(dp)
+                if not rp.startswith(CONFIG["ARRAY_ROOT"]) or is_excluded(rp) or not is_trigger_filetype(os.path.basename(rp)): continue
+                active_paths.append(rp)
+                if rp not in stream_start_times:
+                    log_info(f"[Stream] Aktiv: {os.path.basename(rp)}"); stream_start_times[rp] = time.time()
+                    continue
+                if time.time() - stream_start_times[rp] >= get_config_int("COPY_DELAY"):
+                    if parse_episode_number(os.path.basename(rp)) is not None: handle_series_smart(rp)
+                    else: handle_movie_logic(rp)
+            for p in list(stream_start_times.keys()):
+                if p not in set(active_paths): del stream_start_times[p]
+            if get_config_bool("ENABLE_SMART_CLEANUP"):
+                stopped = set(last_loop.keys()) - set(curr_sessions.keys())
+                for d_p in stopped:
+                    s_d, r_p = last_loop[d_p], translate_path(d_p)
+                    if check_is_watched(s_d):
+                        cp = os.path.join(CONFIG["CACHE_ROOT"], r_p.replace(CONFIG["ARRAY_ROOT"], "").lstrip('/'))
+                        if cp and os.path.exists(cp):
+                            if parse_episode_number(os.path.basename(r_p)) is None: movie_deletion_queue[cp] = time.time()
+                            elif is_last_episode(r_p):
+                                for f in os.listdir(os.path.dirname(cp)):
+                                    movie_deletion_queue[os.path.join(os.path.dirname(cp), f)] = time.time()
+                for c_p, ts in list(movie_deletion_queue.items()):
+                    if time.time() - ts > get_config_int("MOVIE_DELETE_DELAY"): 
+                        smart_manage_cache_file(c_p, "Deletion Timer"); del movie_deletion_queue[c_p]
+            last_loop = curr_sessions
+        except: pass
+        time.sleep(get_config_int("CHECK_INTERVAL"))
+]]>
+</INLINE>
+</FILE>
+
+<FILE Run="/bin/bash">
+<INLINE>
+<![CDATA[
+if ! python3 -c "import requests" 2>/dev/null;
+then
+    curl -s https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+    python3 /tmp/get-pip.py >/dev/null 2>&1
+    pip3 install requests >/dev/null 2>&1
+fi
+pkill -9 -f plex_to_cache.py 2>/dev/null
+rm -rf /usr/local/emhttp/plugins/plex_to_cache
+mkdir -p /usr/local/emhttp/plugins/plex_to_cache/scripts
+mv /tmp/plex_to_cache_install/plex_to_cache.page /usr/local/emhttp/plugins/plex_to_cache/
+mv /tmp/plex_to_cache_install/plex_to_cache.php /usr/local/emhttp/plugins/plex_to_cache/
+mv /tmp/plex_to_cache_install/get_log.php /usr/local/emhttp/plugins/plex_to_cache/
+mv /tmp/plex_to_cache_install/scripts/* /usr/local/emhttp/plugins/plex_to_cache/scripts/
+rm -rf /tmp/plex_to_cache_install
+chmod +x /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache
+chmod +x /usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py
+mkdir -p /boot/config/plugins/plex_to_cache
+touch /var/log/plex_to_cache.log
+chmod 666 /var/log/plex_to_cache.log
+/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart
+echo "Plex to Cache v2025.12.30.35 installed."
+]]>
+</INLINE>
+</FILE>
+
+</PLUGIN>
