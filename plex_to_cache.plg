@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2025.12.31.09">
+<!ENTITY version   "2025.12.31.10">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,12 +13,14 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
+### 2025.12.31.10
+- Fix: Python Syntax Error (replaced PHP arrow '=>' with Python colon ':')
+- UI: Enhanced Tooltips and descriptions for better usability
+- System: Restored pluginURL for future updates
+
 ### 2025.12.31.09
 - Fix: Removed pluginURL for local install test
 - UI: CSS Grid Layout
-
-### 2025.12.31.08
-- UI: Switched to CSS Grid Layout
 </CHANGES>
 
 <FILE Run="/bin/bash">
@@ -37,6 +39,7 @@ mkdir -p /boot/config/plugins/plex_to_cache
 
 # Check Python Requests
 if ! python3 -c "import requests" 2>/dev/null; then
+    echo "Installing Python Requests..."
     curl -s https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
     python3 /tmp/get-pip.py >/dev/null 2>&1
     pip3 install requests >/dev/null 2>&1
@@ -176,7 +179,7 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 .form-pair label:after {
     content: attr(data-tooltip);
     position: absolute; bottom: 130%; left: 0; background: #222; color: #fff; padding: 10px 14px; border-radius: 6px; font-size: 12.5px;
-    font-weight: normal; width: 280px; z-index: 999; box-shadow: 0 5px 20px rgba(0,0,0,0.6); border: 1px solid var(--primary-blue);
+    font-weight: normal; width: 320px; z-index: 999; box-shadow: 0 5px 20px rgba(0,0,0,0.6); border: 1px solid var(--primary-blue);
     visibility: hidden; opacity: 0; pointer-events: none; white-space: normal; line-height: 1.5; text-transform: none;
 }
 .form-pair label:hover:after { visibility: visible; opacity: 1; transition: opacity 0.2s ease 0.5s; }
@@ -198,38 +201,38 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
             <div class="btn-save-container"><input type="submit" value="Save & Apply Settings"></div>
             
             <div class="section-header"><i class="fa fa-play-circle"></i> Plex Server</div>
-            <div class="form-pair"><label data-tooltip="Enables monitoring for Plex streams.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_PLEX" value="True" <?= $ptc_cfg['ENABLE_PLEX'] == 'True' ? 'checked' : '' ?> ></div></div>
-            <div class="form-pair expand-row"><label data-tooltip="The web address of your Plex server.">URL:</label><div class="form-input-wrapper"><input type="text" name="PLEX_URL" value="<?= $ptc_cfg['PLEX_URL'] ?>" class="ptc-input"></div></div>
-            <div class="form-pair expand-row"><label data-tooltip="Your Plex Authentication Token.">Token:</label><div class="form-input-wrapper"><input type="password" name="PLEX_TOKEN" value="<?= $ptc_cfg['PLEX_TOKEN'] ?>" class="ptc-input" onmouseover="this.type='text'" onmouseout="this.type='password'" autocomplete="new-password"></div></div>
+            <div class="form-pair"><label data-tooltip="Enables monitoring for Plex. The service checks for new active streams at the configured interval.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_PLEX" value="True" <?= $ptc_cfg['ENABLE_PLEX'] == 'True' ? 'checked' : '' ?> ></div></div>
+            <div class="form-pair expand-row"><label data-tooltip="The internal IP and Port of your Plex Container. Do not use 'localhost' if using Bridge Network. Example: http://192.168.1.10:32400">URL:</label><div class="form-input-wrapper"><input type="text" name="PLEX_URL" value="<?= $ptc_cfg['PLEX_URL'] ?>" class="ptc-input"></div></div>
+            <div class="form-pair expand-row"><label data-tooltip="Your unique X-Plex-Token. Required to access the Plex API. You can find this in the XML file of any media item in Plex.">Token:</label><div class="form-input-wrapper"><input type="password" name="PLEX_TOKEN" value="<?= $ptc_cfg['PLEX_TOKEN'] ?>" class="ptc-input" onmouseover="this.type='text'" onmouseout="this.type='password'" autocomplete="new-password"></div></div>
 
             <div class="section-header"><i class="fa fa-server"></i> Emby Server</div>
             <div class="form-pair"><label data-tooltip="Enables monitoring for Emby streams.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_EMBY" value="True" <?= $ptc_cfg['ENABLE_EMBY'] == 'True' ? 'checked' : '' ?> ></div></div>
-            <div class="form-pair expand-row"><label data-tooltip="The web address of your Emby server.">URL:</label><div class="form-input-wrapper"><input type="text" name="EMBY_URL" value="<?= $ptc_cfg['EMBY_URL'] ?>" class="ptc-input"></div></div>
-            <div class="form-pair expand-row"><label data-tooltip="The API key for Emby.">API Key:</label><div class="form-input-wrapper"><input type="password" name="EMBY_API_KEY" value="<?= $ptc_cfg['EMBY_API_KEY'] ?>" class="ptc-input" autocomplete="new-password"></div></div>
+            <div class="form-pair expand-row"><label data-tooltip="The IP and Port of your Emby Server. Example: http://192.168.1.10:8096">URL:</label><div class="form-input-wrapper"><input type="text" name="EMBY_URL" value="<?= $ptc_cfg['EMBY_URL'] ?>" class="ptc-input"></div></div>
+            <div class="form-pair expand-row"><label data-tooltip="The Emby API Key. You can generate this in the Emby Dashboard under 'Settings' -> 'API Keys'.">API Key:</label><div class="form-input-wrapper"><input type="password" name="EMBY_API_KEY" value="<?= $ptc_cfg['EMBY_API_KEY'] ?>" class="ptc-input" autocomplete="new-password"></div></div>
 
             <div class="section-header"><i class="fa fa-film"></i> Jellyfin Server</div>
             <div class="form-pair"><label data-tooltip="Enables monitoring for Jellyfin streams.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_JELLYFIN" value="True" <?= $ptc_cfg['ENABLE_JELLYFIN'] == 'True' ? 'checked' : '' ?> ></div></div>
-            <div class="form-pair expand-row"><label data-tooltip="The web address of your Jellyfin server.">URL:</label><div class="form-input-wrapper"><input type="text" name="JELLYFIN_URL" value="<?= $ptc_cfg['JELLYFIN_URL'] ?>" class="ptc-input"></div></div>
-            <div class="form-pair expand-row"><label data-tooltip="The API key for Jellyfin.">API Key:</label><div class="form-input-wrapper"><input type="password" name="JELLYFIN_API_KEY" value="<?= $ptc_cfg['JELLYFIN_API_KEY'] ?>" class="ptc-input" autocomplete="new-password"></div></div>
+            <div class="form-pair expand-row"><label data-tooltip="The IP and Port of your Jellyfin Server. Example: http://192.168.1.10:8096">URL:</label><div class="form-input-wrapper"><input type="text" name="JELLYFIN_URL" value="<?= $ptc_cfg['JELLYFIN_URL'] ?>" class="ptc-input"></div></div>
+            <div class="form-pair expand-row"><label data-tooltip="The Jellyfin API Key. Found in the Dashboard under 'Advanced' -> 'API Keys'.">API Key:</label><div class="form-input-wrapper"><input type="password" name="JELLYFIN_API_KEY" value="<?= $ptc_cfg['JELLYFIN_API_KEY'] ?>" class="ptc-input" autocomplete="new-password"></div></div>
         </div>
 
         <div class="ptc-col" id="ptc-col-tuning">
             <div class="section-header"><i class="fa fa-folder-open"></i> Storage Paths</div>
-            <div class="form-pair expand-row"><label data-tooltip="The primary path of your Unraid array.">Array Root:</label><div class="form-input-wrapper"><input type="text" name="ARRAY_ROOT" value="<?= $ptc_cfg['ARRAY_ROOT'] ?>" class="ptc-input"></div></div>
-            <div class="form-pair expand-row"><label data-tooltip="The path of your cache pool.">Cache Root:</label><div class="form-input-wrapper"><input type="text" name="CACHE_ROOT" value="<?= $ptc_cfg['CACHE_ROOT'] ?>" class="ptc-input"></div></div>
-            <div class="form-pair expand-row"><label data-tooltip="Folder names to be ignored.">Exclude:</label><div class="form-input-wrapper"><input type="text" name="EXCLUDE_DIRS" value="<?= $ptc_cfg['EXCLUDE_DIRS'] ?>" placeholder="temp,skip" class="ptc-input"></div></div>
+            <div class="form-pair expand-row"><label data-tooltip="The root path where your media files are permanently stored. Usually '/mnt/user'.">Array Root:</label><div class="form-input-wrapper"><input type="text" name="ARRAY_ROOT" value="<?= $ptc_cfg['ARRAY_ROOT'] ?>" class="ptc-input"></div></div>
+            <div class="form-pair expand-row"><label data-tooltip="The path to your fast cache pool (e.g., '/mnt/cache'). Media will be copied here during playback.">Cache Root:</label><div class="form-input-wrapper"><input type="text" name="CACHE_ROOT" value="<?= $ptc_cfg['CACHE_ROOT'] ?>" class="ptc-input"></div></div>
+            <div class="form-pair expand-row"><label data-tooltip="Comma-separated list of folder names to ignore. Useful for 'downloads', 'temp', or private folders.">Exclude:</label><div class="form-input-wrapper"><input type="text" name="EXCLUDE_DIRS" value="<?= $ptc_cfg['EXCLUDE_DIRS'] ?>" placeholder="temp,skip" class="ptc-input"></div></div>
 
             <div class="section-header"><i class="fa fa-exchange"></i> Docker Mappings</div>
             <table id="mapping_table"><thead><tr><th>Host Path</th><th>Docker Path</th><th></th></tr></thead><tbody></tbody></table>
             <button type="button" onclick="addMappingRow()" style="padding: 6px 12px; font-size: 12px; margin-top: 10px; cursor: pointer;">+ Add Mapping</button>
 
             <div class="section-header"><i class="fa fa-cogs"></i> Tuning & Cleanup</div>
-            <div class="form-pair"><label data-tooltip="Interval in seconds.">Interval:</label><div class="form-input-wrapper"><input type="number" name="CHECK_INTERVAL" value="<?= $ptc_cfg['CHECK_INTERVAL'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
-            <div class="form-pair"><label data-tooltip="Delay before copy.">Copy Delay:</label><div class="form-input-wrapper"><input type="number" name="COPY_DELAY" value="<?= $ptc_cfg['COPY_DELAY'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
-            <div class="form-pair"><label data-tooltip="Max Cache Usage %.">Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= $ptc_cfg['CACHE_MAX_USAGE'] ?>" class="ptc-input input-small"><span class="unit-label">%</span></div></div>
-            <div class="form-pair"><label data-tooltip="Smart removal of watched media.">Smart Clean:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_SMART_CLEANUP" value="True" <?= $ptc_cfg['ENABLE_SMART_CLEANUP'] == 'True' ? 'checked' : '' ?> ></div></div>
-            <div class="form-pair"><label data-tooltip="Seconds before deletion.">Del Delay:</label><div class="form-input-wrapper"><input type="number" name="MOVIE_DELETE_DELAY" value="<?= $ptc_cfg['MOVIE_DELETE_DELAY'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
-            <div class="form-pair"><label data-tooltip="Episodes to keep.">Keep Prev:</label><div class="form-input-wrapper"><input type="number" name="EPISODE_KEEP_PREVIOUS" value="<?= $ptc_cfg['EPISODE_KEEP_PREVIOUS'] ?>" class="ptc-input input-small"><span class="unit-label">ep</span></div></div>
+            <div class="form-pair"><label data-tooltip="How often (in seconds) the script checks the servers for active streams. 10s is a good balance.">Interval:</label><div class="form-input-wrapper"><input type="number" name="CHECK_INTERVAL" value="<?= $ptc_cfg['CHECK_INTERVAL'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
+            <div class="form-pair"><label data-tooltip="Wait time in seconds after a stream starts before copying begins. Prevents copying when you just click through a video.">Copy Delay:</label><div class="form-input-wrapper"><input type="number" name="COPY_DELAY" value="<?= $ptc_cfg['COPY_DELAY'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
+            <div class="form-pair"><label data-tooltip="Safety limit. If cache usage is above this %, no new files will be copied to prevent filling the drive.">Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= $ptc_cfg['CACHE_MAX_USAGE'] ?>" class="ptc-input input-small"><span class="unit-label">%</span></div></div>
+            <div class="form-pair"><label data-tooltip="If enabled, the plugin checks if media has been fully watched and deletes it from the cache to free up space.">Smart Clean:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_SMART_CLEANUP" value="True" <?= $ptc_cfg['ENABLE_SMART_CLEANUP'] == 'True' ? 'checked' : '' ?> ></div></div>
+            <div class="form-pair"><label data-tooltip="For Movies/Finales: How long to wait after watching before deleting the file from cache (if Smart Clean is on).">Del Delay:</label><div class="form-input-wrapper"><input type="number" name="MOVIE_DELETE_DELAY" value="<?= $ptc_cfg['MOVIE_DELETE_DELAY'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
+            <div class="form-pair"><label data-tooltip="For TV Shows: How many previous episodes to keep on cache. Prevents re-copying if you skip back a few episodes.">Keep Prev:</label><div class="form-input-wrapper"><input type="number" name="EPISODE_KEEP_PREVIOUS" value="<?= $ptc_cfg['EPISODE_KEEP_PREVIOUS'] ?>" class="ptc-input input-small"><span class="unit-label">ep</span></div></div>
         </div>
 
         <div class="ptc-col" id="ptc-col-log">
@@ -273,8 +276,10 @@ CONFIG = {
     "ENABLE_JELLYFIN": "False", "JELLYFIN_URL": "http://localhost:8096", "JELLYFIN_API_KEY": "",
     "CHECK_INTERVAL": "10", "CACHE_MAX_USAGE": "80", "COPY_DELAY": "30",
     "ENABLE_SMART_CLEANUP": "False", "MOVIE_DELETE_DELAY": "1800", "EPISODE_KEEP_PREVIOUS": "2",
-    "EXCLUDE_DIRS": "", "MEDIA_FILETYPES": ".mkv .mp4 .avi", "ARRAY_ROOT" => "/mnt/user",
-    "CACHE_ROOT" => "/mnt/cache", "DOCKER_MAPPINGS" => ""
+    "EXCLUDE_DIRS": "", "MEDIA_FILETYPES": ".mkv .mp4 .avi",
+    "ARRAY_ROOT": "/mnt/user",
+    "CACHE_ROOT": "/mnt/cache",
+    "DOCKER_MAPPINGS": ""
 }
 
 movie_deletion_queue, stream_start_times, metadata_path_cache, parsed_docker_mappings = {}, {}, {}, {}
