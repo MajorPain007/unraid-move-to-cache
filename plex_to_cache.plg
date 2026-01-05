@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2025.12.31.11">
+<!ENTITY version   "2025.12.31.12">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,13 +13,12 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
-### 2025.12.31.11
-- UI: New Layout Ratio (25% Server / 25% Tuning / 50% Log) for large screens
-- UI: Added responsive breakpoint (reverts to equal width below 1600px)
+### 2025.12.31.12
+- Fix: Settings are no longer deleted during update/uninstall (Safe Update)
+- UI: Finalized CSS Grid Layout (25/25/50 split)
 
-### 2025.12.31.10
-- Fix: Python Syntax Error (replaced PHP arrow '=>' with Python colon ':')
-- UI: Enhanced Tooltips and descriptions
+### 2025.12.31.11
+- UI: New Layout Ratio (25% Server / 25% Tuning / 50% Log)
 </CHANGES>
 
 <FILE Run="/bin/bash">
@@ -141,11 +140,9 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
     box-sizing: border-box;
     padding: 10px 0;
 }
-/* Sicherheitsnetz: Bei kleineren Bildschirmen (<1600px) zurück zum automatischen Umbruch */
 @media (max-width: 1600px) {
     #ptc-wrapper { grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); }
 }
-
 .ptc-col {
     background: var(--bg-dark);
     border-radius: 8px;
@@ -602,7 +599,8 @@ if [ -f /var/run/plex_to_cache.pid ]; then
 fi
 pkill -f plex_to_cache.py 2>/dev/null
 rm -rf /usr/local/emhttp/plugins/plex_to_cache
-rm -rf /boot/config/plugins/plex_to_cache
+# DO NOT DELETE CONFIG FOLDER ON UNINSTALL
+# rm -rf /boot/config/plugins/plex_to_cache
 rm /var/log/plex_to_cache.log
 echo "Plex to Cache uninstalled."
 ]]>
