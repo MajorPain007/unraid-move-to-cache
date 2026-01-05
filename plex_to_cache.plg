@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2025.12.31.08">
+<!ENTITY version   "2025.12.31.09">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,21 +13,13 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
+### 2025.12.31.09
+- Fix: Removed pluginURL for local install test
+- UI: CSS Grid Layout
+
 ### 2025.12.31.08
-- UI: Switched to CSS Grid Layout (Responsive & Equal Height)
-- UI: Optimized column scaling for large and small screens
-- Fix: PHP Syntax cleanup
-
-### 2025.12.31.07
-- UI: Fixed middle column width by restoring global input expansion force
-- UI: Symmetric 3-column layout (24/24/50)
-- Fix: Preserving settings.cfg during update/removal
+- UI: Switched to CSS Grid Layout
 </CHANGES>
-
-<README>
-### Plex to Cache Mover
-This plugin monitors Plex, Emby, and Jellyfin streams. When playback starts, it automatically copies the media file from the slow array to the fast cache.
-</README>
 
 <FILE Run="/bin/bash">
 <INLINE>
@@ -45,7 +37,6 @@ mkdir -p /boot/config/plugins/plex_to_cache
 
 # Check Python Requests
 if ! python3 -c "import requests" 2>/dev/null; then
-    echo "Installing Python Requests..."
     curl -s https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
     python3 /tmp/get-pip.py >/dev/null 2>&1
     pip3 install requests >/dev/null 2>&1
@@ -138,39 +129,27 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 ?>
 <style>
 :root { --primary-blue: #00aaff; --bg-dark: #111; }
-
-/* --- RESPONSIVE GRID LAYOUT --- */
 #ptc-wrapper {
     display: grid;
-    /* Automatische Spalten: Mindestens 450px breit, verteilen sich auf 1fr (Gleiche Breite) */
     grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
     gap: 20px;
-    align-items: stretch; /* Zwingt alle Spalten auf die gleiche Höhe */
+    align-items: stretch;
     width: 100%;
     box-sizing: border-box;
     padding: 10px 0;
 }
-
 .ptc-col {
     background: var(--bg-dark);
     border-radius: 8px;
     box-shadow: 0 0 10px rgba(0, 170, 255, 0.15);
     color: #f0f8ff;
-    padding: 20px 20px 20px 20px;
+    padding: 20px;
     box-sizing: border-box;
     display: flex;
-    flex-direction: column; /* Wichtig für internes Layout */
-    min-height: 650px; /* Mindesthöhe damit es nicht zu klein wirkt */
-}
-
-/* --- LOG COLUMN LOGIC --- */
-/* Die Log-Spalte muss speziell behandelt werden, damit sie scrollt */
-#ptc-col-log {
-    display: flex;
     flex-direction: column;
+    min-height: 650px;
 }
-
-/* Der Log-Container (schwarzer Kasten) */
+#ptc-col-log { display: flex; flex-direction: column; }
 #ptc-log {
     background: #000;
     border: 1px solid #333;
@@ -182,60 +161,33 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
     margin-top: 10px;
     white-space: pre-wrap;
     word-break: break-all;
-    
-    /* SCROLL MAGIC */
-    flex-grow: 1;    /* Nimm den gesamten restlichen Platz in der Spalte ein */
-    height: 0;       /* Trick: Zwingt Flexbox, die Höhe dynamisch zu berechnen */
-    min-height: 400px; /* Aber niemals kleiner als 400px */
-    overflow-y: auto; /* Scrollbar aktivieren, wenn Inhalt länger ist */
+    flex-grow: 1;
+    height: 0;
+    min-height: 400px;
+    overflow-y: auto;
 }
-
-/* --- FORM ELEMENTS --- */
 .section-header { color: var(--primary-blue); font-size: 18px; font-weight: bold; margin-bottom: 15px; margin-top: 20px; border-bottom: 1px solid #333; padding-bottom: 5px; display: flex; align-items: center; gap: 8px; }
 .section-header:first-of-type { margin-top: 0; }
-
 .form-pair { display: flex; align-items: center; margin-bottom: 12px; gap: 10px; width: 100%; }
 .form-pair label { flex: 0 0 100px; color: var(--primary-blue); font-weight: bold; font-size: 14px; position: relative; cursor: help; }
 .form-input-wrapper { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
-
 .expand-row .form-input-wrapper { flex: 1; }
 .expand-row input { width: 100% !important; max-width: none !important; box-sizing: border-box !important; }
-
-/* Custom Tooltip */
 .form-pair label:after {
     content: attr(data-tooltip);
-    position: absolute;
-    bottom: 130%;
-    left: 0;
-    background: #222;
-    color: #fff;
-    padding: 10px 14px;
-    border-radius: 6px;
-    font-size: 12.5px;
-    font-weight: normal;
-    width: 280px;
-    z-index: 999;
-    box-shadow: 0 5px 20px rgba(0,0,0,0.6);
-    border: 1px solid var(--primary-blue);
-    visibility: hidden;
-    opacity: 0;
-    pointer-events: none;
-    white-space: normal;
-    line-height: 1.5;
-    text-transform: none;
+    position: absolute; bottom: 130%; left: 0; background: #222; color: #fff; padding: 10px 14px; border-radius: 6px; font-size: 12.5px;
+    font-weight: normal; width: 280px; z-index: 999; box-shadow: 0 5px 20px rgba(0,0,0,0.6); border: 1px solid var(--primary-blue);
+    visibility: hidden; opacity: 0; pointer-events: none; white-space: normal; line-height: 1.5; text-transform: none;
 }
 .form-pair label:hover:after { visibility: visible; opacity: 1; transition: opacity 0.2s ease 0.5s; }
-
 .ptc-input { background: #111 !important; border: 1px solid #444 !important; border-radius: 4px !important; color: #fff !important; padding: 6px 10px !important; font-size: 14px !important; height: 32px !important; width: 100% !important; max-width: none !important; box-sizing: border-box !important; }
 .ptc-input:focus { border-color: var(--primary-blue) !important; outline: none !important; }
 .input-small { width: 70px !important; flex: 0 0 70px !important; text-align: right; }
 .form-input-wrapper input[type="checkbox"] { accent-color: var(--primary-blue); width: 18px; height: 18px; cursor: pointer; }
 .unit-label { font-size: 12px; color: #777; white-space: nowrap; }
-
 #mapping_table { width: 100%; border-collapse: collapse; margin-top: 10px; }
 #mapping_table th { text-align: left; color: var(--primary-blue); padding: 8px; border-bottom: 1px solid #333; font-size: 13px; }
 #mapping_table td { padding: 5px 0; }
-
 .btn-save-container { margin-bottom: 20px; }
 .btn-save-container input[type="submit"] { width: 100%; padding: 12px; font-weight: bold; text-transform: uppercase; cursor: pointer; }
 </style>
@@ -322,7 +274,7 @@ CONFIG = {
     "CHECK_INTERVAL": "10", "CACHE_MAX_USAGE": "80", "COPY_DELAY": "30",
     "ENABLE_SMART_CLEANUP": "False", "MOVIE_DELETE_DELAY": "1800", "EPISODE_KEEP_PREVIOUS": "2",
     "EXCLUDE_DIRS": "", "MEDIA_FILETYPES": ".mkv .mp4 .avi", "ARRAY_ROOT" => "/mnt/user",
-    "CACHE_ROOT" => "/mnt/cache", "DOCKER_MAPPINGS": ""
+    "CACHE_ROOT" => "/mnt/cache", "DOCKER_MAPPINGS" => ""
 }
 
 movie_deletion_queue, stream_start_times, metadata_path_cache, parsed_docker_mappings = {}, {}, {}, {}
@@ -621,15 +573,11 @@ esac
 <FILE Run="/bin/bash">
 <INLINE>
 <![CDATA[
-# Berechtigungen setzen
 chmod +x /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache
 chmod +x /usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
-
-# Service starten
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart
-
 echo "Plex to Cache v&version; installed successfully."
 ]]>
 </INLINE>
@@ -638,18 +586,14 @@ echo "Plex to Cache v&version; installed successfully."
 <FILE Run="/bin/bash" Method="remove">
 <INLINE>
 <![CDATA[
-# Stop Service
 if [ -f /var/run/plex_to_cache.pid ]; then
     kill $(cat /var/run/plex_to_cache.pid) 2>/dev/null
     rm /var/run/plex_to_cache.pid
 fi
 pkill -f plex_to_cache.py 2>/dev/null
-
-# Remove Files
 rm -rf /usr/local/emhttp/plugins/plex_to_cache
 rm -rf /boot/config/plugins/plex_to_cache
 rm /var/log/plex_to_cache.log
-
 echo "Plex to Cache uninstalled."
 ]]>
 </INLINE>
