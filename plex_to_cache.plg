@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.01.30f">
+<!ENTITY version   "2026.01.30g">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,6 +13,11 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
+### 2026.01.30g
+- Fixed: rsync now uses --inplace (no temp files with random suffixes)
+- Fixed: Files now get correct ownership (nobody:users) and permissions
+- Fixed: No more .filename.mkv.XXXXX temp files left behind
+
 ### 2026.01.30f
 - Changed: Removed "Running/Stopped" text, only status dot remains (hover for tooltip)
 - Fixed: Test button now tests current form values BEFORE saving
@@ -261,7 +266,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'clearcache') {
                     if (!is_dir($dst_dir)) {
                         @mkdir($dst_dir, 0777, true);
                     }
-                    $cmd = "rsync -a --remove-source-files " . escapeshellarg($file) . " " . escapeshellarg($dst) . " 2>&1";
+                    $cmd = "rsync -a --inplace --remove-source-files --chown=nobody:users --chmod=Du=rwx,Dgo=rx,Fu=rw,Fog=rw " . escapeshellarg($file) . " " . escapeshellarg($dst) . " 2>&1";
                     exec($cmd, $output, $ret);
                     if ($ret === 0) {
                         $size += $file_size;
@@ -319,7 +324,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'moveall') {
                 }
 
                 // Move file using rsync
-                $cmd = "rsync -a --remove-source-files " . escapeshellarg($src) . " " . escapeshellarg($dst) . " 2>&1";
+                $cmd = "rsync -a --inplace --remove-source-files --chown=nobody:users --chmod=Du=rwx,Dgo=rx,Fu=rw,Fog=rw " . escapeshellarg($src) . " " . escapeshellarg($dst) . " 2>&1";
                 exec($cmd, $output, $ret);
                 if ($ret === 0) {
                     $size += $file_size;
@@ -402,7 +407,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'moveother') {
                 }
 
                 // Move file using rsync
-                $cmd = "rsync -a --remove-source-files " . escapeshellarg($src) . " " . escapeshellarg($dst) . " 2>&1";
+                $cmd = "rsync -a --inplace --remove-source-files --chown=nobody:users --chmod=Du=rwx,Dgo=rx,Fu=rw,Fog=rw " . escapeshellarg($src) . " " . escapeshellarg($dst) . " 2>&1";
                 exec($cmd, $output, $ret);
                 if ($ret === 0) {
                     $size += $file_size;
@@ -1265,7 +1270,7 @@ def move_to_array(cache_path):
     log_info(f"[Mover] -> Array: {os.path.basename(cache_path)}")
     try:
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        subprocess.run(["rsync", "-a", "--remove-source-files", cache_path, dest_path], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["rsync", "-a", "--inplace", "--remove-source-files", "--chown=nobody:users", "--chmod=Du=rwx,Dgo=rx,Fu=rw,Fog=rw", cache_path, dest_path], check=True, stdout=subprocess.DEVNULL)
         clone_rights_from_disk(dest_path)
         cleanup_empty_parent_dirs(cache_path)
         untrack_cached_file(cache_path)
@@ -1324,7 +1329,7 @@ def cache_file_if_needed(source_path):
     log_info(f"[Copy] -> {os.path.basename(source_path)}")
     try:
         ensure_structure(dest_path)
-        subprocess.run(["rsync", "-a", source_path, dest_path], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["rsync", "-a", "--inplace", source_path, dest_path], check=True, stdout=subprocess.DEVNULL)
         clone_rights_from_disk(dest_path)
         track_cached_file(dest_path)
     except Exception as e:

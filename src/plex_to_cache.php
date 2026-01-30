@@ -147,7 +147,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'clearcache') {
                     if (!is_dir($dst_dir)) {
                         @mkdir($dst_dir, 0777, true);
                     }
-                    $cmd = "rsync -a --remove-source-files " . escapeshellarg($file) . " " . escapeshellarg($dst) . " 2>&1";
+                    $cmd = "rsync -a --inplace --remove-source-files --chown=nobody:users --chmod=Du=rwx,Dgo=rx,Fu=rw,Fog=rw " . escapeshellarg($file) . " " . escapeshellarg($dst) . " 2>&1";
                     exec($cmd, $output, $ret);
                     if ($ret === 0) {
                         $size += $file_size;
@@ -205,7 +205,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'moveall') {
                 }
 
                 // Move file using rsync
-                $cmd = "rsync -a --remove-source-files " . escapeshellarg($src) . " " . escapeshellarg($dst) . " 2>&1";
+                $cmd = "rsync -a --inplace --remove-source-files --chown=nobody:users --chmod=Du=rwx,Dgo=rx,Fu=rw,Fog=rw " . escapeshellarg($src) . " " . escapeshellarg($dst) . " 2>&1";
                 exec($cmd, $output, $ret);
                 if ($ret === 0) {
                     $size += $file_size;
@@ -288,7 +288,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'moveother') {
                 }
 
                 // Move file using rsync
-                $cmd = "rsync -a --remove-source-files " . escapeshellarg($src) . " " . escapeshellarg($dst) . " 2>&1";
+                $cmd = "rsync -a --inplace --remove-source-files --chown=nobody:users --chmod=Du=rwx,Dgo=rx,Fu=rw,Fog=rw " . escapeshellarg($src) . " " . escapeshellarg($dst) . " 2>&1";
                 exec($cmd, $output, $ret);
                 if ($ret === 0) {
                     $size += $file_size;
