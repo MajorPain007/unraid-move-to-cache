@@ -326,7 +326,7 @@ def move_to_array(cache_path):
     log_info(f"[Mover] -> Array: {os.path.basename(cache_path)}")
     try:
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        subprocess.run(["rsync", "-a", "--inplace", "--remove-source-files", "--chown=nobody:users", "--chmod=Du=rwx,Dgo=rx,Fu=rw,Fog=rw", cache_path, dest_path], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["rsync", "-a", "--inplace", "--remove-source-files", cache_path, dest_path], check=True, stdout=subprocess.DEVNULL)
         clone_rights_from_disk(dest_path)
         cleanup_empty_parent_dirs(cache_path)
         untrack_cached_file(cache_path)

@@ -147,7 +147,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'clearcache') {
                     if (!is_dir($dst_dir)) {
                         @mkdir($dst_dir, 0777, true);
                     }
-                    $cmd = "rsync -a --inplace --remove-source-files --chown=nobody:users --chmod=Du=rwx,Dgo=rx,Fu=rw,Fog=rw " . escapeshellarg($file) . " " . escapeshellarg($dst) . " 2>&1";
+                    $cmd = "rsync -a --inplace --remove-source-files " . escapeshellarg($file) . " " . escapeshellarg($dst) . " 2>&1";
                     exec($cmd, $output, $ret);
                     if ($ret === 0) {
                         $size += $file_size;
@@ -205,7 +205,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'moveall') {
                 }
 
                 // Move file using rsync
-                $cmd = "rsync -a --inplace --remove-source-files --chown=nobody:users --chmod=Du=rwx,Dgo=rx,Fu=rw,Fog=rw " . escapeshellarg($src) . " " . escapeshellarg($dst) . " 2>&1";
+                $cmd = "rsync -a --inplace --remove-source-files " . escapeshellarg($src) . " " . escapeshellarg($dst) . " 2>&1";
                 exec($cmd, $output, $ret);
                 if ($ret === 0) {
                     $size += $file_size;
@@ -245,11 +245,15 @@ if (isset($_GET['action']) && $_GET['action'] === 'moveother') {
     $size = 0;
 
     // Load tracked files (files we want to KEEP on cache)
-    $tracked = [];
+    // Format is: path|timestamp - we only need the path
+    $tracked_paths = [];
     if (file_exists($ptc_tracked_file)) {
-        $tracked = array_filter(array_map('trim', file($ptc_tracked_file)));
+        $lines = array_filter(array_map('trim', file($ptc_tracked_file)));
+        foreach ($lines as $line) {
+            $parts = explode('|', $line);
+            $tracked_paths[$parts[0]] = true;
+        }
     }
-    $tracked_set = array_flip($tracked);
 
     if (is_dir($cache_root)) {
         $iterator = new RecursiveIteratorIterator(
@@ -262,7 +266,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'moveother') {
             if ($file->isFile()) {
                 $path = $file->getPathname();
                 // Skip if this file is tracked (plugin-cached)
-                if (isset($tracked_set[$path])) {
+                if (isset($tracked_paths[$path])) {
                     continue;
                 }
                 $files_to_move[] = $path;
@@ -288,7 +292,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'moveother') {
                 }
 
                 // Move file using rsync
-                $cmd = "rsync -a --inplace --remove-source-files --chown=nobody:users --chmod=Du=rwx,Dgo=rx,Fu=rw,Fog=rw " . escapeshellarg($src) . " " . escapeshellarg($dst) . " 2>&1";
+                $cmd = "rsync -a --inplace --remove-source-files " . escapeshellarg($src) . " " . escapeshellarg($dst) . " 2>&1";
                 exec($cmd, $output, $ret);
                 if ($ret === 0) {
                     $size += $file_size;
