@@ -28,17 +28,22 @@ if (isset($_GET['action']) && $_GET['action'] === 'log') {
     exit;
 }
 
-// AJAX: Test connection
+// AJAX: Test connection (uses form values sent via POST, not saved config)
 if (isset($_GET['action']) && $_GET['action'] === 'test') {
     header('Content-Type: application/json');
     $service = $_GET['service'] ?? '';
     $result = ['success' => false, 'message' => 'Unknown service'];
 
+    // Get values from POST (current form input) instead of saved config
+    $test_url = $_POST['url'] ?? '';
+    $test_key = $_POST['key'] ?? '';
+
     if ($service === 'plex') {
-        $url = rtrim($ptc_cfg['PLEX_URL'], '/') . '/';
-        $token = $ptc_cfg['PLEX_TOKEN'];
-        if (empty($token)) {
-            $result = ['success' => false, 'message' => 'No Plex Token configured'];
+        $url = rtrim($test_url, '/') . '/';
+        if (empty($test_key)) {
+            $result = ['success' => false, 'message' => 'No Token entered'];
+        } elseif (empty($test_url)) {
+            $result = ['success' => false, 'message' => 'No URL entered'];
         } else {
             $ch = curl_init($url);
             curl_setopt_array($ch, [
@@ -46,7 +51,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'test') {
                 CURLOPT_TIMEOUT => 5,
                 CURLOPT_SSL_VERIFYPEER => false,
                 CURLOPT_SSL_VERIFYHOST => false,
-                CURLOPT_HTTPHEADER => ['X-Plex-Token: ' . $token, 'Accept: application/json']
+                CURLOPT_HTTPHEADER => ['X-Plex-Token: ' . $test_key, 'Accept: application/json']
             ]);
             $response = curl_exec($ch);
             $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -62,21 +67,20 @@ if (isset($_GET['action']) && $_GET['action'] === 'test') {
                     $result = ['success' => false, 'message' => 'Invalid response from Plex'];
                 }
             } elseif ($httpCode === 401) {
-                $result = ['success' => false, 'message' => 'Invalid Token (401 Unauthorized)'];
+                $result = ['success' => false, 'message' => 'Invalid Token (401)'];
             } elseif ($error) {
-                $result = ['success' => false, 'message' => "Connection error: $error"];
+                $result = ['success' => false, 'message' => "Error: $error"];
             } else {
-                $result = ['success' => false, 'message' => "Connection failed (HTTP $httpCode)"];
+                $result = ['success' => false, 'message' => "Failed (HTTP $httpCode)"];
             }
         }
     } elseif ($service === 'emby' || $service === 'jellyfin') {
-        $url_key = $service === 'emby' ? 'EMBY_URL' : 'JELLYFIN_URL';
-        $api_key_name = $service === 'emby' ? 'EMBY_API_KEY' : 'JELLYFIN_API_KEY';
-        $api_key = $ptc_cfg[$api_key_name];
-        $url = rtrim($ptc_cfg[$url_key], '/') . '/System/Info';
+        $url = rtrim($test_url, '/') . '/System/Info';
 
-        if (empty($api_key)) {
-            $result = ['success' => false, 'message' => 'No API Key configured'];
+        if (empty($test_key)) {
+            $result = ['success' => false, 'message' => 'No API Key entered'];
+        } elseif (empty($test_url)) {
+            $result = ['success' => false, 'message' => 'No URL entered'];
         } else {
             $ch = curl_init($url);
             curl_setopt_array($ch, [
@@ -84,7 +88,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'test') {
                 CURLOPT_TIMEOUT => 5,
                 CURLOPT_SSL_VERIFYPEER => false,
                 CURLOPT_SSL_VERIFYHOST => false,
-                CURLOPT_HTTPHEADER => ['X-Emby-Token: ' . $api_key, 'Accept: application/json']
+                CURLOPT_HTTPHEADER => ['X-Emby-Token: ' . $test_key, 'Accept: application/json']
             ]);
             $response = curl_exec($ch);
             $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -94,16 +98,16 @@ if (isset($_GET['action']) && $_GET['action'] === 'test') {
             if ($httpCode === 200 && $response) {
                 $data = json_decode($response, true);
                 if (isset($data['ServerName'])) {
-                    $result = ['success' => true, 'message' => "Connected! Server: " . $data['ServerName']];
+                    $result = ['success' => true, 'message' => "Connected! " . $data['ServerName']];
                 } else {
-                    $result = ['success' => false, 'message' => 'Invalid response from server'];
+                    $result = ['success' => false, 'message' => 'Invalid response'];
                 }
             } elseif ($httpCode === 401) {
-                $result = ['success' => false, 'message' => 'Invalid API Key (401 Unauthorized)'];
+                $result = ['success' => false, 'message' => 'Invalid API Key (401)'];
             } elseif ($error) {
-                $result = ['success' => false, 'message' => "Connection error: $error"];
+                $result = ['success' => false, 'message' => "Error: $error"];
             } else {
-                $result = ['success' => false, 'message' => "Connection failed (HTTP $httpCode)"];
+                $result = ['success' => false, 'message' => "Failed (HTTP $httpCode)"];
             }
         }
     }
@@ -420,22 +424,14 @@ if (file_exists($ptc_tracked_file)) {
     overflow-y: auto;
 }
 
-/* Status indicator */
-.status-indicator {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-weight: bold;
-    padding: 8px 12px;
-    background: #1a1a1a;
-    border-radius: 4px;
-}
-
+/* Status dot */
 .status-dot {
-    width: 12px;
-    height: 12px;
+    width: 14px;
+    height: 14px;
     border-radius: 50%;
     animation: pulse 2s infinite;
+    cursor: help;
+    flex-shrink: 0;
 }
 
 .status-dot.running { background: var(--success-green); }
@@ -607,10 +603,7 @@ if (file_exists($ptc_tracked_file)) {
                 <input type="submit" value="Save & Apply">
                 <button type="button" class="service-btn" onclick="serviceControl('start')">Start</button>
                 <button type="button" class="service-btn" onclick="serviceControl('stop')">Stop</button>
-                <div class="status-indicator">
-                    <span class="status-dot <?= $is_running ? 'running' : 'stopped' ?>" id="status-dot"></span>
-                    <span id="status-text"><?= $is_running ? 'Running' : 'Stopped' ?></span>
-                </div>
+                <span class="status-dot <?= $is_running ? 'running' : 'stopped' ?>" id="status-dot" title="<?= $is_running ? 'Running' : 'Stopped' ?>"></span>
             </div>
 
             <div class="section-header"><i class="fa fa-play-circle"></i> Plex Server</div>
@@ -722,7 +715,21 @@ function deleteRow(btn) {
 function testConnection(service, btn) {
     btn.textContent = '...';
     btn.className = 'btn-test';
-    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=test&service=' + service, function(data) {
+
+    // Get current form values (not saved config)
+    var url, key;
+    if (service === 'plex') {
+        url = $('input[name="PLEX_URL"]').val();
+        key = $('input[name="PLEX_TOKEN"]').val();
+    } else if (service === 'emby') {
+        url = $('input[name="EMBY_URL"]').val();
+        key = $('input[name="EMBY_API_KEY"]').val();
+    } else if (service === 'jellyfin') {
+        url = $('input[name="JELLYFIN_URL"]').val();
+        key = $('input[name="JELLYFIN_API_KEY"]').val();
+    }
+
+    $.post('/plugins/plex_to_cache/plex_to_cache.php?action=test&service=' + service, {url: url, key: key}, function(data) {
         if (data.success) {
             btn.textContent = 'OK';
             btn.className = 'btn-test success';
@@ -735,7 +742,7 @@ function testConnection(service, btn) {
             btn.textContent = 'Test';
             btn.className = 'btn-test';
         }, 3000);
-    }).fail(function() {
+    }, 'json').fail(function() {
         btn.textContent = 'Fail';
         btn.className = 'btn-test error';
         setTimeout(function() {
@@ -781,13 +788,12 @@ function moveAll() {
 function serviceControl(cmd) {
     $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=service&cmd=' + cmd, function(data) {
         var dot = document.getElementById('status-dot');
-        var text = document.getElementById('status-text');
         if (data.running) {
             dot.className = 'status-dot running';
-            text.textContent = 'Running';
+            dot.title = 'Running';
         } else {
             dot.className = 'status-dot stopped';
-            text.textContent = 'Stopped';
+            dot.title = 'Stopped';
         }
     });
 }
