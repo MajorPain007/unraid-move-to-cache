@@ -3,6 +3,7 @@ $ptc_plugin = "plex_to_cache";
 $ptc_cfg_file = "/boot/config/plugins/$ptc_plugin/settings.cfg";
 $ptc_log_file = "/var/log/plex_to_cache.log";
 $ptc_pid_file = "/var/run/plex_to_cache.pid";
+$ptc_tracked_file = "/boot/config/plugins/$ptc_plugin/cached_files.list";
 
 // Defaults
 $ptc_cfg = [
@@ -10,9 +11,9 @@ $ptc_cfg = [
     "ENABLE_EMBY" => "False", "EMBY_URL" => "http://localhost:8096", "EMBY_API_KEY" => "",
     "ENABLE_JELLYFIN" => "False", "JELLYFIN_URL" => "http://localhost:8096", "JELLYFIN_API_KEY" => "",
     "CHECK_INTERVAL" => "10", "CACHE_MAX_USAGE" => "80", "COPY_DELAY" => "30",
-    "ENABLE_SMART_CLEANUP" => "False", "MOVIE_DELETE_DELAY" => "1800", "EPISODE_KEEP_PREVIOUS" => "2",
-    "EXCLUDE_DIRS" => "", "MEDIA_FILETYPES" => ".mkv .mp4 .avi", "ARRAY_ROOT" => "/mnt/user",
-    "CACHE_ROOT" => "/mnt/cache", "DOCKER_MAPPINGS" => ""
+    "CLEANUP_MODE" => "none", "MOVIE_DELETE_DELAY" => "1800", "EPISODE_KEEP_PREVIOUS" => "2",
+    "CACHE_MAX_DAYS" => "7", "EXCLUDE_DIRS" => "", "MEDIA_FILETYPES" => ".mkv .mp4 .avi",
+    "ARRAY_ROOT" => "/mnt/user", "CACHE_ROOT" => "/mnt/cache", "DOCKER_MAPPINGS" => ""
 ];
 
 if (file_exists($ptc_cfg_file)) {
@@ -32,8 +33,6 @@ if (isset($_GET['action']) && $_GET['action'] === 'test') {
     header('Content-Type: application/json');
     $service = $_GET['service'] ?? '';
     $result = ['success' => false, 'message' => 'Unknown service'];
-
-    $ctx = stream_context_create(['ssl' => ['verify_peer' => false, 'verify_peer_name' => false], 'http' => ['timeout' => 5]]);
 
     if ($service === 'plex') {
         $url = rtrim($ptc_cfg['PLEX_URL'], '/') . '/identity';
@@ -64,27 +63,100 @@ if (isset($_GET['action']) && $_GET['action'] === 'test') {
     exit;
 }
 
-// AJAX: Clear cache
+// AJAX: Clear all cached media (moves plugin-cached files back to array)
 if (isset($_GET['action']) && $_GET['action'] === 'clearcache') {
     header('Content-Type: application/json');
+    $count = 0;
+    $size = 0;
     $cache_root = $ptc_cfg['CACHE_ROOT'];
+    $array_root = '/mnt/user0'; // Physical disks
+
+    // Load tracked files and move them to array
+    if (file_exists($ptc_tracked_file)) {
+        $lines = array_filter(array_map('trim', file($ptc_tracked_file)));
+        foreach ($lines as $line) {
+            // Format: path|timestamp - extract just the path
+            $parts = explode('|', $line);
+            $file = $parts[0];
+
+            if (file_exists($file)) {
+                $file_size = filesize($file);
+                $rel = str_replace($cache_root, '', $file);
+                $dst = $array_root . $rel;
+
+                // Check if file already exists on array - then we can delete the cache copy
+                if (file_exists($dst)) {
+                    @unlink($file);
+                    $size += $file_size;
+                    $count++;
+                } else {
+                    // Move file to array using rsync
+                    $dst_dir = dirname($dst);
+                    if (!is_dir($dst_dir)) {
+                        @mkdir($dst_dir, 0777, true);
+                    }
+                    $cmd = "rsync -a --remove-source-files " . escapeshellarg($file) . " " . escapeshellarg($dst) . " 2>&1";
+                    exec($cmd, $output, $ret);
+                    if ($ret === 0) {
+                        $size += $file_size;
+                        $count++;
+                    }
+                }
+            }
+        }
+        // Clear the tracking file
+        file_put_contents($ptc_tracked_file, '');
+    }
+
+    $size_mb = round($size / 1024 / 1024, 2);
+    echo json_encode(['success' => true, 'message' => "Moved $count cached media files ({$size_mb} MB) to array"]);
+    exit;
+}
+
+// AJAX: Move ALL files to array (including plugin-cached media)
+if (isset($_GET['action']) && $_GET['action'] === 'moveall') {
+    header('Content-Type: application/json');
+    $cache_root = $ptc_cfg['CACHE_ROOT'];
+    $array_root = '/mnt/user0'; // Physical disks
     $count = 0;
     $size = 0;
 
     if (is_dir($cache_root)) {
         $iterator = new RecursiveIteratorIterator(
             new RecursiveDirectoryIterator($cache_root, RecursiveDirectoryIterator::SKIP_DOTS),
-            RecursiveIteratorIterator::CHILD_FIRST
+            RecursiveIteratorIterator::SELF_FIRST
         );
 
-        $media_exts = array_map('trim', explode(' ', strtolower($ptc_cfg['MEDIA_FILETYPES'])));
-
+        $files_to_move = [];
         foreach ($iterator as $file) {
             if ($file->isFile()) {
-                $ext = '.' . strtolower($file->getExtension());
-                if (in_array($ext, $media_exts)) {
-                    $size += $file->getSize();
-                    @unlink($file->getPathname());
+                $files_to_move[] = $file->getPathname();
+            }
+        }
+
+        foreach ($files_to_move as $src) {
+            $rel = str_replace($cache_root, '', $src);
+            $dst = $array_root . $rel;
+            $dst_dir = dirname($dst);
+
+            $file_size = filesize($src);
+
+            // Check if file already exists on array - then we can delete the cache copy
+            if (file_exists($dst)) {
+                @unlink($src);
+                $size += $file_size;
+                $count++;
+            } else {
+                // Create destination directory if needed
+                if (!is_dir($dst_dir)) {
+                    @mkdir($dst_dir, 0777, true);
+                }
+
+                // Move file using rsync
+                $cmd = "rsync -a --remove-source-files " . escapeshellarg($src) . " " . escapeshellarg($dst) . " 2>&1";
+                exec($cmd, $output, $ret);
+                if ($ret === 0) {
+                    $size += $file_size;
                     $count++;
                 }
             }
@@ -102,8 +174,91 @@ if (isset($_GET['action']) && $_GET['action'] === 'clearcache') {
         }
     }
 
-    $size_mb = round($size / 1024 / 1024, 2);
-    echo json_encode(['success' => true, 'message' => "Cleared $count files ({$size_mb} MB)"]);
+    // Clear the tracking file since all files moved
+    if (file_exists($ptc_tracked_file)) {
+        file_put_contents($ptc_tracked_file, '');
+    }
+
+    $size_gb = round($size / 1024 / 1024 / 1024, 2);
+    echo json_encode(['success' => true, 'message' => "Moved $count files ({$size_gb} GB) to array"]);
+    exit;
+}
+
+// AJAX: Move other files to array (everything EXCEPT plugin-cached media)
+if (isset($_GET['action']) && $_GET['action'] === 'moveother') {
+    header('Content-Type: application/json');
+    $cache_root = $ptc_cfg['CACHE_ROOT'];
+    $array_root = '/mnt/user0'; // Physical disks
+    $count = 0;
+    $size = 0;
+
+    // Load tracked files (files we want to KEEP on cache)
+    $tracked = [];
+    if (file_exists($ptc_tracked_file)) {
+        $tracked = array_filter(array_map('trim', file($ptc_tracked_file)));
+    }
+    $tracked_set = array_flip($tracked);
+
+    if (is_dir($cache_root)) {
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($cache_root, RecursiveDirectoryIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::SELF_FIRST
+        );
+
+        $files_to_move = [];
+        foreach ($iterator as $file) {
+            if ($file->isFile()) {
+                $path = $file->getPathname();
+                // Skip if this file is tracked (plugin-cached)
+                if (isset($tracked_set[$path])) {
+                    continue;
+                }
+                $files_to_move[] = $path;
+            }
+        }
+
+        foreach ($files_to_move as $src) {
+            $rel = str_replace($cache_root, '', $src);
+            $dst = $array_root . $rel;
+            $dst_dir = dirname($dst);
+
+            $file_size = filesize($src);
+
+            // Check if file already exists on array - then we can delete the cache copy
+            if (file_exists($dst)) {
+                @unlink($src);
+                $size += $file_size;
+                $count++;
+            } else {
+                // Create destination directory if needed
+                if (!is_dir($dst_dir)) {
+                    @mkdir($dst_dir, 0777, true);
+                }
+
+                // Move file using rsync
+                $cmd = "rsync -a --remove-source-files " . escapeshellarg($src) . " " . escapeshellarg($dst) . " 2>&1";
+                exec($cmd, $output, $ret);
+                if ($ret === 0) {
+                    $size += $file_size;
+                    $count++;
+                }
+            }
+        }
+
+        // Clean empty directories
+        $dirs = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($cache_root, RecursiveDirectoryIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($dirs as $dir) {
+            if ($dir->isDir()) {
+                @rmdir($dir->getPathname());
+            }
+        }
+    }
+
+    $size_gb = round($size / 1024 / 1024 / 1024, 2);
+    echo json_encode(['success' => true, 'message' => "Moved $count files ({$size_gb} GB) to array"]);
     exit;
 }
 
@@ -157,18 +312,30 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 
 // Check service status
 $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($ptc_pid_file), 0);
+
+// Count tracked files
+$tracked_count = 0;
+if (file_exists($ptc_tracked_file)) {
+    $tracked_count = count(array_filter(array_map('trim', file($ptc_tracked_file))));
+}
 ?>
 <style>
-:root { --primary-blue: #00aaff; --bg-dark: #111; --success-green: #00cc66; --error-red: #ff4444; }
+:root { --primary-blue: #00aaff; --bg-dark: #111; --success-green: #00cc66; --error-red: #ff4444; --warning-orange: #ff9900; }
 
 #ptc-wrapper {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+    grid-template-columns: 1fr 1fr 1.5fr;
     gap: 20px;
     align-items: stretch;
     width: 100%;
     box-sizing: border-box;
     padding: 10px 0;
+}
+
+@media (max-width: 1400px) {
+    #ptc-wrapper {
+        grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+    }
 }
 
 .ptc-col {
@@ -206,21 +373,14 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
 }
 
 /* Status indicator */
-.status-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    background: #1a1a1a;
-    border-radius: 6px;
-    padding: 10px 15px;
-    margin-bottom: 15px;
-}
-
 .status-indicator {
     display: flex;
     align-items: center;
     gap: 8px;
     font-weight: bold;
+    padding: 8px 12px;
+    background: #1a1a1a;
+    border-radius: 4px;
 }
 
 .status-dot {
@@ -238,17 +398,38 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
     50% { opacity: 0.5; }
 }
 
-.status-buttons { display: flex; gap: 8px; }
-.status-buttons button {
-    padding: 5px 12px;
-    font-size: 12px;
+/* Top control bar with Save and Service buttons */
+.top-control-bar {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 15px;
+    align-items: stretch;
+}
+
+.top-control-bar input[type="submit"],
+.top-control-bar button {
+    padding: 10px 16px;
+    font-weight: bold;
+    text-transform: uppercase;
     cursor: pointer;
-    border: 1px solid #444;
+    font-size: 13px;
     border-radius: 4px;
+}
+
+.top-control-bar input[type="submit"] {
+    flex: 1;
+}
+
+.top-control-bar .service-btn {
     background: #222;
+    border: 1px solid #444;
     color: #fff;
 }
-.status-buttons button:hover { background: #333; border-color: var(--primary-blue); }
+
+.top-control-bar .service-btn:hover {
+    background: #333;
+    border-color: var(--primary-blue);
+}
 
 /* Form elements */
 .section-header { color: var(--primary-blue); font-size: 18px; font-weight: bold; margin-bottom: 15px; margin-top: 20px; border-bottom: 1px solid #333; padding-bottom: 5px; display: flex; align-items: center; gap: 8px; }
@@ -296,8 +477,6 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
 #mapping_table th { text-align: left; color: var(--primary-blue); padding: 8px; border-bottom: 1px solid #333; font-size: 13px; }
 #mapping_table td { padding: 5px 0; }
 
-.btn-save-container { margin-bottom: 20px; }
-.btn-save-container input[type="submit"] { width: 100%; padding: 12px; font-weight: bold; text-transform: uppercase; cursor: pointer; }
 
 /* Test button */
 .btn-test {
@@ -314,36 +493,78 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
 .btn-test.success { border-color: var(--success-green); color: var(--success-green); }
 .btn-test.error { border-color: var(--error-red); color: var(--error-red); }
 
-/* Clear cache button */
-.btn-clear {
+/* Action buttons */
+.btn-action {
     padding: 8px 16px;
     font-size: 12px;
     cursor: pointer;
-    border: 1px solid var(--error-red);
     border-radius: 4px;
     background: transparent;
-    color: var(--error-red);
-    margin-top: 15px;
+    margin-top: 10px;
+    display: block;
+    width: 100%;
+    text-align: center;
 }
-.btn-clear:hover { background: var(--error-red); color: #fff; }
+.btn-action.danger {
+    border: 1px solid var(--error-red);
+    color: var(--error-red);
+}
+.btn-action.danger:hover { background: var(--error-red); color: #fff; }
+.btn-action.warning {
+    border: 1px solid var(--warning-orange);
+    color: var(--warning-orange);
+}
+.btn-action.warning:hover { background: var(--warning-orange); color: #fff; }
+
+.cache-info {
+    font-size: 12px;
+    color: #888;
+    margin-top: 15px;
+    padding: 10px;
+    background: #1a1a1a;
+    border-radius: 4px;
+}
+.cache-info strong { color: var(--primary-blue); }
+
+/* Cleanup mode selector */
+.cleanup-mode-selector {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 15px;
+}
+.radio-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.radio-option:hover { border-color: #555; }
+.radio-option.selected { border-color: var(--primary-blue); background: #1a2a3a; }
+.radio-option input[type="radio"] { accent-color: var(--primary-blue); width: 16px; height: 16px; margin: 0; }
+.radio-label { color: #fff; font-weight: bold; font-size: 13px; min-width: 110px; }
+.radio-desc { color: #888; font-size: 12px; }
+.cleanup-options { margin-top: 10px; padding: 10px; background: #0a0a0a; border-radius: 6px; border: 1px solid #222; }
 </style>
 
 <form method="post" autocomplete="off">
     <div id="ptc-wrapper">
         <div class="ptc-col" id="ptc-col-servers">
-            <div class="status-bar">
+            <div class="top-control-bar">
+                <input type="submit" value="Save & Apply">
+                <button type="button" class="service-btn" onclick="serviceControl('start')">Start</button>
+                <button type="button" class="service-btn" onclick="serviceControl('stop')">Stop</button>
+                <button type="button" class="service-btn" onclick="serviceControl('restart')">Restart</button>
                 <div class="status-indicator">
                     <span class="status-dot <?= $is_running ? 'running' : 'stopped' ?>" id="status-dot"></span>
                     <span id="status-text"><?= $is_running ? 'Running' : 'Stopped' ?></span>
                 </div>
-                <div class="status-buttons">
-                    <button type="button" onclick="serviceControl('start')">Start</button>
-                    <button type="button" onclick="serviceControl('stop')">Stop</button>
-                    <button type="button" onclick="serviceControl('restart')">Restart</button>
-                </div>
             </div>
-
-            <div class="btn-save-container"><input type="submit" value="Save & Apply Settings"></div>
 
             <div class="section-header"><i class="fa fa-play-circle"></i> Plex Server</div>
             <div class="form-pair"><label data-tooltip="Enables monitoring for Plex streams.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_PLEX" value="True" <?= $ptc_cfg['ENABLE_PLEX'] == 'True' ? 'checked' : '' ?> ></div></div>
@@ -371,15 +592,46 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
             <table id="mapping_table"><thead><tr><th>Host Path</th><th>Docker Path</th><th></th></tr></thead><tbody></tbody></table>
             <button type="button" onclick="addMappingRow()" style="padding: 6px 12px; font-size: 12px; margin-top: 10px; cursor: pointer;">+ Add Mapping</button>
 
-            <div class="section-header"><i class="fa fa-cogs"></i> Tuning & Cleanup</div>
+            <div class="section-header"><i class="fa fa-cogs"></i> Tuning</div>
             <div class="form-pair"><label data-tooltip="Interval in seconds to check for active streams.">Interval:</label><div class="form-input-wrapper"><input type="number" name="CHECK_INTERVAL" value="<?= htmlspecialchars($ptc_cfg['CHECK_INTERVAL']) ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
             <div class="form-pair"><label data-tooltip="Delay before starting to copy files.">Copy Delay:</label><div class="form-input-wrapper"><input type="number" name="COPY_DELAY" value="<?= htmlspecialchars($ptc_cfg['COPY_DELAY']) ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
             <div class="form-pair"><label data-tooltip="Maximum cache usage percentage before stopping copies.">Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= htmlspecialchars($ptc_cfg['CACHE_MAX_USAGE']) ?>" class="ptc-input input-small"><span class="unit-label">%</span></div></div>
-            <div class="form-pair"><label data-tooltip="Automatically remove watched media from cache.">Smart Clean:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_SMART_CLEANUP" value="True" <?= $ptc_cfg['ENABLE_SMART_CLEANUP'] == 'True' ? 'checked' : '' ?> ></div></div>
-            <div class="form-pair"><label data-tooltip="Delay in seconds before deleting watched movies.">Delete Delay:</label><div class="form-input-wrapper"><input type="number" name="MOVIE_DELETE_DELAY" value="<?= htmlspecialchars($ptc_cfg['MOVIE_DELETE_DELAY']) ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
-            <div class="form-pair"><label data-tooltip="Number of previous episodes to keep in cache.">Keep Episodes:</label><div class="form-input-wrapper"><input type="number" name="EPISODE_KEEP_PREVIOUS" value="<?= htmlspecialchars($ptc_cfg['EPISODE_KEEP_PREVIOUS']) ?>" class="ptc-input input-small"><span class="unit-label">ep</span></div></div>
 
-            <button type="button" class="btn-clear" onclick="clearCache()"><i class="fa fa-trash"></i> Clear All Cached Media</button>
+            <div class="section-header"><i class="fa fa-clock-o"></i> Auto Cleanup</div>
+            <div class="cleanup-mode-selector">
+                <label class="radio-option <?= $ptc_cfg['CLEANUP_MODE'] == 'none' ? 'selected' : '' ?>">
+                    <input type="radio" name="CLEANUP_MODE" value="none" <?= $ptc_cfg['CLEANUP_MODE'] == 'none' ? 'checked' : '' ?> onchange="updateCleanupUI()">
+                    <span class="radio-label">Disabled</span>
+                    <span class="radio-desc">No automatic cleanup</span>
+                </label>
+                <label class="radio-option <?= $ptc_cfg['CLEANUP_MODE'] == 'smart' ? 'selected' : '' ?>">
+                    <input type="radio" name="CLEANUP_MODE" value="smart" <?= $ptc_cfg['CLEANUP_MODE'] == 'smart' ? 'checked' : '' ?> onchange="updateCleanupUI()">
+                    <span class="radio-label">Smart Cleanup</span>
+                    <span class="radio-desc">Remove watched media automatically</span>
+                </label>
+                <label class="radio-option <?= $ptc_cfg['CLEANUP_MODE'] == 'days' ? 'selected' : '' ?>">
+                    <input type="radio" name="CLEANUP_MODE" value="days" <?= $ptc_cfg['CLEANUP_MODE'] == 'days' ? 'checked' : '' ?> onchange="updateCleanupUI()">
+                    <span class="radio-label">Days-based</span>
+                    <span class="radio-desc">Move files after X days</span>
+                </label>
+            </div>
+
+            <div id="smart-cleanup-options" class="cleanup-options" style="display: <?= $ptc_cfg['CLEANUP_MODE'] == 'smart' ? 'block' : 'none' ?>;">
+                <div class="form-pair"><label data-tooltip="Delay in seconds before deleting watched movies.">Delete Delay:</label><div class="form-input-wrapper"><input type="number" name="MOVIE_DELETE_DELAY" value="<?= htmlspecialchars($ptc_cfg['MOVIE_DELETE_DELAY']) ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
+                <div class="form-pair"><label data-tooltip="Number of previous episodes to keep in cache.">Keep Episodes:</label><div class="form-input-wrapper"><input type="number" name="EPISODE_KEEP_PREVIOUS" value="<?= htmlspecialchars($ptc_cfg['EPISODE_KEEP_PREVIOUS']) ?>" class="ptc-input input-small"><span class="unit-label">ep</span></div></div>
+            </div>
+
+            <div id="days-cleanup-options" class="cleanup-options" style="display: <?= $ptc_cfg['CLEANUP_MODE'] == 'days' ? 'block' : 'none' ?>;">
+                <div class="form-pair"><label data-tooltip="Move cached files back to array after this many days.">Max Days:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_DAYS" value="<?= htmlspecialchars($ptc_cfg['CACHE_MAX_DAYS']) ?>" class="ptc-input input-small"><span class="unit-label">days</span></div></div>
+            </div>
+
+            <div class="cache-info">
+                <strong>Tracked Media Files:</strong> <?= $tracked_count ?> files cached by this plugin
+            </div>
+
+            <button type="button" class="btn-action warning" onclick="moveOther()"><i class="fa fa-arrow-right"></i> Move Other Files to Array</button>
+            <button type="button" class="btn-action warning" onclick="clearCache()"><i class="fa fa-arrow-right"></i> Move Cached Media to Array</button>
+            <button type="button" class="btn-action danger" onclick="moveAll()"><i class="fa fa-arrow-right"></i> Move ALL to Array</button>
         </div>
 
         <div class="ptc-col" id="ptc-col-log">
@@ -447,12 +699,35 @@ function testConnection(service, btn) {
 }
 
 function clearCache() {
-    if (!confirm('Are you sure you want to delete all cached media files? This cannot be undone.')) return;
+    if (!confirm('This will move all media files cached by this plugin back to the array. Continue?')) return;
+    alert('Moving cached media files... This may take a while.');
     $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=clearcache', function(data) {
+        alert(data.message);
+        location.reload();
+    }).fail(function() {
+        alert('Failed to move cached media');
+    });
+}
+
+function moveOther() {
+    if (!confirm('This will move ALL files from cache to array EXCEPT the media files cached by this plugin. Continue?')) return;
+    alert('Moving files... This may take a while. Check the log for progress.');
+    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=moveother', function(data) {
         alert(data.message);
         refreshLog();
     }).fail(function() {
-        alert('Failed to clear cache');
+        alert('Failed to move files');
+    });
+}
+
+function moveAll() {
+    if (!confirm('This will move ALL files from cache to array, including media files cached by this plugin. Continue?')) return;
+    alert('Moving all files... This may take a while. Check the log for progress.');
+    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=moveall', function(data) {
+        alert(data.message);
+        location.reload();
+    }).fail(function() {
+        alert('Failed to move files');
     });
 }
 
@@ -468,6 +743,16 @@ function serviceControl(cmd) {
             text.textContent = 'Stopped';
         }
     });
+}
+
+function updateCleanupUI() {
+    var mode = document.querySelector('input[name="CLEANUP_MODE"]:checked').value;
+    document.getElementById('smart-cleanup-options').style.display = mode === 'smart' ? 'block' : 'none';
+    document.getElementById('days-cleanup-options').style.display = mode === 'days' ? 'block' : 'none';
+    document.querySelectorAll('.radio-option').forEach(function(el) {
+        el.classList.remove('selected');
+    });
+    document.querySelector('input[name="CLEANUP_MODE"]:checked').closest('.radio-option').classList.add('selected');
 }
 
 $(function() {

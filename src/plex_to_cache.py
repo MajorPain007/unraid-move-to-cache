@@ -19,6 +19,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ==========================================
 
 CONFIG_FILE = "/boot/config/plugins/plex_to_cache/settings.cfg"
+TRACKED_FILES = "/boot/config/plugins/plex_to_cache/cached_files.list"
 LOCK_FILE_PATH = "/tmp/media_cache_cleaner.lock"
 
 # Hardcoded Perms Root (Physical Disks ONLY - No Cache)
@@ -41,9 +42,10 @@ CONFIG = {
     "CHECK_INTERVAL": "10",
     "CACHE_MAX_USAGE": "80",
     "COPY_DELAY": "30",
-    "ENABLE_SMART_CLEANUP": "False",
+    "CLEANUP_MODE": "none",  # "none", "smart", or "days"
     "MOVIE_DELETE_DELAY": "1800",
     "EPISODE_KEEP_PREVIOUS": "2",
+    "CACHE_MAX_DAYS": "7",  # Days before files are moved back to array
     "EXCLUDE_DIRS": "",
     "MEDIA_FILETYPES": ".mkv .mp4 .avi",
     "ARRAY_ROOT": "/mnt/user",
@@ -64,6 +66,55 @@ def log_info(msg):
 
 def log_error(msg):
     print(f"[Error] {msg}", flush=True)
+
+# --- TRACKING FUNCTIONS ---
+
+def load_tracked_files():
+    """Load tracked files with timestamps. Format: path|timestamp"""
+    tracked = {}
+    if os.path.exists(TRACKED_FILES):
+        try:
+            with open(TRACKED_FILES, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if '|' in line:
+                        path, ts = line.rsplit('|', 1)
+                        tracked[path] = float(ts)
+                    else:
+                        # Legacy format without timestamp
+                        tracked[line] = time.time()
+        except Exception as e:
+            log_error(f"Failed to load tracked files: {e}")
+    return tracked
+
+def save_tracked_files(tracked):
+    """Save tracked files with timestamps."""
+    try:
+        with open(TRACKED_FILES, 'w') as f:
+            for path, ts in sorted(tracked.items()):
+                f.write(f"{path}|{ts}\n")
+    except Exception as e:
+        log_error(f"Failed to save tracked files: {e}")
+
+def track_cached_file(cache_path):
+    """Add a file to the tracking list with current timestamp."""
+    tracked = load_tracked_files()
+    if cache_path not in tracked:
+        tracked[cache_path] = time.time()
+        save_tracked_files(tracked)
+
+def untrack_cached_file(cache_path):
+    """Remove a file from the tracking list."""
+    tracked = load_tracked_files()
+    if cache_path in tracked:
+        del tracked[cache_path]
+        save_tracked_files(tracked)
+
+def get_tracked_files_set():
+    """Get just the file paths as a set (for compatibility)."""
+    return set(load_tracked_files().keys())
 
 def parse_docker_mappings(mapping_str):
     mappings = {}
@@ -278,6 +329,7 @@ def move_to_array(cache_path):
         subprocess.run(["rsync", "-a", "--remove-source-files", cache_path, dest_path], check=True, stdout=subprocess.DEVNULL)
         clone_rights_from_disk(dest_path)
         cleanup_empty_parent_dirs(cache_path)
+        untrack_cached_file(cache_path)
     except Exception as e:
         log_error(f"Move to array failed: {e}")
 
@@ -292,6 +344,7 @@ def smart_manage_cache_file(cache_path, reason="Cleanup"):
             os.remove(cache_path)
             log_info(f"[{reason}] Deleted: {os.path.basename(cache_path)}")
             cleanup_empty_parent_dirs(cache_path)
+            untrack_cached_file(cache_path)
     else:
         # Not on array yet, so move it instead of just deleting
         move_to_array(cache_path)
@@ -318,6 +371,8 @@ def cache_file_if_needed(source_path):
 
     if os.path.exists(dest_path) and os.path.getsize(source_path) == os.path.getsize(dest_path):
         if dest_path in movie_deletion_queue: del movie_deletion_queue[dest_path]
+        # Make sure it's tracked even if already exists
+        track_cached_file(dest_path)
         return
 
     try:
@@ -332,6 +387,7 @@ def cache_file_if_needed(source_path):
         ensure_structure(dest_path)
         subprocess.run(["rsync", "-a", source_path, dest_path], check=True, stdout=subprocess.DEVNULL)
         clone_rights_from_disk(dest_path)
+        track_cached_file(dest_path)
     except Exception as e:
         log_error(f"Copy failed: {e}")
 
@@ -342,7 +398,8 @@ def handle_series_smart(rp):
     if curr_ep is None: return handle_movie_logic(rp)
     sd_array = os.path.dirname(rp)
     sd_cache = get_cache_path(sd_array)
-    if get_config_bool("ENABLE_SMART_CLEANUP") and sd_cache and os.path.exists(sd_cache):
+    cleanup_mode = CONFIG.get("CLEANUP_MODE", "none").lower()
+    if cleanup_mode == "smart" and sd_cache and os.path.exists(sd_cache):
         th = curr_ep - get_config_int("EPISODE_KEEP_PREVIOUS")
         for f in os.listdir(sd_cache):
             num = parse_episode_number(f)
@@ -366,11 +423,29 @@ def handle_movie_logic(rp):
     except Exception as e:
         log_error(f"Movie handling failed: {e}")
 
+def cleanup_by_days():
+    """Move files back to array if they've been cached longer than CACHE_MAX_DAYS."""
+    max_days = get_config_int("CACHE_MAX_DAYS")
+    if max_days <= 0:
+        return
+
+    max_age_seconds = max_days * 24 * 60 * 60
+    tracked = load_tracked_files()
+    now = time.time()
+
+    for cache_path, cached_time in list(tracked.items()):
+        age = now - cached_time
+        if age > max_age_seconds:
+            if os.path.exists(cache_path):
+                log_info(f"[Days Cleanup] {os.path.basename(cache_path)} cached for {int(age/86400)} days")
+                smart_manage_cache_file(cache_path, "Days Cleanup")
+
 if __name__ == "__main__":
     load_config(); acquire_lock()
     signal.signal(signal.SIGHUP, lambda s, f: load_config())
     log_info("Service started. Waiting for streams...")
     last_loop_sessions = {}
+    last_days_check = 0
     while True:
         try:
             curr_sessions = get_active_sessions()
@@ -387,7 +462,11 @@ if __name__ == "__main__":
                     else: handle_movie_logic(rp)
             for p in list(stream_start_times.keys()):
                 if p not in set(active_paths): del stream_start_times[p]
-            if get_config_bool("ENABLE_SMART_CLEANUP"):
+
+            cleanup_mode = CONFIG.get("CLEANUP_MODE", "none").lower()
+
+            # Smart cleanup: triggered by watching behavior
+            if cleanup_mode == "smart":
                 stopped = set(last_loop_sessions.keys()) - set(curr_sessions.keys())
                 for d_p in stopped:
                     s_d, r_p = last_loop_sessions[d_p], translate_path(d_p)
@@ -401,6 +480,13 @@ if __name__ == "__main__":
                 for cp, ts in list(movie_deletion_queue.items()):
                     if time.time() - ts > get_config_int("MOVIE_DELETE_DELAY"):
                         smart_manage_cache_file(cp, "Deletion Timer"); del movie_deletion_queue[cp]
+
+            # Days-based cleanup: check once per hour
+            elif cleanup_mode == "days":
+                if time.time() - last_days_check > 3600:
+                    cleanup_by_days()
+                    last_days_check = time.time()
+
             last_loop_sessions = curr_sessions
         except Exception as e:
             log_error(f"Main loop error: {e}")
