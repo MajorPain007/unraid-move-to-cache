@@ -118,10 +118,11 @@ if (isset($_GET['action']) && $_GET['action'] === 'test') {
 // AJAX: Clear all cached media (moves plugin-cached files back to array)
 if (isset($_GET['action']) && $_GET['action'] === 'clearcache') {
     header('Content-Type: application/json');
-    $count = 0;
+    $deleted = 0;  // Files that existed on array (deleted from cache)
+    $moved = 0;    // Files moved via rsync
     $size = 0;
-    $cache_root = $ptc_cfg['CACHE_ROOT'];
-    $array_root = '/mnt/user0'; // Physical disks
+    $cache_root = rtrim($ptc_cfg['CACHE_ROOT'], '/');
+    $array_root = '/mnt/user0';
 
     // Load tracked files and move them to array
     if (file_exists($ptc_tracked_file)) {
@@ -138,9 +139,10 @@ if (isset($_GET['action']) && $_GET['action'] === 'clearcache') {
 
                 // Check if file already exists on array - then we can delete the cache copy
                 if (file_exists($dst)) {
-                    @unlink($file);
-                    $size += $file_size;
-                    $count++;
+                    if (@unlink($file)) {
+                        $size += $file_size;
+                        $deleted++;
+                    }
                 } else {
                     // Move file to array using rsync
                     $dst_dir = dirname($dst);
@@ -151,7 +153,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'clearcache') {
                     exec($cmd, $output, $ret);
                     if ($ret === 0) {
                         $size += $file_size;
-                        $count++;
+                        $moved++;
                     }
                 }
             }
@@ -161,7 +163,8 @@ if (isset($_GET['action']) && $_GET['action'] === 'clearcache') {
     }
 
     $size_mb = round($size / 1024 / 1024, 2);
-    echo json_encode(['success' => true, 'message' => "Moved $count cached media files ({$size_mb} MB) to array"]);
+    $total = $deleted + $moved;
+    echo json_encode(['success' => true, 'message' => "Done: $total files ({$size_mb} MB). Moved: $moved, Deleted (existed on array): $deleted"]);
     exit;
 }
 
@@ -239,10 +242,18 @@ if (isset($_GET['action']) && $_GET['action'] === 'moveall') {
 // AJAX: Move other files to array (everything EXCEPT plugin-cached media)
 if (isset($_GET['action']) && $_GET['action'] === 'moveother') {
     header('Content-Type: application/json');
-    $cache_root = $ptc_cfg['CACHE_ROOT'];
-    $array_root = '/mnt/user0'; // Physical disks
+    $cache_root = rtrim($ptc_cfg['CACHE_ROOT'], '/');
+    $array_root = '/mnt/user0';
     $count = 0;
     $size = 0;
+    $skipped = 0;
+    $errors = [];
+
+    // Check if cache_root exists
+    if (!is_dir($cache_root)) {
+        echo json_encode(['success' => false, 'message' => "Cache root not found: $cache_root"]);
+        exit;
+    }
 
     // Load tracked files (files we want to KEEP on cache)
     // Format is: path|timestamp - we only need the path
@@ -255,66 +266,76 @@ if (isset($_GET['action']) && $_GET['action'] === 'moveother') {
         }
     }
 
-    if (is_dir($cache_root)) {
-        $iterator = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($cache_root, RecursiveDirectoryIterator::SKIP_DOTS),
-            RecursiveIteratorIterator::SELF_FIRST
-        );
+    $iterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($cache_root, RecursiveDirectoryIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::SELF_FIRST
+    );
 
-        $files_to_move = [];
-        foreach ($iterator as $file) {
-            if ($file->isFile()) {
-                $path = $file->getPathname();
-                // Skip if this file is tracked (plugin-cached)
-                if (isset($tracked_paths[$path])) {
-                    continue;
-                }
-                $files_to_move[] = $path;
+    $files_to_move = [];
+    $total_files = 0;
+    foreach ($iterator as $file) {
+        if ($file->isFile()) {
+            $total_files++;
+            $path = $file->getPathname();
+            // Skip if this file is tracked (plugin-cached)
+            if (isset($tracked_paths[$path])) {
+                $skipped++;
+                continue;
             }
+            $files_to_move[] = $path;
         }
+    }
 
-        foreach ($files_to_move as $src) {
-            $rel = str_replace($cache_root, '', $src);
-            $dst = $array_root . $rel;
-            $dst_dir = dirname($dst);
+    foreach ($files_to_move as $src) {
+        $rel = str_replace($cache_root, '', $src);
+        $dst = $array_root . $rel;
+        $dst_dir = dirname($dst);
 
-            $file_size = filesize($src);
+        $file_size = @filesize($src);
+        if ($file_size === false) continue;
 
-            // Check if file already exists on array - then we can delete the cache copy
-            if (file_exists($dst)) {
-                @unlink($src);
+        // Check if file already exists on array - then we can delete the cache copy
+        if (file_exists($dst)) {
+            if (@unlink($src)) {
+                $size += $file_size;
+                $count++;
+            }
+        } else {
+            // Create destination directory if needed
+            if (!is_dir($dst_dir)) {
+                @mkdir($dst_dir, 0777, true);
+            }
+
+            // Move file using rsync
+            $cmd = "rsync -a --inplace --remove-source-files " . escapeshellarg($src) . " " . escapeshellarg($dst) . " 2>&1";
+            $output = [];
+            exec($cmd, $output, $ret);
+            if ($ret === 0) {
                 $size += $file_size;
                 $count++;
             } else {
-                // Create destination directory if needed
-                if (!is_dir($dst_dir)) {
-                    @mkdir($dst_dir, 0777, true);
-                }
-
-                // Move file using rsync
-                $cmd = "rsync -a --inplace --remove-source-files " . escapeshellarg($src) . " " . escapeshellarg($dst) . " 2>&1";
-                exec($cmd, $output, $ret);
-                if ($ret === 0) {
-                    $size += $file_size;
-                    $count++;
-                }
-            }
-        }
-
-        // Clean empty directories
-        $dirs = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($cache_root, RecursiveDirectoryIterator::SKIP_DOTS),
-            RecursiveIteratorIterator::CHILD_FIRST
-        );
-        foreach ($dirs as $dir) {
-            if ($dir->isDir()) {
-                @rmdir($dir->getPathname());
+                $errors[] = basename($src) . ": " . implode(" ", $output);
             }
         }
     }
 
+    // Clean empty directories
+    $dirs = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($cache_root, RecursiveDirectoryIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::CHILD_FIRST
+    );
+    foreach ($dirs as $dir) {
+        if ($dir->isDir()) {
+            @rmdir($dir->getPathname());
+        }
+    }
+
     $size_gb = round($size / 1024 / 1024 / 1024, 2);
-    echo json_encode(['success' => true, 'message' => "Moved $count files ({$size_gb} GB) to array"]);
+    $msg = "Moved $count files ({$size_gb} GB). Total: $total_files, Skipped (tracked): $skipped";
+    if (count($errors) > 0) {
+        $msg .= ". Errors: " . count($errors);
+    }
+    echo json_encode(['success' => true, 'message' => $msg]);
     exit;
 }
 
