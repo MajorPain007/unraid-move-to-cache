@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2025.12.31.12">
+<!ENTITY version   "2026.01.30">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,6 +13,15 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
+### 2026.01.30
+- Added: Service status indicator with Start/Stop/Restart buttons
+- Added: Connection test buttons for all media servers
+- Added: Clear cache button to remove all cached media
+- Changed: All text now in English
+- Changed: Integrated log endpoint into main PHP file
+- Fixed: SSL warnings are now suppressed
+- Fixed: Errors are now logged instead of silently ignored
+
 ### 2025.12.31.12
 - Fix: Settings are no longer deleted during update/uninstall (Safe Update)
 - UI: Finalized CSS Grid Layout (25/25/50 split)
@@ -59,19 +68,6 @@ Description="Automatically moves viewed media from the array to the cache for fa
 </INLINE>
 </FILE>
 
-<FILE Name="/usr/local/emhttp/plugins/plex_to_cache/get_log.php">
-<INLINE>
-<![CDATA[
-<?php
-$log_file = "/var/log/plex_to_cache.log";
-if (file_exists($log_file)) {
-    echo shell_exec("tail -n 200 " . escapeshellarg($log_file));
-} else { echo "Log file not found. Service might be starting..."; }
-?>
-]]>
-</INLINE>
-</FILE>
-
 <FILE Name="/usr/local/emhttp/plugins/plex_to_cache/plex_to_cache.php">
 <INLINE>
 <![CDATA[
@@ -79,6 +75,7 @@ if (file_exists($log_file)) {
 $ptc_plugin = "plex_to_cache";
 $ptc_cfg_file = "/boot/config/plugins/$ptc_plugin/settings.cfg";
 $ptc_log_file = "/var/log/plex_to_cache.log";
+$ptc_pid_file = "/var/run/plex_to_cache.pid";
 
 // Defaults
 $ptc_cfg = [
@@ -96,6 +93,107 @@ if (file_exists($ptc_cfg_file)) {
     if ($ptc_loaded) { $ptc_cfg = array_merge($ptc_cfg, $ptc_loaded); }
 }
 
+// AJAX: Get log
+if (isset($_GET['action']) && $_GET['action'] === 'log') {
+    header('Content-Type: text/plain');
+    echo file_exists($ptc_log_file) ? shell_exec("tail -n 200 " . escapeshellarg($ptc_log_file)) : "Log file not found. Service might be starting...";
+    exit;
+}
+
+// AJAX: Test connection
+if (isset($_GET['action']) && $_GET['action'] === 'test') {
+    header('Content-Type: application/json');
+    $service = $_GET['service'] ?? '';
+    $result = ['success' => false, 'message' => 'Unknown service'];
+
+    if ($service === 'plex') {
+        $url = rtrim($ptc_cfg['PLEX_URL'], '/') . '/identity';
+        $opts = ['http' => ['header' => "X-Plex-Token: " . $ptc_cfg['PLEX_TOKEN'] . "\r\nAccept: application/json\r\n", 'timeout' => 5], 'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]];
+        $response = @file_get_contents($url, false, stream_context_create($opts));
+        if ($response) {
+            $data = json_decode($response, true);
+            $name = $data['MediaContainer']['machineIdentifier'] ?? 'Unknown';
+            $result = ['success' => true, 'message' => "Connected! Server ID: " . substr($name, 0, 8) . "..."];
+        } else {
+            $result = ['success' => false, 'message' => 'Connection failed. Check URL and Token.'];
+        }
+    } elseif ($service === 'emby' || $service === 'jellyfin') {
+        $url_key = $service === 'emby' ? 'EMBY_URL' : 'JELLYFIN_URL';
+        $api_key = $service === 'emby' ? 'EMBY_API_KEY' : 'JELLYFIN_API_KEY';
+        $url = rtrim($ptc_cfg[$url_key], '/') . '/System/Info';
+        $opts = ['http' => ['header' => "X-Emby-Token: " . $ptc_cfg[$api_key] . "\r\nAccept: application/json\r\n", 'timeout' => 5], 'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]];
+        $response = @file_get_contents($url, false, stream_context_create($opts));
+        if ($response) {
+            $data = json_decode($response, true);
+            $name = $data['ServerName'] ?? 'Unknown';
+            $result = ['success' => true, 'message' => "Connected! Server: $name"];
+        } else {
+            $result = ['success' => false, 'message' => 'Connection failed. Check URL and API Key.'];
+        }
+    }
+    echo json_encode($result);
+    exit;
+}
+
+// AJAX: Clear cache
+if (isset($_GET['action']) && $_GET['action'] === 'clearcache') {
+    header('Content-Type: application/json');
+    $cache_root = $ptc_cfg['CACHE_ROOT'];
+    $count = 0;
+    $size = 0;
+
+    if (is_dir($cache_root)) {
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($cache_root, RecursiveDirectoryIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::CHILD_FIRST
+        );
+
+        $media_exts = array_map('trim', explode(' ', strtolower($ptc_cfg['MEDIA_FILETYPES'])));
+
+        foreach ($iterator as $file) {
+            if ($file->isFile()) {
+                $ext = '.' . strtolower($file->getExtension());
+                if (in_array($ext, $media_exts)) {
+                    $size += $file->getSize();
+                    @unlink($file->getPathname());
+                    $count++;
+                }
+            }
+        }
+
+        // Clean empty directories
+        $dirs = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($cache_root, RecursiveDirectoryIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($dirs as $dir) {
+            if ($dir->isDir()) {
+                @rmdir($dir->getPathname());
+            }
+        }
+    }
+
+    $size_mb = round($size / 1024 / 1024, 2);
+    echo json_encode(['success' => true, 'message' => "Cleared $count files ({$size_mb} MB)"]);
+    exit;
+}
+
+// AJAX: Service control
+if (isset($_GET['action']) && $_GET['action'] === 'service') {
+    header('Content-Type: application/json');
+    $cmd = $_GET['cmd'] ?? '';
+    if (in_array($cmd, ['start', 'stop', 'restart'])) {
+        shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache $cmd > /dev/null 2>&1");
+        sleep(1);
+        $running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($ptc_pid_file), 0);
+        echo json_encode(['success' => true, 'running' => $running]);
+    } else {
+        echo json_encode(['success' => false, 'message' => 'Invalid command']);
+    }
+    exit;
+}
+
+// POST: Save settings
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     foreach ($ptc_cfg as $key => $val) {
         if (isset($_POST[$key])) { $ptc_cfg[$key] = $_POST[$key]; }
@@ -110,13 +208,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $m_str = implode(";", $pairs);
     }
     $ptc_cfg['DOCKER_MAPPINGS'] = $m_str;
-    
+
     $content = "";
     foreach ($ptc_cfg as $key => $val) { $content .= "$key=\"$val\"\n"; }
-    
+
     if (!is_dir(dirname($ptc_cfg_file))) mkdir(dirname($ptc_cfg_file), 0777, true);
     file_put_contents($ptc_cfg_file, $content);
-    
+
     shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart > /dev/null 2>&1 &");
     echo "<script>window.location.href = window.location.href;</script>";
     exit;
@@ -127,34 +225,40 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
     $pairs = explode(";", $ptc_cfg['DOCKER_MAPPINGS']);
     foreach ($pairs as $p) { if (strpos($p, ":") !== false) { $mappings_pairs[] = explode(":", $p, 2); } }
 }
+
+// Check service status
+$is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($ptc_pid_file), 0);
 ?>
 <style>
-:root { --primary-blue: #00aaff; --bg-dark: #111; }
+:root { --primary-blue: #00aaff; --bg-dark: #111; --success-green: #00cc66; --error-red: #ff4444; }
+
 #ptc-wrapper {
     display: grid;
-    /* 1fr 1fr 2fr bedeutet: 25% | 25% | 50% */
-    grid-template-columns: 1fr 1fr 2fr;
+    grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
     gap: 20px;
     align-items: stretch;
     width: 100%;
     box-sizing: border-box;
     padding: 10px 0;
 }
-@media (max-width: 1600px) {
-    #ptc-wrapper { grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); }
-}
+
 .ptc-col {
     background: var(--bg-dark);
     border-radius: 8px;
     box-shadow: 0 0 10px rgba(0, 170, 255, 0.15);
     color: #f0f8ff;
-    padding: 20px;
+    padding: 20px 20px 20px 20px;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
     min-height: 650px;
 }
-#ptc-col-log { display: flex; flex-direction: column; }
+
+#ptc-col-log {
+    display: flex;
+    flex-direction: column;
+}
+
 #ptc-log {
     background: #000;
     border: 1px solid #333;
@@ -171,81 +275,208 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
     min-height: 400px;
     overflow-y: auto;
 }
+
+/* Status indicator */
+.status-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: #1a1a1a;
+    border-radius: 6px;
+    padding: 10px 15px;
+    margin-bottom: 15px;
+}
+
+.status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: bold;
+}
+
+.status-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    animation: pulse 2s infinite;
+}
+
+.status-dot.running { background: var(--success-green); }
+.status-dot.stopped { background: var(--error-red); animation: none; }
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.status-buttons { display: flex; gap: 8px; }
+.status-buttons button {
+    padding: 5px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    border: 1px solid #444;
+    border-radius: 4px;
+    background: #222;
+    color: #fff;
+}
+.status-buttons button:hover { background: #333; border-color: var(--primary-blue); }
+
+/* Form elements */
 .section-header { color: var(--primary-blue); font-size: 18px; font-weight: bold; margin-bottom: 15px; margin-top: 20px; border-bottom: 1px solid #333; padding-bottom: 5px; display: flex; align-items: center; gap: 8px; }
 .section-header:first-of-type { margin-top: 0; }
+
 .form-pair { display: flex; align-items: center; margin-bottom: 12px; gap: 10px; width: 100%; }
 .form-pair label { flex: 0 0 100px; color: var(--primary-blue); font-weight: bold; font-size: 14px; position: relative; cursor: help; }
 .form-input-wrapper { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+
 .expand-row .form-input-wrapper { flex: 1; }
 .expand-row input { width: 100% !important; max-width: none !important; box-sizing: border-box !important; }
+
+/* Custom Tooltip */
 .form-pair label:after {
     content: attr(data-tooltip);
-    position: absolute; bottom: 130%; left: 0; background: #222; color: #fff; padding: 10px 14px; border-radius: 6px; font-size: 12.5px;
-    font-weight: normal; width: 320px; z-index: 999; box-shadow: 0 5px 20px rgba(0,0,0,0.6); border: 1px solid var(--primary-blue);
-    visibility: hidden; opacity: 0; pointer-events: none; white-space: normal; line-height: 1.5; text-transform: none;
+    position: absolute;
+    bottom: 130%;
+    left: 0;
+    background: #222;
+    color: #fff;
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-size: 12.5px;
+    font-weight: normal;
+    width: 280px;
+    z-index: 999;
+    box-shadow: 0 5px 20px rgba(0,0,0,0.6);
+    border: 1px solid var(--primary-blue);
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+    white-space: normal;
+    line-height: 1.5;
+    text-transform: none;
 }
 .form-pair label:hover:after { visibility: visible; opacity: 1; transition: opacity 0.2s ease 0.5s; }
+
 .ptc-input { background: #111 !important; border: 1px solid #444 !important; border-radius: 4px !important; color: #fff !important; padding: 6px 10px !important; font-size: 14px !important; height: 32px !important; width: 100% !important; max-width: none !important; box-sizing: border-box !important; }
 .ptc-input:focus { border-color: var(--primary-blue) !important; outline: none !important; }
 .input-small { width: 70px !important; flex: 0 0 70px !important; text-align: right; }
 .form-input-wrapper input[type="checkbox"] { accent-color: var(--primary-blue); width: 18px; height: 18px; cursor: pointer; }
 .unit-label { font-size: 12px; color: #777; white-space: nowrap; }
+
 #mapping_table { width: 100%; border-collapse: collapse; margin-top: 10px; }
 #mapping_table th { text-align: left; color: var(--primary-blue); padding: 8px; border-bottom: 1px solid #333; font-size: 13px; }
 #mapping_table td { padding: 5px 0; }
+
 .btn-save-container { margin-bottom: 20px; }
 .btn-save-container input[type="submit"] { width: 100%; padding: 12px; font-weight: bold; text-transform: uppercase; cursor: pointer; }
+
+/* Test button */
+.btn-test {
+    padding: 4px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    border: 1px solid #444;
+    border-radius: 4px;
+    background: #222;
+    color: #fff;
+    white-space: nowrap;
+}
+.btn-test:hover { background: #333; border-color: var(--primary-blue); }
+.btn-test.success { border-color: var(--success-green); color: var(--success-green); }
+.btn-test.error { border-color: var(--error-red); color: var(--error-red); }
+
+/* Clear cache button */
+.btn-clear {
+    padding: 8px 16px;
+    font-size: 12px;
+    cursor: pointer;
+    border: 1px solid var(--error-red);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--error-red);
+    margin-top: 15px;
+}
+.btn-clear:hover { background: var(--error-red); color: #fff; }
 </style>
 
 <form method="post" autocomplete="off">
     <div id="ptc-wrapper">
         <div class="ptc-col" id="ptc-col-servers">
+            <div class="status-bar">
+                <div class="status-indicator">
+                    <span class="status-dot <?= $is_running ? 'running' : 'stopped' ?>" id="status-dot"></span>
+                    <span id="status-text"><?= $is_running ? 'Running' : 'Stopped' ?></span>
+                </div>
+                <div class="status-buttons">
+                    <button type="button" onclick="serviceControl('start')">Start</button>
+                    <button type="button" onclick="serviceControl('stop')">Stop</button>
+                    <button type="button" onclick="serviceControl('restart')">Restart</button>
+                </div>
+            </div>
+
             <div class="btn-save-container"><input type="submit" value="Save & Apply Settings"></div>
-            
+
             <div class="section-header"><i class="fa fa-play-circle"></i> Plex Server</div>
-            <div class="form-pair"><label data-tooltip="Enables monitoring for Plex. The service checks for new active streams at the configured interval.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_PLEX" value="True" <?= $ptc_cfg['ENABLE_PLEX'] == 'True' ? 'checked' : '' ?> ></div></div>
-            <div class="form-pair expand-row"><label data-tooltip="The internal IP and Port of your Plex Container. Do not use 'localhost' if using Bridge Network. Example: http://192.168.1.10:32400">URL:</label><div class="form-input-wrapper"><input type="text" name="PLEX_URL" value="<?= $ptc_cfg['PLEX_URL'] ?>" class="ptc-input"></div></div>
-            <div class="form-pair expand-row"><label data-tooltip="Your unique X-Plex-Token. Required to access the Plex API. You can find this in the XML file of any media item in Plex.">Token:</label><div class="form-input-wrapper"><input type="password" name="PLEX_TOKEN" value="<?= $ptc_cfg['PLEX_TOKEN'] ?>" class="ptc-input" onmouseover="this.type='text'" onmouseout="this.type='password'" autocomplete="new-password"></div></div>
+            <div class="form-pair"><label data-tooltip="Enables monitoring for Plex streams.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_PLEX" value="True" <?= $ptc_cfg['ENABLE_PLEX'] == 'True' ? 'checked' : '' ?> ></div></div>
+            <div class="form-pair expand-row"><label data-tooltip="The web address of your Plex server.">URL:</label><div class="form-input-wrapper"><input type="text" name="PLEX_URL" value="<?= htmlspecialchars($ptc_cfg['PLEX_URL']) ?>" class="ptc-input"></div></div>
+            <div class="form-pair expand-row"><label data-tooltip="Your Plex Authentication Token.">Token:</label><div class="form-input-wrapper"><input type="password" name="PLEX_TOKEN" value="<?= htmlspecialchars($ptc_cfg['PLEX_TOKEN']) ?>" class="ptc-input" onmouseover="this.type='text'" onmouseout="this.type='password'" autocomplete="new-password"><button type="button" class="btn-test" onclick="testConnection('plex', this)">Test</button></div></div>
 
             <div class="section-header"><i class="fa fa-server"></i> Emby Server</div>
             <div class="form-pair"><label data-tooltip="Enables monitoring for Emby streams.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_EMBY" value="True" <?= $ptc_cfg['ENABLE_EMBY'] == 'True' ? 'checked' : '' ?> ></div></div>
-            <div class="form-pair expand-row"><label data-tooltip="The IP and Port of your Emby Server. Example: http://192.168.1.10:8096">URL:</label><div class="form-input-wrapper"><input type="text" name="EMBY_URL" value="<?= $ptc_cfg['EMBY_URL'] ?>" class="ptc-input"></div></div>
-            <div class="form-pair expand-row"><label data-tooltip="The Emby API Key. You can generate this in the Emby Dashboard under 'Settings' -> 'API Keys'.">API Key:</label><div class="form-input-wrapper"><input type="password" name="EMBY_API_KEY" value="<?= $ptc_cfg['EMBY_API_KEY'] ?>" class="ptc-input" autocomplete="new-password"></div></div>
+            <div class="form-pair expand-row"><label data-tooltip="The web address of your Emby server.">URL:</label><div class="form-input-wrapper"><input type="text" name="EMBY_URL" value="<?= htmlspecialchars($ptc_cfg['EMBY_URL']) ?>" class="ptc-input"></div></div>
+            <div class="form-pair expand-row"><label data-tooltip="The API key for Emby.">API Key:</label><div class="form-input-wrapper"><input type="password" name="EMBY_API_KEY" value="<?= htmlspecialchars($ptc_cfg['EMBY_API_KEY']) ?>" class="ptc-input" onmouseover="this.type='text'" onmouseout="this.type='password'" autocomplete="new-password"><button type="button" class="btn-test" onclick="testConnection('emby', this)">Test</button></div></div>
 
             <div class="section-header"><i class="fa fa-film"></i> Jellyfin Server</div>
             <div class="form-pair"><label data-tooltip="Enables monitoring for Jellyfin streams.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_JELLYFIN" value="True" <?= $ptc_cfg['ENABLE_JELLYFIN'] == 'True' ? 'checked' : '' ?> ></div></div>
-            <div class="form-pair expand-row"><label data-tooltip="The IP and Port of your Jellyfin Server. Example: http://192.168.1.10:8096">URL:</label><div class="form-input-wrapper"><input type="text" name="JELLYFIN_URL" value="<?= $ptc_cfg['JELLYFIN_URL'] ?>" class="ptc-input"></div></div>
-            <div class="form-pair expand-row"><label data-tooltip="The Jellyfin API Key. Found in the Dashboard under 'Advanced' -> 'API Keys'.">API Key:</label><div class="form-input-wrapper"><input type="password" name="JELLYFIN_API_KEY" value="<?= $ptc_cfg['JELLYFIN_API_KEY'] ?>" class="ptc-input" autocomplete="new-password"></div></div>
+            <div class="form-pair expand-row"><label data-tooltip="The web address of your Jellyfin server.">URL:</label><div class="form-input-wrapper"><input type="text" name="JELLYFIN_URL" value="<?= htmlspecialchars($ptc_cfg['JELLYFIN_URL']) ?>" class="ptc-input"></div></div>
+            <div class="form-pair expand-row"><label data-tooltip="The API key for Jellyfin.">API Key:</label><div class="form-input-wrapper"><input type="password" name="JELLYFIN_API_KEY" value="<?= htmlspecialchars($ptc_cfg['JELLYFIN_API_KEY']) ?>" class="ptc-input" onmouseover="this.type='text'" onmouseout="this.type='password'" autocomplete="new-password"><button type="button" class="btn-test" onclick="testConnection('jellyfin', this)">Test</button></div></div>
         </div>
 
         <div class="ptc-col" id="ptc-col-tuning">
             <div class="section-header"><i class="fa fa-folder-open"></i> Storage Paths</div>
-            <div class="form-pair expand-row"><label data-tooltip="The root path where your media files are permanently stored. Usually '/mnt/user'.">Array Root:</label><div class="form-input-wrapper"><input type="text" name="ARRAY_ROOT" value="<?= $ptc_cfg['ARRAY_ROOT'] ?>" class="ptc-input"></div></div>
-            <div class="form-pair expand-row"><label data-tooltip="The path to your fast cache pool (e.g., '/mnt/cache'). Media will be copied here during playback.">Cache Root:</label><div class="form-input-wrapper"><input type="text" name="CACHE_ROOT" value="<?= $ptc_cfg['CACHE_ROOT'] ?>" class="ptc-input"></div></div>
-            <div class="form-pair expand-row"><label data-tooltip="Comma-separated list of folder names to ignore. Useful for 'downloads', 'temp', or private folders.">Exclude:</label><div class="form-input-wrapper"><input type="text" name="EXCLUDE_DIRS" value="<?= $ptc_cfg['EXCLUDE_DIRS'] ?>" placeholder="temp,skip" class="ptc-input"></div></div>
+            <div class="form-pair expand-row"><label data-tooltip="The primary path of your Unraid array.">Array Root:</label><div class="form-input-wrapper"><input type="text" name="ARRAY_ROOT" value="<?= htmlspecialchars($ptc_cfg['ARRAY_ROOT']) ?>" class="ptc-input"></div></div>
+            <div class="form-pair expand-row"><label data-tooltip="The path of your cache pool.">Cache Root:</label><div class="form-input-wrapper"><input type="text" name="CACHE_ROOT" value="<?= htmlspecialchars($ptc_cfg['CACHE_ROOT']) ?>" class="ptc-input"></div></div>
+            <div class="form-pair expand-row"><label data-tooltip="Folder names to be ignored (comma-separated).">Exclude:</label><div class="form-input-wrapper"><input type="text" name="EXCLUDE_DIRS" value="<?= htmlspecialchars($ptc_cfg['EXCLUDE_DIRS']) ?>" placeholder="temp,downloads" class="ptc-input"></div></div>
 
             <div class="section-header"><i class="fa fa-exchange"></i> Docker Mappings</div>
             <table id="mapping_table"><thead><tr><th>Host Path</th><th>Docker Path</th><th></th></tr></thead><tbody></tbody></table>
             <button type="button" onclick="addMappingRow()" style="padding: 6px 12px; font-size: 12px; margin-top: 10px; cursor: pointer;">+ Add Mapping</button>
 
             <div class="section-header"><i class="fa fa-cogs"></i> Tuning & Cleanup</div>
-            <div class="form-pair"><label data-tooltip="How often (in seconds) the script checks the servers for active streams. 10s is a good balance.">Interval:</label><div class="form-input-wrapper"><input type="number" name="CHECK_INTERVAL" value="<?= $ptc_cfg['CHECK_INTERVAL'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
-            <div class="form-pair"><label data-tooltip="Wait time in seconds after a stream starts before copying begins. Prevents copying when you just click through a video.">Copy Delay:</label><div class="form-input-wrapper"><input type="number" name="COPY_DELAY" value="<?= $ptc_cfg['COPY_DELAY'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
-            <div class="form-pair"><label data-tooltip="Safety limit. If cache usage is above this %, no new files will be copied to prevent filling the drive.">Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= $ptc_cfg['CACHE_MAX_USAGE'] ?>" class="ptc-input input-small"><span class="unit-label">%</span></div></div>
-            <div class="form-pair"><label data-tooltip="If enabled, the plugin checks if media has been fully watched and deletes it from the cache to free up space.">Smart Clean:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_SMART_CLEANUP" value="True" <?= $ptc_cfg['ENABLE_SMART_CLEANUP'] == 'True' ? 'checked' : '' ?> ></div></div>
-            <div class="form-pair"><label data-tooltip="For Movies/Finales: How long to wait after watching before deleting the file from cache (if Smart Clean is on).">Del Delay:</label><div class="form-input-wrapper"><input type="number" name="MOVIE_DELETE_DELAY" value="<?= $ptc_cfg['MOVIE_DELETE_DELAY'] ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
-            <div class="form-pair"><label data-tooltip="For TV Shows: How many previous episodes to keep on cache. Prevents re-copying if you skip back a few episodes.">Keep Prev:</label><div class="form-input-wrapper"><input type="number" name="EPISODE_KEEP_PREVIOUS" value="<?= $ptc_cfg['EPISODE_KEEP_PREVIOUS'] ?>" class="ptc-input input-small"><span class="unit-label">ep</span></div></div>
+            <div class="form-pair"><label data-tooltip="Interval in seconds to check for active streams.">Interval:</label><div class="form-input-wrapper"><input type="number" name="CHECK_INTERVAL" value="<?= htmlspecialchars($ptc_cfg['CHECK_INTERVAL']) ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
+            <div class="form-pair"><label data-tooltip="Delay before starting to copy files.">Copy Delay:</label><div class="form-input-wrapper"><input type="number" name="COPY_DELAY" value="<?= htmlspecialchars($ptc_cfg['COPY_DELAY']) ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
+            <div class="form-pair"><label data-tooltip="Maximum cache usage percentage before stopping copies.">Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= htmlspecialchars($ptc_cfg['CACHE_MAX_USAGE']) ?>" class="ptc-input input-small"><span class="unit-label">%</span></div></div>
+            <div class="form-pair"><label data-tooltip="Automatically remove watched media from cache.">Smart Clean:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_SMART_CLEANUP" value="True" <?= $ptc_cfg['ENABLE_SMART_CLEANUP'] == 'True' ? 'checked' : '' ?> ></div></div>
+            <div class="form-pair"><label data-tooltip="Delay in seconds before deleting watched movies.">Delete Delay:</label><div class="form-input-wrapper"><input type="number" name="MOVIE_DELETE_DELAY" value="<?= htmlspecialchars($ptc_cfg['MOVIE_DELETE_DELAY']) ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
+            <div class="form-pair"><label data-tooltip="Number of previous episodes to keep in cache.">Keep Episodes:</label><div class="form-input-wrapper"><input type="number" name="EPISODE_KEEP_PREVIOUS" value="<?= htmlspecialchars($ptc_cfg['EPISODE_KEEP_PREVIOUS']) ?>" class="ptc-input input-small"><span class="unit-label">ep</span></div></div>
+
+            <button type="button" class="btn-clear" onclick="clearCache()"><i class="fa fa-trash"></i> Clear All Cached Media</button>
         </div>
 
         <div class="ptc-col" id="ptc-col-log">
-            <div style="display:flex; justify-content:space-between; align-items:center;"><h3 style="margin:0; color:var(--primary-blue); font-size: 18px;"><i class="fa fa-terminal"></i> Live Log Output</h3><div style="display:flex; align-items:center; gap:8px;"><label style="color:#888; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="auto_refresh" checked style="width:12px;height:12px;"> Auto Refresh</label><button type="button" onclick="refreshLog();" style="padding: 4px 10px; font-size: 12px; cursor: pointer;">Refresh</button></div></div>
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <h3 style="margin:0; color:var(--primary-blue); font-size: 18px;"><i class="fa fa-terminal"></i> Live Log Output</h3>
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <label style="color:#888; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:4px;">
+                        <input type="checkbox" id="auto_refresh" checked style="width:12px;height:12px;"> Auto Refresh
+                    </label>
+                    <button type="button" onclick="refreshLog();" style="padding: 4px 10px; font-size: 12px; cursor: pointer;">Refresh</button>
+                </div>
+            </div>
             <div id="ptc-log">Loading Logs...</div>
         </div>
     </div>
 </form>
 
 <script>
-function refreshLog() { $.get('/plugins/plex_to_cache/get_log.php', function(data) { var logDiv = $('#ptc-log'); logDiv.text(data); logDiv.scrollTop(logDiv[0].scrollHeight); }); }
+function refreshLog() {
+    $.get('/plugins/plex_to_cache/plex_to_cache.php?action=log', function(data) {
+        var logDiv = $('#ptc-log');
+        logDiv.text(data);
+        logDiv.scrollTop(logDiv[0].scrollHeight);
+    });
+}
+
 function addMappingRow(dockerVal = '', hostVal = '') {
     var table = document.getElementById('mapping_table').getElementsByTagName('tbody')[0];
     var row = table.insertRow(-1);
@@ -254,8 +485,70 @@ function addMappingRow(dockerVal = '', hostVal = '') {
     cell2.innerHTML = '<input type="text" name="mapping_docker[]" value="' + dockerVal + '" class="ptc-input" style="padding:4px !important; height:26px !important;">';
     cell3.innerHTML = '<a href="#" onclick="deleteRow(this); return false;" style="color:#ff4444; font-size:16px; margin-left:5px;"><i class="fa fa-minus-circle"></i></a>';
 }
-function deleteRow(btn) { var row = btn.parentNode.parentNode; row.parentNode.removeChild(row); }
-$(function() { <?php foreach ($mappings_pairs as $pair): ?> addMappingRow('<?= addslashes($pair[0]) ?>', '<?= addslashes($pair[1]) ?>'); <?php endforeach; ?> if (document.getElementById('mapping_table').rows.length <= 1) { addMappingRow(); } refreshLog(); setInterval(function() { if ($('#auto_refresh').is(':checked')) refreshLog(); }, 3000); });
+
+function deleteRow(btn) {
+    var row = btn.parentNode.parentNode;
+    row.parentNode.removeChild(row);
+}
+
+function testConnection(service, btn) {
+    btn.textContent = '...';
+    btn.className = 'btn-test';
+    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=test&service=' + service, function(data) {
+        if (data.success) {
+            btn.textContent = 'OK';
+            btn.className = 'btn-test success';
+        } else {
+            btn.textContent = 'Fail';
+            btn.className = 'btn-test error';
+        }
+        btn.title = data.message;
+        setTimeout(function() {
+            btn.textContent = 'Test';
+            btn.className = 'btn-test';
+        }, 3000);
+    }).fail(function() {
+        btn.textContent = 'Fail';
+        btn.className = 'btn-test error';
+        setTimeout(function() {
+            btn.textContent = 'Test';
+            btn.className = 'btn-test';
+        }, 3000);
+    });
+}
+
+function clearCache() {
+    if (!confirm('Are you sure you want to delete all cached media files? This cannot be undone.')) return;
+    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=clearcache', function(data) {
+        alert(data.message);
+        refreshLog();
+    }).fail(function() {
+        alert('Failed to clear cache');
+    });
+}
+
+function serviceControl(cmd) {
+    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=service&cmd=' + cmd, function(data) {
+        var dot = document.getElementById('status-dot');
+        var text = document.getElementById('status-text');
+        if (data.running) {
+            dot.className = 'status-dot running';
+            text.textContent = 'Running';
+        } else {
+            dot.className = 'status-dot stopped';
+            text.textContent = 'Stopped';
+        }
+    });
+}
+
+$(function() {
+    <?php foreach ($mappings_pairs as $pair): ?>
+    addMappingRow('<?= addslashes($pair[0]) ?>', '<?= addslashes($pair[1]) ?>');
+    <?php endforeach; ?>
+    if (document.getElementById('mapping_table').rows.length <= 1) { addMappingRow(); }
+    refreshLog();
+    setInterval(function() { if ($('#auto_refresh').is(':checked')) refreshLog(); }, 3000);
+});
 </script>
 ]]>
 </INLINE>
@@ -265,101 +558,179 @@ $(function() { <?php foreach ($mappings_pairs as $pair): ?> addMappingRow('<?= a
 <INLINE>
 <![CDATA[
 #!/usr/bin/python3
-import requests, os, shutil, subprocess, time, sys, re, fcntl, signal
+import requests
+import os
+import shutil
+import subprocess
+import time
+import sys
+import re
+import fcntl
+import signal
+import urllib3
 from pathlib import Path
+
+# Disable SSL warnings for self-signed certificates
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ==========================================
+# --- CONFIGURATION DEFAULTS ---
+# ==========================================
 
 CONFIG_FILE = "/boot/config/plugins/plex_to_cache/settings.cfg"
 LOCK_FILE_PATH = "/tmp/media_cache_cleaner.lock"
+
+# Hardcoded Perms Root (Physical Disks ONLY - No Cache)
+# We use /mnt/user0 to verify if a file is really on the array.
 PERMS_ROOT = "/mnt/user0"
 
 CONFIG = {
-    "ENABLE_PLEX": "False", "PLEX_URL": "http://localhost:32400", "PLEX_TOKEN": "",
-    "ENABLE_EMBY": "False", "EMBY_URL": "http://localhost:8096", "EMBY_API_KEY": "",
-    "ENABLE_JELLYFIN": "False", "JELLYFIN_URL": "http://localhost:8096", "JELLYFIN_API_KEY": "",
-    "CHECK_INTERVAL": "10", "CACHE_MAX_USAGE": "80", "COPY_DELAY": "30",
-    "ENABLE_SMART_CLEANUP": "False", "MOVIE_DELETE_DELAY": "1800", "EPISODE_KEEP_PREVIOUS": "2",
-    "EXCLUDE_DIRS": "", "MEDIA_FILETYPES": ".mkv .mp4 .avi",
+    "ENABLE_PLEX": "False",
+    "PLEX_URL": "http://localhost:32400",
+    "PLEX_TOKEN": "",
+
+    "ENABLE_EMBY": "False",
+    "EMBY_URL": "http://localhost:8096",
+    "EMBY_API_KEY": "",
+
+    "ENABLE_JELLYFIN": "False",
+    "JELLYFIN_URL": "http://localhost:8096",
+    "JELLYFIN_API_KEY": "",
+
+    "CHECK_INTERVAL": "10",
+    "CACHE_MAX_USAGE": "80",
+    "COPY_DELAY": "30",
+    "ENABLE_SMART_CLEANUP": "False",
+    "MOVIE_DELETE_DELAY": "1800",
+    "EPISODE_KEEP_PREVIOUS": "2",
+    "EXCLUDE_DIRS": "",
+    "MEDIA_FILETYPES": ".mkv .mp4 .avi",
     "ARRAY_ROOT": "/mnt/user",
     "CACHE_ROOT": "/mnt/cache",
     "DOCKER_MAPPINGS": ""
 }
 
-movie_deletion_queue, stream_start_times, metadata_path_cache, parsed_docker_mappings = {}, {}, {}, {}
+# --- INTERNAL VARIABLES ---
+movie_deletion_queue = {}
+stream_start_times = {}
+metadata_path_cache = {}
+parsed_docker_mappings = {}
 
-def log_info(msg): print(msg, flush=True)
+# ---------------------
+
+def log_info(msg):
+    print(msg, flush=True)
+
+def log_error(msg):
+    print(f"[Error] {msg}", flush=True)
 
 def parse_docker_mappings(mapping_str):
-    m = {}
-    if not mapping_str: return m
-    for p in mapping_str.split(';'):
-        if ':' in p:
-            k, v = p.split(':', 1)
-            m[k.strip()] = v.strip()
-    return m
+    mappings = {}
+    if not mapping_str:
+        return mappings
+    pairs = mapping_str.split(';')
+    for pair in pairs:
+        if ':' in pair:
+            k, v = pair.split(':', 1)
+            mappings[k.strip()] = v.strip()
+    return mappings
 
 def load_config():
     global CONFIG, parsed_docker_mappings
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, 'r') as f:
-                for l in f:
-                    l = l.strip()
-                    if not l or l.startswith("#") or "=" not in l: continue
-                    k, v = l.split("=", 1)
-                    CONFIG[k.strip()] = v.strip().strip('"').strip("'")
-        except: pass
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"): continue
+                    if "=" in line:
+                        key, value = line.split("=", 1)
+                        key = key.strip()
+                        value = value.strip().strip('"').strip("'")
+                        CONFIG[key] = value
+        except Exception as e:
+            log_error(f"Failed to load config: {e}")
+
     parsed_docker_mappings = parse_docker_mappings(CONFIG.get("DOCKER_MAPPINGS", ""))
 
-def get_config_bool(k): return CONFIG.get(k, "False").lower() in ["true", "1"]
-def get_config_int(k):
-    try: return int(CONFIG.get(k, 0))
+def get_config_bool(key):
+    val = CONFIG.get(key, "False")
+    return val.lower() == "true" or val == "1"
+
+def get_config_int(key):
+    try: return int(CONFIG.get(key, 0))
     except: return 0
 
 def acquire_lock():
     global lock_file
     lock_file = open(LOCK_FILE_PATH, 'w')
-    try: fcntl.lockf(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except: sys.exit(1)
+    try:
+        fcntl.lockf(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except IOError:
+        log_error("Another instance is already running")
+        sys.exit(1)
 
-def clone_rights_from_disk(dst):
+# --- PERMISSIONS LOGIC ---
+
+def get_perms_reference_path(cache_path):
     CACHE_ROOT = CONFIG["CACHE_ROOT"]
-    if dst.startswith(CACHE_ROOT):
-        src = dst.replace(CACHE_ROOT, PERMS_ROOT, 1)
-        if os.path.exists(src):
-            try:
-                st = os.stat(src)
-                os.chown(dst, st.st_uid, st.st_gid)
-                os.chmod(dst, st.st_mode)
-            except: pass
+    if cache_path.startswith(CACHE_ROOT):
+        return cache_path.replace(CACHE_ROOT, PERMS_ROOT, 1)
+    return None
 
-def is_excluded(p):
-    E = CONFIG["EXCLUDE_DIRS"]
-    if not E: return False
-    parts = p.split(os.sep)
-    for exc in [x.strip() for x in E.split(',')]:
-        if exc and exc in parts: return True
+def clone_rights_from_disk(dst_path):
+    src_path = get_perms_reference_path(dst_path)
+    if not src_path or not os.path.exists(src_path):
+        return
+    try:
+        st = os.stat(src_path)
+        os.chown(dst_path, st.st_uid, st.st_gid)
+        os.chmod(dst_path, st.st_mode)
+    except Exception as e:
+        log_error(f"Failed to clone permissions: {e}")
+
+# --- HELPERS ---
+
+def is_excluded(path):
+    EXCLUDE_DIRS = CONFIG["EXCLUDE_DIRS"]
+    if not EXCLUDE_DIRS: return False
+    path_parts = path.split(os.sep)
+    excludes = [x.strip() for x in EXCLUDE_DIRS.split(',')]
+    for exc in excludes:
+        if exc and exc in path_parts: return True
     return False
 
-def is_trigger_filetype(f):
-    T = CONFIG["MEDIA_FILETYPES"]
-    if not T: return True
-    valid = [x.strip().lower() for x in T.split()]
-    for ext in valid:
-        if f.lower().endswith(ext): return True
+def is_trigger_filetype(filename):
+    MEDIA_FILETYPES = CONFIG["MEDIA_FILETYPES"]
+    if not MEDIA_FILETYPES: return True
+    valid_exts = [x.strip().lower() for x in MEDIA_FILETYPES.split()]
+    lower_name = filename.lower()
+    for ext in valid_exts:
+        if lower_name.endswith(ext): return True
     return False
 
-def plex_api_get(e):
-    h = {'X-Plex-Token': CONFIG["PLEX_TOKEN"], 'Accept': 'application/json'}
-    try: return requests.get(f"{CONFIG['PLEX_URL']}{e}", headers=h, timeout=5, verify=False).json()
-    except: return None
+# --- API CLIENTS ---
 
-def emby_api_get(e, k, u):
-    h = {'X-Emby-Token': k, 'Accept': 'application/json'}
-    try: return requests.get(f"{u}{e}", headers=h, timeout=5, verify=False).json()
-    except: return None
+def plex_api_get(endpoint):
+    headers = {'X-Plex-Token': CONFIG["PLEX_TOKEN"], 'Accept': 'application/json'}
+    try:
+        r = requests.get(f"{CONFIG['PLEX_URL']}{endpoint}", headers=headers, timeout=5, verify=False)
+        return r.json()
+    except Exception as e:
+        log_error(f"Plex API request failed: {e}")
+        return None
+
+def emby_api_get(endpoint, key, url):
+    headers = {'X-Emby-Token': key, 'Accept': 'application/json'}
+    try:
+        r = requests.get(f"{url}{endpoint}", headers=headers, timeout=5, verify=False)
+        return r.json()
+    except Exception as e:
+        log_error(f"Emby/Jellyfin API request failed: {e}")
+        return None
 
 def get_active_sessions():
-    active = {}
+    active_items = {}
     if get_config_bool("ENABLE_PLEX"):
         data = plex_api_get("/status/sessions")
         if data and 'MediaContainer' in data and 'Metadata' in data['MediaContainer']:
@@ -367,137 +738,182 @@ def get_active_sessions():
                 rk = item.get('ratingKey')
                 found = metadata_path_cache.get(rk)
                 if not found and 'Media' in item:
-                    for m in item['Media']:
-                        for p in m.get('Part', []):
-                            if p.get('file'): found = p['file']; break
+                    for media in item['Media']:
+                        for part in media.get('Part', []):
+                            if part.get('file'): found = part['file']; break
                 if not found and rk:
                     meta = plex_api_get(f"/library/metadata/{rk}")
                     if meta and 'MediaContainer' in meta and 'Metadata' in meta['MediaContainer']:
-                        for med in meta['MediaContainer']['Metadata'][0].get('Media', []):
-                            for pt in med.get('Part', []):
-                                if pt.get('file'): found = pt['file']; break
-                if found: metadata_path_cache[rk] = found; active[found] = {'service': 'plex', 'id': rk}
-    
+                        for m in meta['MediaContainer']['Metadata']:
+                            for med in m.get('Media', []):
+                                for p in med.get('Part', []):
+                                    if p.get('file'): found = p['file']; break
+                if found:
+                    metadata_path_cache[rk] = found
+                    active_items[found] = {'service': 'plex', 'id': rk}
+
     for svc in [("ENABLE_EMBY", "EMBY_API_KEY", "EMBY_URL", "emby"), ("ENABLE_JELLYFIN", "JELLYFIN_API_KEY", "JELLYFIN_URL", "jellyfin")]:
         if get_config_bool(svc[0]):
             data = emby_api_get("/Sessions", CONFIG[svc[1]], CONFIG[svc[2]])
             if data:
                 for s in data:
                     p = s.get('NowPlayingItem', {}).get('Path')
-                    if p: active[p] = {'service': svc[3], 'id': s['NowPlayingItem'].get('Id'), 'user': s.get('UserId')}
-    return active
+                    if p: active_items[p] = {'service': svc[3], 'id': s['NowPlayingItem'].get('Id'), 'user': s.get('UserId')}
+    return active_items
 
-def check_is_watched(s):
-    if not s: return False
-    svc = s.get('service')
-    if svc == 'plex':
-        d = plex_api_get(f"/library/metadata/{s.get('id')}")
-        if d and 'MediaContainer' in d and 'Metadata' in d['MediaContainer']:
-            if d['MediaContainer']['Metadata'][0].get('viewCount', 0) > 0: return True
-    elif svc in ['emby', 'jellyfin']:
-        u = CONFIG["EMBY_URL"] if svc == 'emby' else CONFIG["JELLYFIN_URL"]
-        k = CONFIG["EMBY_API_KEY"] if svc == 'emby' else CONFIG["JELLYFIN_API_KEY"]
-        d = emby_api_get(f"/Users/{s.get('user')}/Items/{s.get('id')}", k, u)
+def check_is_watched(session_data):
+    if not session_data: return False
+    service = session_data.get('service')
+    if service == 'plex':
+        rk = session_data.get('id')
+        data = plex_api_get(f"/library/metadata/{rk}")
+        if data and 'MediaContainer' in data and 'Metadata' in data['MediaContainer']:
+            meta = data['MediaContainer']['Metadata'][0]
+            if 'viewCount' in meta and meta['viewCount'] > 0: return True
+    elif service in ['emby', 'jellyfin']:
+        u = CONFIG["EMBY_URL"] if service == 'emby' else CONFIG["JELLYFIN_URL"]
+        k = CONFIG["EMBY_API_KEY"] if service == 'emby' else CONFIG["JELLYFIN_API_KEY"]
+        d = emby_api_get(f"/Users/{session_data.get('user')}/Items/{session_data.get('id')}", k, u)
         if d and 'UserData' in d: return d['UserData'].get('Played', False)
     return False
 
-def translate_path(p):
-    c = p.replace('\\', '/')
-    A = CONFIG["ARRAY_ROOT"]
-    for dp, hp in parsed_docker_mappings.items():
-        if c.startswith(dp):
-            rel = c[len(dp):].lstrip('/')
-            return os.path.join(hp if hp.startswith(A) else os.path.join(A, hp.lstrip('/')), rel).replace('//', '/')
-    return c
+# --- PATH TOOLS ---
 
-def parse_episode_number(f):
-    m = re.search(r"[sS]\d+[eE](\d+)", f)
-    return int(m.group(1)) if m else None
+def translate_path(docker_path):
+    clean_path = docker_path.replace('\\', '/')
+    ARRAY_ROOT = CONFIG["ARRAY_ROOT"]
+    for d_prefix, real_prefix in parsed_docker_mappings.items():
+        if clean_path.startswith(d_prefix):
+            rel_path = clean_path[len(d_prefix):].lstrip('/')
+            return os.path.join(real_prefix if real_prefix.startswith(ARRAY_ROOT) else os.path.join(ARRAY_ROOT, real_prefix.lstrip('/')), rel_path).replace('//', '/')
+    return clean_path
 
-def is_last_episode(p):
+def get_cache_path(array_path):
+    ARRAY_ROOT = CONFIG["ARRAY_ROOT"]
+    CACHE_ROOT = CONFIG["CACHE_ROOT"]
+    if array_path.startswith(ARRAY_ROOT): return array_path.replace(ARRAY_ROOT, CACHE_ROOT, 1)
+    return None
+
+def parse_episode_number(filename):
+    match = re.search(r"[sS]\d+[eE](\d+)", filename)
+    return int(match.group(1)) if match else None
+
+def is_last_episode_on_array(file_path):
     try:
-        e = parse_episode_number(os.path.basename(p))
-        if e is None: return False
-        folder, max_e = os.path.dirname(p), 0
+        ep_num = parse_episode_number(os.path.basename(file_path))
+        if ep_num is None: return False
+        folder = os.path.dirname(file_path)
+        max_ep = 0
         if os.path.exists(folder):
             for f in os.listdir(folder):
-                num = parse_episode_number(f)
-                if num and num > max_e: max_e = num
-        return e >= max_e
-    except: return False
+                e = parse_episode_number(f)
+                if e and e > max_ep: max_ep = e
+        return ep_num >= max_ep
+    except Exception as e:
+        log_error(f"Failed to check last episode: {e}")
+        return False
 
-def cleanup_empty_parent_dirs(p):
-    P, R = os.path.dirname(p), CONFIG["CACHE_ROOT"]
-    prot = [os.path.join(R, m.strip("/")) for m in parsed_docker_mappings.values()]
-    while P.startswith(R) and len(P) > len(R):
-        if P in prot: break
-        try: os.rmdir(P); P = os.path.dirname(P)
-        except: break
+# --- MOVER / DELETE LOGIC ---
 
-def move_to_array(cp):
-    R = CONFIG["CACHE_ROOT"]
-    dest = os.path.join(PERMS_ROOT, cp.replace(R, "", 1).lstrip("/"))
-    log_info(f"[Mover] -> Array: {os.path.basename(cp)}")
+def cleanup_empty_parent_dirs(path):
+    parent_dir = os.path.dirname(path)
+    CACHE_ROOT = CONFIG["CACHE_ROOT"]
+    protected = [os.path.join(CACHE_ROOT, m.strip("/")) for m in parsed_docker_mappings.values()]
+    while parent_dir.startswith(CACHE_ROOT) and len(parent_dir) > len(CACHE_ROOT):
+        if parent_dir in protected: break
+        try:
+            os.rmdir(parent_dir)
+            parent_dir = os.path.dirname(parent_dir)
+        except OSError: break
+
+def move_to_array(cache_path):
+    CACHE_ROOT = CONFIG["CACHE_ROOT"]
+    rel_path = cache_path.replace(CACHE_ROOT, "").lstrip("/")
+    dest_path = os.path.join(PERMS_ROOT, rel_path)
+
+    log_info(f"[Mover] -> Array: {os.path.basename(cache_path)}")
     try:
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        subprocess.run(["rsync", "-a", "--remove-source-files", cp, dest], check=True, stdout=subprocess.DEVNULL)
-        cleanup_empty_parent_dirs(cp)
-    except: pass
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        subprocess.run(["rsync", "-a", "--remove-source-files", cache_path, dest_path], check=True, stdout=subprocess.DEVNULL)
+        clone_rights_from_disk(dest_path)
+        cleanup_empty_parent_dirs(cache_path)
+    except Exception as e:
+        log_error(f"Move to array failed: {e}")
 
-def smart_manage_cache_file(cp, reason="Cleanup"):
-    if not os.path.exists(cp): return
-    ap = os.path.join(PERMS_ROOT, cp.replace(CONFIG["CACHE_ROOT"], "", 1).lstrip("/"))
-    if os.path.exists(ap) and os.path.getsize(cp) == os.path.getsize(ap):
-        os.remove(cp); log_info(f"[{reason}] Gelöscht: {os.path.basename(cp)}")
-        cleanup_empty_parent_dirs(cp)
-    else: move_to_array(cp)
+def smart_manage_cache_file(cache_path, reason="Cleanup"):
+    if not os.path.exists(cache_path): return
+    rel_path = cache_path.replace(CONFIG["CACHE_ROOT"], "").lstrip("/")
+    array_path = os.path.join(PERMS_ROOT, rel_path)
 
-def ensure_structure(fcp):
-    R = CONFIG["CACHE_ROOT"]
-    try: rel = os.path.relpath(os.path.dirname(fcp), R)
+    # We check against PERMS_ROOT (/mnt/user0) to be absolutely sure the file is on the array
+    if os.path.exists(array_path):
+        if os.path.getsize(cache_path) == os.path.getsize(array_path):
+            os.remove(cache_path)
+            log_info(f"[{reason}] Deleted: {os.path.basename(cache_path)}")
+            cleanup_empty_parent_dirs(cache_path)
+    else:
+        # Not on array yet, so move it instead of just deleting
+        move_to_array(cache_path)
+
+def ensure_structure(full_cache_file_path):
+    CACHE_ROOT = CONFIG["CACHE_ROOT"]
+    try: rel_path = os.path.relpath(os.path.dirname(full_cache_file_path), CACHE_ROOT)
     except: return
-    curr = R
-    for part in rel.split(os.sep):
+    curr = CACHE_ROOT
+    for part in rel_path.split(os.sep):
         if not part or part == ".": continue
         curr = os.path.join(curr, part)
         if not os.path.exists(curr):
-            try: os.mkdir(curr); clone_rights_from_disk(curr)
-            except: pass
+            try:
+                os.mkdir(curr)
+                clone_rights_from_disk(curr)
+            except Exception as e:
+                log_error(f"Failed to create directory {curr}: {e}")
 
-def cache_file_if_needed(sp):
-    rel = sp.replace(CONFIG["ARRAY_ROOT"], "").lstrip("/")
-    if not rel or is_excluded(rel): return
-    dp = os.path.join(CONFIG["CACHE_ROOT"], rel)
-    if os.path.exists(dp) and os.path.getsize(sp) == os.path.getsize(dp):
-        if dp in movie_deletion_queue: del movie_deletion_queue[dp]
+def cache_file_if_needed(source_path):
+    rel_path = source_path.replace(CONFIG["ARRAY_ROOT"], "").lstrip("/")
+    if not rel_path or is_excluded(rel_path): return
+    dest_path = os.path.join(CONFIG["CACHE_ROOT"], rel_path)
+
+    if os.path.exists(dest_path) and os.path.getsize(source_path) == os.path.getsize(dest_path):
+        if dest_path in movie_deletion_queue: del movie_deletion_queue[dest_path]
         return
+
     try:
-        u = shutil.disk_usage(CONFIG["CACHE_ROOT"])
-        if (u.used / u.total) * 100 >= get_config_int("CACHE_MAX_USAGE"): return
-    except: return
-    log_info(f"[Copy] -> {os.path.basename(sp)}")
+        usage = shutil.disk_usage(CONFIG["CACHE_ROOT"])
+        if (usage.used / usage.total) * 100 >= get_config_int("CACHE_MAX_USAGE"): return
+    except Exception as e:
+        log_error(f"Failed to check disk usage: {e}")
+        return
+
+    log_info(f"[Copy] -> {os.path.basename(source_path)}")
     try:
-        ensure_structure(dp)
-        subprocess.run(["rsync", "-a", sp, dp], check=True, stdout=subprocess.DEVNULL)
-        clone_rights_from_disk(dp)
-    except: pass
+        ensure_structure(dest_path)
+        subprocess.run(["rsync", "-a", source_path, dest_path], check=True, stdout=subprocess.DEVNULL)
+        clone_rights_from_disk(dest_path)
+    except Exception as e:
+        log_error(f"Copy failed: {e}")
+
+# --- HANDLER ---
 
 def handle_series_smart(rp):
-    curr = parse_episode_number(os.path.basename(rp))
-    if curr is None: return handle_movie_logic(rp)
+    curr_ep = parse_episode_number(os.path.basename(rp))
+    if curr_ep is None: return handle_movie_logic(rp)
     sd_array = os.path.dirname(rp)
-    sd_cache = os.path.join(CONFIG["CACHE_ROOT"], sd_array.replace(CONFIG["ARRAY_ROOT"], "").lstrip("/"))
-    if get_config_bool("ENABLE_SMART_CLEANUP") and os.path.exists(sd_cache):
-        th = curr - get_config_int("EPISODE_KEEP_PREVIOUS")
+    sd_cache = get_cache_path(sd_array)
+    if get_config_bool("ENABLE_SMART_CLEANUP") and sd_cache and os.path.exists(sd_cache):
+        th = curr_ep - get_config_int("EPISODE_KEEP_PREVIOUS")
         for f in os.listdir(sd_cache):
             num = parse_episode_number(f)
-            if num is not None and num < th: smart_manage_cache_file(os.path.join(sd_cache, f), "Smart Cleanup")
+            if num is not None and num < th:
+                smart_manage_cache_file(os.path.join(sd_cache, f), "Smart Cleanup")
     try:
         if os.path.exists(sd_array):
             for f in sorted(os.listdir(sd_array)):
                 num = parse_episode_number(f)
-                if num is not None and num >= curr: cache_file_if_needed(os.path.join(sd_array, f))
-    except: pass
+                if num is not None and num >= curr_ep: cache_file_if_needed(os.path.join(sd_array, f))
+    except Exception as e:
+        log_error(f"Series handling failed: {e}")
 
 def handle_movie_logic(rp):
     cache_file_if_needed(rp)
@@ -506,13 +922,14 @@ def handle_movie_logic(rp):
         if os.path.exists(folder):
             for f in os.listdir(folder):
                 if f.startswith(stem): cache_file_if_needed(os.path.join(folder, f))
-    except: pass
+    except Exception as e:
+        log_error(f"Movie handling failed: {e}")
 
 if __name__ == "__main__":
     load_config(); acquire_lock()
     signal.signal(signal.SIGHUP, lambda s, f: load_config())
-    log_info("Dienst gestartet. Warte auf Streams...")
-    last_loop = {}
+    log_info("Service started. Waiting for streams...")
+    last_loop_sessions = {}
     while True:
         try:
             curr_sessions = get_active_sessions()
@@ -522,29 +939,30 @@ if __name__ == "__main__":
                 if not rp.startswith(CONFIG["ARRAY_ROOT"]) or is_excluded(rp) or not is_trigger_filetype(os.path.basename(rp)): continue
                 active_paths.append(rp)
                 if rp not in stream_start_times:
-                    log_info(f"[Stream] Aktiv: {os.path.basename(rp)}"); stream_start_times[rp] = time.time()
-                    continue
+                    log_info(f"[Stream] Active: {os.path.basename(rp)}")
+                    stream_start_times[rp] = time.time(); continue
                 if time.time() - stream_start_times[rp] >= get_config_int("COPY_DELAY"):
                     if parse_episode_number(os.path.basename(rp)) is not None: handle_series_smart(rp)
                     else: handle_movie_logic(rp)
             for p in list(stream_start_times.keys()):
                 if p not in set(active_paths): del stream_start_times[p]
             if get_config_bool("ENABLE_SMART_CLEANUP"):
-                stopped = set(last_loop.keys()) - set(curr_sessions.keys())
+                stopped = set(last_loop_sessions.keys()) - set(curr_sessions.keys())
                 for d_p in stopped:
-                    s_d, r_p = last_loop[d_p], translate_path(d_p)
+                    s_d, r_p = last_loop_sessions[d_p], translate_path(d_p)
                     if check_is_watched(s_d):
-                        cp = os.path.join(CONFIG["CACHE_ROOT"], r_p.replace(CONFIG["ARRAY_ROOT"], "").lstrip("/"))
+                        cp = get_cache_path(r_p)
                         if cp and os.path.exists(cp):
                             if parse_episode_number(os.path.basename(r_p)) is None: movie_deletion_queue[cp] = time.time()
-                            elif is_last_episode(r_p):
+                            elif is_last_episode_on_array(r_p):
                                 for f in os.listdir(os.path.dirname(cp)):
                                     movie_deletion_queue[os.path.join(os.path.dirname(cp), f)] = time.time()
-                for c_p, ts in list(movie_deletion_queue.items()):
+                for cp, ts in list(movie_deletion_queue.items()):
                     if time.time() - ts > get_config_int("MOVIE_DELETE_DELAY"):
-                        smart_manage_cache_file(c_p, "Deletion Timer"); del movie_deletion_queue[c_p]
-            last_loop = curr_sessions
-        except: pass
+                        smart_manage_cache_file(cp, "Deletion Timer"); del movie_deletion_queue[cp]
+            last_loop_sessions = curr_sessions
+        except Exception as e:
+            log_error(f"Main loop error: {e}")
         time.sleep(get_config_int("CHECK_INTERVAL"))
 ]]>
 </INLINE>
@@ -568,10 +986,10 @@ stop() {
     if [ -f "$PID_FILE" ]; then kill $(cat "$PID_FILE") 2>/dev/null; rm "$PID_FILE"; fi
     pkill -f plex_to_cache.py 2>/dev/null
 }
-case "$1" in 
-    start) start ;; 
-    stop) stop ;; 
-    restart) stop; sleep 1; start ;; 
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; sleep 1; start ;;
 esac
 ]]>
 </INLINE>
@@ -599,8 +1017,6 @@ if [ -f /var/run/plex_to_cache.pid ]; then
 fi
 pkill -f plex_to_cache.py 2>/dev/null
 rm -rf /usr/local/emhttp/plugins/plex_to_cache
-# DO NOT DELETE CONFIG FOLDER ON UNINSTALL
-# rm -rf /boot/config/plugins/plex_to_cache
 rm /var/log/plex_to_cache.log
 echo "Plex to Cache uninstalled."
 ]]>
