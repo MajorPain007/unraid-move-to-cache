@@ -35,28 +35,76 @@ if (isset($_GET['action']) && $_GET['action'] === 'test') {
     $result = ['success' => false, 'message' => 'Unknown service'];
 
     if ($service === 'plex') {
-        $url = rtrim($ptc_cfg['PLEX_URL'], '/') . '/identity';
-        $opts = ['http' => ['header' => "X-Plex-Token: " . $ptc_cfg['PLEX_TOKEN'] . "\r\nAccept: application/json\r\n", 'timeout' => 5], 'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]];
-        $response = @file_get_contents($url, false, stream_context_create($opts));
-        if ($response) {
-            $data = json_decode($response, true);
-            $name = $data['MediaContainer']['machineIdentifier'] ?? 'Unknown';
-            $result = ['success' => true, 'message' => "Connected! Server ID: " . substr($name, 0, 8) . "..."];
+        $url = rtrim($ptc_cfg['PLEX_URL'], '/') . '/';
+        $token = $ptc_cfg['PLEX_TOKEN'];
+        if (empty($token)) {
+            $result = ['success' => false, 'message' => 'No Plex Token configured'];
         } else {
-            $result = ['success' => false, 'message' => 'Connection failed. Check URL and Token.'];
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 5,
+                CURLOPT_SSL_VERIFYPEER => false,
+                CURLOPT_SSL_VERIFYHOST => false,
+                CURLOPT_HTTPHEADER => ['X-Plex-Token: ' . $token, 'Accept: application/json']
+            ]);
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $error = curl_error($ch);
+            curl_close($ch);
+
+            if ($httpCode === 200 && $response) {
+                $data = json_decode($response, true);
+                if (isset($data['MediaContainer'])) {
+                    $name = $data['MediaContainer']['friendlyName'] ?? 'Plex Server';
+                    $result = ['success' => true, 'message' => "Connected! Server: $name"];
+                } else {
+                    $result = ['success' => false, 'message' => 'Invalid response from Plex'];
+                }
+            } elseif ($httpCode === 401) {
+                $result = ['success' => false, 'message' => 'Invalid Token (401 Unauthorized)'];
+            } elseif ($error) {
+                $result = ['success' => false, 'message' => "Connection error: $error"];
+            } else {
+                $result = ['success' => false, 'message' => "Connection failed (HTTP $httpCode)"];
+            }
         }
     } elseif ($service === 'emby' || $service === 'jellyfin') {
         $url_key = $service === 'emby' ? 'EMBY_URL' : 'JELLYFIN_URL';
-        $api_key = $service === 'emby' ? 'EMBY_API_KEY' : 'JELLYFIN_API_KEY';
+        $api_key_name = $service === 'emby' ? 'EMBY_API_KEY' : 'JELLYFIN_API_KEY';
+        $api_key = $ptc_cfg[$api_key_name];
         $url = rtrim($ptc_cfg[$url_key], '/') . '/System/Info';
-        $opts = ['http' => ['header' => "X-Emby-Token: " . $ptc_cfg[$api_key] . "\r\nAccept: application/json\r\n", 'timeout' => 5], 'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]];
-        $response = @file_get_contents($url, false, stream_context_create($opts));
-        if ($response) {
-            $data = json_decode($response, true);
-            $name = $data['ServerName'] ?? 'Unknown';
-            $result = ['success' => true, 'message' => "Connected! Server: $name"];
+
+        if (empty($api_key)) {
+            $result = ['success' => false, 'message' => 'No API Key configured'];
         } else {
-            $result = ['success' => false, 'message' => 'Connection failed. Check URL and API Key.'];
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 5,
+                CURLOPT_SSL_VERIFYPEER => false,
+                CURLOPT_SSL_VERIFYHOST => false,
+                CURLOPT_HTTPHEADER => ['X-Emby-Token: ' . $api_key, 'Accept: application/json']
+            ]);
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $error = curl_error($ch);
+            curl_close($ch);
+
+            if ($httpCode === 200 && $response) {
+                $data = json_decode($response, true);
+                if (isset($data['ServerName'])) {
+                    $result = ['success' => true, 'message' => "Connected! Server: " . $data['ServerName']];
+                } else {
+                    $result = ['success' => false, 'message' => 'Invalid response from server'];
+                }
+            } elseif ($httpCode === 401) {
+                $result = ['success' => false, 'message' => 'Invalid API Key (401 Unauthorized)'];
+            } elseif ($error) {
+                $result = ['success' => false, 'message' => "Connection error: $error"];
+            } else {
+                $result = ['success' => false, 'message' => "Connection failed (HTTP $httpCode)"];
+            }
         }
     }
     echo json_encode($result);
@@ -324,7 +372,7 @@ if (file_exists($ptc_tracked_file)) {
 
 #ptc-wrapper {
     display: grid;
-    grid-template-columns: 1fr 1fr 1.5fr;
+    grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr) minmax(400px, 2fr);
     gap: 20px;
     align-items: stretch;
     width: 100%;
@@ -334,7 +382,7 @@ if (file_exists($ptc_tracked_file)) {
 
 @media (max-width: 1400px) {
     #ptc-wrapper {
-        grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
     }
 }
 
