@@ -372,17 +372,17 @@ if (file_exists($ptc_tracked_file)) {
 
 #ptc-wrapper {
     display: grid;
-    grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr) minmax(400px, 2fr);
-    gap: 20px;
+    grid-template-columns: minmax(300px, 1fr) minmax(300px, 1fr) minmax(350px, 1.5fr);
+    gap: 12px;
     align-items: stretch;
     width: 100%;
     box-sizing: border-box;
     padding: 10px 0;
 }
 
-@media (max-width: 1400px) {
+@media (max-width: 1200px) {
     #ptc-wrapper {
-        grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
     }
 }
 
@@ -607,7 +607,6 @@ if (file_exists($ptc_tracked_file)) {
                 <input type="submit" value="Save & Apply">
                 <button type="button" class="service-btn" onclick="serviceControl('start')">Start</button>
                 <button type="button" class="service-btn" onclick="serviceControl('stop')">Stop</button>
-                <button type="button" class="service-btn" onclick="serviceControl('restart')">Restart</button>
                 <div class="status-indicator">
                     <span class="status-dot <?= $is_running ? 'running' : 'stopped' ?>" id="status-dot"></span>
                     <span id="status-text"><?= $is_running ? 'Running' : 'Stopped' ?></span>
