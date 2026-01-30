@@ -8,7 +8,11 @@ import sys
 import re
 import fcntl
 import signal
+import urllib3
 from pathlib import Path
+
+# Disable SSL warnings for self-signed certificates
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==========================================
 # --- CONFIGURATION DEFAULTS ---
@@ -25,15 +29,15 @@ CONFIG = {
     "ENABLE_PLEX": "False",
     "PLEX_URL": "http://localhost:32400",
     "PLEX_TOKEN": "",
-    
+
     "ENABLE_EMBY": "False",
     "EMBY_URL": "http://localhost:8096",
     "EMBY_API_KEY": "",
-    
+
     "ENABLE_JELLYFIN": "False",
     "JELLYFIN_URL": "http://localhost:8096",
     "JELLYFIN_API_KEY": "",
-    
+
     "CHECK_INTERVAL": "10",
     "CACHE_MAX_USAGE": "80",
     "COPY_DELAY": "30",
@@ -44,19 +48,22 @@ CONFIG = {
     "MEDIA_FILETYPES": ".mkv .mp4 .avi",
     "ARRAY_ROOT": "/mnt/user",
     "CACHE_ROOT": "/mnt/cache",
-    "DOCKER_MAPPINGS": "" 
+    "DOCKER_MAPPINGS": ""
 }
 
-# --- INTERNE VARIABLES ---
+# --- INTERNAL VARIABLES ---
 movie_deletion_queue = {}
-stream_start_times = {} 
-metadata_path_cache = {} 
+stream_start_times = {}
+metadata_path_cache = {}
 parsed_docker_mappings = {}
 
 # ---------------------
 
 def log_info(msg):
     print(msg, flush=True)
+
+def log_error(msg):
+    print(f"[Error] {msg}", flush=True)
 
 def parse_docker_mappings(mapping_str):
     mappings = {}
@@ -82,8 +89,9 @@ def load_config():
                         key = key.strip()
                         value = value.strip().strip('"').strip("'")
                         CONFIG[key] = value
-        except Exception: pass
-    
+        except Exception as e:
+            log_error(f"Failed to load config: {e}")
+
     parsed_docker_mappings = parse_docker_mappings(CONFIG.get("DOCKER_MAPPINGS", ""))
 
 def get_config_bool(key):
@@ -100,9 +108,10 @@ def acquire_lock():
     try:
         fcntl.lockf(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except IOError:
+        log_error("Another instance is already running")
         sys.exit(1)
 
-# --- RECHTE LOGIK ---
+# --- PERMISSIONS LOGIC ---
 
 def get_perms_reference_path(cache_path):
     CACHE_ROOT = CONFIG["CACHE_ROOT"]
@@ -113,13 +122,13 @@ def get_perms_reference_path(cache_path):
 def clone_rights_from_disk(dst_path):
     src_path = get_perms_reference_path(dst_path)
     if not src_path or not os.path.exists(src_path):
-        return 
+        return
     try:
         st = os.stat(src_path)
         os.chown(dst_path, st.st_uid, st.st_gid)
         os.chmod(dst_path, st.st_mode)
     except Exception as e:
-        log_info(f"[Perms Error] {e}")
+        log_error(f"Failed to clone permissions: {e}")
 
 # --- HELPERS ---
 
@@ -134,7 +143,7 @@ def is_excluded(path):
 
 def is_trigger_filetype(filename):
     MEDIA_FILETYPES = CONFIG["MEDIA_FILETYPES"]
-    if not MEDIA_FILETYPES: return True 
+    if not MEDIA_FILETYPES: return True
     valid_exts = [x.strip().lower() for x in MEDIA_FILETYPES.split()]
     lower_name = filename.lower()
     for ext in valid_exts:
@@ -148,14 +157,18 @@ def plex_api_get(endpoint):
     try:
         r = requests.get(f"{CONFIG['PLEX_URL']}{endpoint}", headers=headers, timeout=5, verify=False)
         return r.json()
-    except Exception: return None
+    except Exception as e:
+        log_error(f"Plex API request failed: {e}")
+        return None
 
 def emby_api_get(endpoint, key, url):
     headers = {'X-Emby-Token': key, 'Accept': 'application/json'}
     try:
         r = requests.get(f"{url}{endpoint}", headers=headers, timeout=5, verify=False)
         return r.json()
-    except Exception: return None
+    except Exception as e:
+        log_error(f"Emby/Jellyfin API request failed: {e}")
+        return None
 
 def get_active_sessions():
     active_items = {}
@@ -179,7 +192,7 @@ def get_active_sessions():
                 if found:
                     metadata_path_cache[rk] = found
                     active_items[found] = {'service': 'plex', 'id': rk}
-    
+
     for svc in [("ENABLE_EMBY", "EMBY_API_KEY", "EMBY_URL", "emby"), ("ENABLE_JELLYFIN", "JELLYFIN_API_KEY", "JELLYFIN_URL", "jellyfin")]:
         if get_config_bool(svc[0]):
             data = emby_api_get("/Sessions", CONFIG[svc[1]], CONFIG[svc[2]])
@@ -205,7 +218,7 @@ def check_is_watched(session_data):
         if d and 'UserData' in d: return d['UserData'].get('Played', False)
     return False
 
-# --- PFAD TOOLS ---
+# --- PATH TOOLS ---
 
 def translate_path(docker_path):
     clean_path = docker_path.replace('\\', '/')
@@ -213,7 +226,6 @@ def translate_path(docker_path):
     for d_prefix, real_prefix in parsed_docker_mappings.items():
         if clean_path.startswith(d_prefix):
             rel_path = clean_path[len(d_prefix):].lstrip('/')
-            # Use ARRAY_ROOT as base for translated paths
             return os.path.join(real_prefix if real_prefix.startswith(ARRAY_ROOT) else os.path.join(ARRAY_ROOT, real_prefix.lstrip('/')), rel_path).replace('//', '/')
     return clean_path
 
@@ -238,7 +250,9 @@ def is_last_episode_on_array(file_path):
                 e = parse_episode_number(f)
                 if e and e > max_ep: max_ep = e
         return ep_num >= max_ep
-    except: return False
+    except Exception as e:
+        log_error(f"Failed to check last episode: {e}")
+        return False
 
 # --- MOVER / DELETE LOGIC ---
 
@@ -257,7 +271,7 @@ def move_to_array(cache_path):
     CACHE_ROOT = CONFIG["CACHE_ROOT"]
     rel_path = cache_path.replace(CACHE_ROOT, "").lstrip("/")
     dest_path = os.path.join(PERMS_ROOT, rel_path)
-    
+
     log_info(f"[Mover] -> Array: {os.path.basename(cache_path)}")
     try:
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
@@ -265,18 +279,18 @@ def move_to_array(cache_path):
         clone_rights_from_disk(dest_path)
         cleanup_empty_parent_dirs(cache_path)
     except Exception as e:
-        log_info(f"[Error] Mover: {e}")
+        log_error(f"Move to array failed: {e}")
 
 def smart_manage_cache_file(cache_path, reason="Cleanup"):
     if not os.path.exists(cache_path): return
     rel_path = cache_path.replace(CONFIG["CACHE_ROOT"], "").lstrip("/")
     array_path = os.path.join(PERMS_ROOT, rel_path)
-    
+
     # We check against PERMS_ROOT (/mnt/user0) to be absolutely sure the file is on the array
     if os.path.exists(array_path):
         if os.path.getsize(cache_path) == os.path.getsize(array_path):
             os.remove(cache_path)
-            log_info(f"[{reason}] Gelöscht: {os.path.basename(cache_path)}")
+            log_info(f"[{reason}] Deleted: {os.path.basename(cache_path)}")
             cleanup_empty_parent_dirs(cache_path)
     else:
         # Not on array yet, so move it instead of just deleting
@@ -285,7 +299,7 @@ def smart_manage_cache_file(cache_path, reason="Cleanup"):
 def ensure_structure(full_cache_file_path):
     CACHE_ROOT = CONFIG["CACHE_ROOT"]
     try: rel_path = os.path.relpath(os.path.dirname(full_cache_file_path), CACHE_ROOT)
-    except: return 
+    except: return
     curr = CACHE_ROOT
     for part in rel_path.split(os.sep):
         if not part or part == ".": continue
@@ -294,13 +308,14 @@ def ensure_structure(full_cache_file_path):
             try:
                 os.mkdir(curr)
                 clone_rights_from_disk(curr)
-            except: pass
+            except Exception as e:
+                log_error(f"Failed to create directory {curr}: {e}")
 
 def cache_file_if_needed(source_path):
     rel_path = source_path.replace(CONFIG["ARRAY_ROOT"], "").lstrip("/")
     if not rel_path or is_excluded(rel_path): return
     dest_path = os.path.join(CONFIG["CACHE_ROOT"], rel_path)
-    
+
     if os.path.exists(dest_path) and os.path.getsize(source_path) == os.path.getsize(dest_path):
         if dest_path in movie_deletion_queue: del movie_deletion_queue[dest_path]
         return
@@ -308,7 +323,9 @@ def cache_file_if_needed(source_path):
     try:
         usage = shutil.disk_usage(CONFIG["CACHE_ROOT"])
         if (usage.used / usage.total) * 100 >= get_config_int("CACHE_MAX_USAGE"): return
-    except: return
+    except Exception as e:
+        log_error(f"Failed to check disk usage: {e}")
+        return
 
     log_info(f"[Copy] -> {os.path.basename(source_path)}")
     try:
@@ -316,7 +333,7 @@ def cache_file_if_needed(source_path):
         subprocess.run(["rsync", "-a", source_path, dest_path], check=True, stdout=subprocess.DEVNULL)
         clone_rights_from_disk(dest_path)
     except Exception as e:
-        log_info(f"[Error] Copy: {e}")
+        log_error(f"Copy failed: {e}")
 
 # --- HANDLER ---
 
@@ -336,7 +353,8 @@ def handle_series_smart(rp):
             for f in sorted(os.listdir(sd_array)):
                 num = parse_episode_number(f)
                 if num is not None and num >= curr_ep: cache_file_if_needed(os.path.join(sd_array, f))
-    except: pass
+    except Exception as e:
+        log_error(f"Series handling failed: {e}")
 
 def handle_movie_logic(rp):
     cache_file_if_needed(rp)
@@ -345,12 +363,13 @@ def handle_movie_logic(rp):
         if os.path.exists(folder):
             for f in os.listdir(folder):
                 if f.startswith(stem): cache_file_if_needed(os.path.join(folder, f))
-    except: pass
+    except Exception as e:
+        log_error(f"Movie handling failed: {e}")
 
 if __name__ == "__main__":
     load_config(); acquire_lock()
     signal.signal(signal.SIGHUP, lambda s, f: load_config())
-    log_info("Dienst gestartet. Warte auf Streams...")
+    log_info("Service started. Waiting for streams...")
     last_loop_sessions = {}
     while True:
         try:
@@ -361,11 +380,11 @@ if __name__ == "__main__":
                 if not rp.startswith(CONFIG["ARRAY_ROOT"]) or is_excluded(rp) or not is_trigger_filetype(os.path.basename(rp)): continue
                 active_paths.append(rp)
                 if rp not in stream_start_times:
-                    log_info(f"[Stream] Aktiv: {os.path.basename(rp)}")
-                    stream_start_times[rp] = time.time(); continue 
+                    log_info(f"[Stream] Active: {os.path.basename(rp)}")
+                    stream_start_times[rp] = time.time(); continue
                 if time.time() - stream_start_times[rp] >= get_config_int("COPY_DELAY"):
                     if parse_episode_number(os.path.basename(rp)) is not None: handle_series_smart(rp)
-                    else: handle_movie_logic(rp) 
+                    else: handle_movie_logic(rp)
             for p in list(stream_start_times.keys()):
                 if p not in set(active_paths): del stream_start_times[p]
             if get_config_bool("ENABLE_SMART_CLEANUP"):
@@ -383,5 +402,6 @@ if __name__ == "__main__":
                     if time.time() - ts > get_config_int("MOVIE_DELETE_DELAY"):
                         smart_manage_cache_file(cp, "Deletion Timer"); del movie_deletion_queue[cp]
             last_loop_sessions = curr_sessions
-        except: pass
+        except Exception as e:
+            log_error(f"Main loop error: {e}")
         time.sleep(get_config_int("CHECK_INTERVAL"))
