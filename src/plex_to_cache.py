@@ -9,6 +9,8 @@ import re
 import fcntl
 import signal
 import urllib3
+import json
+import argparse
 from pathlib import Path
 
 # Disable SSL warnings for self-signed certificates
@@ -440,7 +442,197 @@ def cleanup_by_days():
                 log_info(f"[Days Cleanup] {os.path.basename(cache_path)} cached for {int(age/86400)} days")
                 smart_manage_cache_file(cache_path, "Days Cleanup")
 
-if __name__ == "__main__":
+# --- CLI ACTIONS (called from PHP) ---
+
+def cli_move_cached_files():
+    """Move only plugin-tracked files back to array. Called via --action=clearcache"""
+    load_config()
+    tracked = load_tracked_files()
+    CACHE_ROOT = CONFIG["CACHE_ROOT"]
+
+    moved = 0
+    deleted = 0
+    total_size = 0
+    errors = []
+
+    for cache_path in list(tracked.keys()):
+        if not os.path.exists(cache_path):
+            untrack_cached_file(cache_path)
+            continue
+
+        try:
+            file_size = os.path.getsize(cache_path)
+            rel_path = cache_path.replace(CACHE_ROOT, "").lstrip("/")
+            array_path = os.path.join(PERMS_ROOT, rel_path)
+
+            # If file exists on array, just delete cache copy
+            if os.path.exists(array_path):
+                os.remove(cache_path)
+                cleanup_empty_parent_dirs(cache_path)
+                untrack_cached_file(cache_path)
+                deleted += 1
+                total_size += file_size
+            else:
+                # Move to array
+                os.makedirs(os.path.dirname(array_path), exist_ok=True)
+                subprocess.run(["rsync", "-a", "--inplace", "--remove-source-files", cache_path, array_path],
+                              check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                clone_rights_from_disk(array_path)
+                cleanup_empty_parent_dirs(cache_path)
+                untrack_cached_file(cache_path)
+                moved += 1
+                total_size += file_size
+        except Exception as e:
+            errors.append(f"{os.path.basename(cache_path)}: {str(e)}")
+
+    size_mb = round(total_size / 1024 / 1024, 2)
+    total = moved + deleted
+    return {
+        "success": True,
+        "message": f"Done: {total} files ({size_mb} MB). Moved: {moved}, Deleted (existed on array): {deleted}",
+        "moved": moved,
+        "deleted": deleted,
+        "size": total_size,
+        "errors": errors
+    }
+
+def cli_move_other_files():
+    """Move all files EXCEPT plugin-tracked files to array. Called via --action=moveother"""
+    load_config()
+    tracked_paths = set(load_tracked_files().keys())
+    CACHE_ROOT = CONFIG["CACHE_ROOT"]
+
+    moved = 0
+    deleted = 0
+    skipped = 0
+    total_files = 0
+    total_size = 0
+    errors = []
+
+    if not os.path.isdir(CACHE_ROOT):
+        return {"success": False, "message": f"Cache root not found: {CACHE_ROOT}"}
+
+    # Collect all files
+    for root, dirs, files in os.walk(CACHE_ROOT):
+        for filename in files:
+            total_files += 1
+            cache_path = os.path.join(root, filename)
+
+            # Skip tracked files
+            if cache_path in tracked_paths:
+                skipped += 1
+                continue
+
+            try:
+                file_size = os.path.getsize(cache_path)
+                rel_path = cache_path.replace(CACHE_ROOT, "").lstrip("/")
+                array_path = os.path.join(PERMS_ROOT, rel_path)
+
+                # If file exists on array, just delete cache copy
+                if os.path.exists(array_path):
+                    os.remove(cache_path)
+                    deleted += 1
+                    total_size += file_size
+                else:
+                    # Move to array
+                    os.makedirs(os.path.dirname(array_path), exist_ok=True)
+                    subprocess.run(["rsync", "-a", "--inplace", "--remove-source-files", cache_path, array_path],
+                                  check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    clone_rights_from_disk(array_path)
+                    moved += 1
+                    total_size += file_size
+            except Exception as e:
+                errors.append(f"{filename}: {str(e)}")
+
+    # Clean empty directories
+    for root, dirs, files in os.walk(CACHE_ROOT, topdown=False):
+        for d in dirs:
+            try:
+                os.rmdir(os.path.join(root, d))
+            except OSError:
+                pass
+
+    size_gb = round(total_size / 1024 / 1024 / 1024, 2)
+    total = moved + deleted
+    msg = f"Moved {total} files ({size_gb} GB). Total: {total_files}, Skipped (tracked): {skipped}"
+    if errors:
+        msg += f". Errors: {len(errors)}"
+
+    return {
+        "success": True,
+        "message": msg,
+        "moved": moved,
+        "deleted": deleted,
+        "skipped": skipped,
+        "total_files": total_files,
+        "size": total_size,
+        "errors": errors
+    }
+
+def cli_move_all_files():
+    """Move ALL files from cache to array. Called via --action=moveall"""
+    load_config()
+    CACHE_ROOT = CONFIG["CACHE_ROOT"]
+
+    moved = 0
+    deleted = 0
+    total_size = 0
+    errors = []
+
+    if not os.path.isdir(CACHE_ROOT):
+        return {"success": False, "message": f"Cache root not found: {CACHE_ROOT}"}
+
+    # Collect all files
+    for root, dirs, files in os.walk(CACHE_ROOT):
+        for filename in files:
+            cache_path = os.path.join(root, filename)
+
+            try:
+                file_size = os.path.getsize(cache_path)
+                rel_path = cache_path.replace(CACHE_ROOT, "").lstrip("/")
+                array_path = os.path.join(PERMS_ROOT, rel_path)
+
+                # If file exists on array, just delete cache copy
+                if os.path.exists(array_path):
+                    os.remove(cache_path)
+                    deleted += 1
+                    total_size += file_size
+                else:
+                    # Move to array
+                    os.makedirs(os.path.dirname(array_path), exist_ok=True)
+                    subprocess.run(["rsync", "-a", "--inplace", "--remove-source-files", cache_path, array_path],
+                                  check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    clone_rights_from_disk(array_path)
+                    moved += 1
+                    total_size += file_size
+            except Exception as e:
+                errors.append(f"{filename}: {str(e)}")
+
+    # Clean empty directories
+    for root, dirs, files in os.walk(CACHE_ROOT, topdown=False):
+        for d in dirs:
+            try:
+                os.rmdir(os.path.join(root, d))
+            except OSError:
+                pass
+
+    # Clear tracking file since all files moved
+    if os.path.exists(TRACKED_FILES):
+        with open(TRACKED_FILES, 'w') as f:
+            f.write('')
+
+    size_gb = round(total_size / 1024 / 1024 / 1024, 2)
+    total = moved + deleted
+    return {
+        "success": True,
+        "message": f"Moved {total} files ({size_gb} GB) to array",
+        "moved": moved,
+        "deleted": deleted,
+        "size": total_size,
+        "errors": errors
+    }
+
+def run_daemon():
     load_config(); acquire_lock()
     signal.signal(signal.SIGHUP, lambda s, f: load_config())
     log_info("Service started. Waiting for streams...")
@@ -491,3 +683,22 @@ if __name__ == "__main__":
         except Exception as e:
             log_error(f"Main loop error: {e}")
         time.sleep(get_config_int("CHECK_INTERVAL"))
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Plex to Cache - Media caching daemon')
+    parser.add_argument('--action', choices=['daemon', 'clearcache', 'moveother', 'moveall'],
+                        default='daemon', help='Action to perform')
+    args = parser.parse_args()
+
+    if args.action == 'daemon':
+        run_daemon()
+    elif args.action == 'clearcache':
+        result = cli_move_cached_files()
+        print(json.dumps(result))
+    elif args.action == 'moveother':
+        result = cli_move_other_files()
+        print(json.dumps(result))
+    elif args.action == 'moveall':
+        result = cli_move_all_files()
+        print(json.dumps(result))
