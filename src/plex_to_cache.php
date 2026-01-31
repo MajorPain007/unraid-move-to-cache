@@ -3,7 +3,6 @@ $ptc_plugin = "plex_to_cache";
 $ptc_cfg_file = "/boot/config/plugins/$ptc_plugin/settings.cfg";
 $ptc_log_file = "/var/log/plex_to_cache.log";
 $ptc_pid_file = "/var/run/plex_to_cache.pid";
-$ptc_tracked_file = "/boot/config/plugins/$ptc_plugin/cached_files.list";
 
 // Defaults
 $ptc_cfg = [
@@ -115,44 +114,6 @@ if (isset($_GET['action']) && $_GET['action'] === 'test') {
     exit;
 }
 
-// AJAX: Clear all cached media (moves plugin-cached files back to array)
-if (isset($_GET['action']) && $_GET['action'] === 'clearcache') {
-    header('Content-Type: application/json');
-    $output = shell_exec("python3 /usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py --action=clearcache 2>&1");
-    $result = json_decode($output, true);
-    if ($result === null) {
-        echo json_encode(['success' => false, 'message' => 'Failed to execute Python script: ' . $output]);
-    } else {
-        echo json_encode($result);
-    }
-    exit;
-}
-
-// AJAX: Move ALL files to array (including plugin-cached media)
-if (isset($_GET['action']) && $_GET['action'] === 'moveall') {
-    header('Content-Type: application/json');
-    $output = shell_exec("python3 /usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py --action=moveall 2>&1");
-    $result = json_decode($output, true);
-    if ($result === null) {
-        echo json_encode(['success' => false, 'message' => 'Failed to execute Python script: ' . $output]);
-    } else {
-        echo json_encode($result);
-    }
-    exit;
-}
-
-// AJAX: Move other files to array (everything EXCEPT plugin-cached media)
-if (isset($_GET['action']) && $_GET['action'] === 'moveother') {
-    header('Content-Type: application/json');
-    $output = shell_exec("python3 /usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py --action=moveother 2>&1");
-    $result = json_decode($output, true);
-    if ($result === null) {
-        echo json_encode(['success' => false, 'message' => 'Failed to execute Python script: ' . $output]);
-    } else {
-        echo json_encode($result);
-    }
-    exit;
-}
 
 // AJAX: Service control
 if (isset($_GET['action']) && $_GET['action'] === 'service') {
@@ -205,11 +166,6 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 // Check service status
 $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($ptc_pid_file), 0);
 
-// Count tracked files
-$tracked_count = 0;
-if (file_exists($ptc_tracked_file)) {
-    $tracked_count = count(array_filter(array_map('trim', file($ptc_tracked_file))));
-}
 ?>
 <style>
 :root { --primary-blue: #00aaff; --bg-dark: #111; --success-green: #00cc66; --error-red: #ff4444; --warning-orange: #ff9900; }
@@ -377,38 +333,6 @@ if (file_exists($ptc_tracked_file)) {
 .btn-test.success { border-color: var(--success-green); color: var(--success-green); }
 .btn-test.error { border-color: var(--error-red); color: var(--error-red); }
 
-/* Action buttons */
-.btn-action {
-    padding: 8px 16px;
-    font-size: 12px;
-    cursor: pointer;
-    border-radius: 4px;
-    background: transparent;
-    margin-top: 10px;
-    display: block;
-    width: 100%;
-    text-align: center;
-}
-.btn-action.danger {
-    border: 1px solid var(--error-red);
-    color: var(--error-red);
-}
-.btn-action.danger:hover { background: var(--error-red); color: #fff; }
-.btn-action.warning {
-    border: 1px solid var(--warning-orange);
-    color: var(--warning-orange);
-}
-.btn-action.warning:hover { background: var(--warning-orange); color: #fff; }
-
-.cache-info {
-    font-size: 12px;
-    color: #888;
-    margin-top: 15px;
-    padding: 10px;
-    background: #1a1a1a;
-    border-radius: 4px;
-}
-.cache-info strong { color: var(--primary-blue); }
 
 /* Cleanup mode selector */
 .cleanup-mode-selector {
@@ -505,13 +429,6 @@ if (file_exists($ptc_tracked_file)) {
                 <div class="form-pair"><label data-tooltip="Move cached files back to array after this many days.">Max Days:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_DAYS" value="<?= htmlspecialchars($ptc_cfg['CACHE_MAX_DAYS']) ?>" class="ptc-input input-small"><span class="unit-label">days</span></div></div>
             </div>
 
-            <div class="cache-info">
-                <strong>Tracked Media Files:</strong> <?= $tracked_count ?> files cached by this plugin
-            </div>
-
-            <button type="button" class="btn-action warning" onclick="moveOther()"><i class="fa fa-arrow-right"></i> Move Other Files to Array</button>
-            <button type="button" class="btn-action warning" onclick="clearCache()"><i class="fa fa-arrow-right"></i> Move Cached Media to Array</button>
-            <button type="button" class="btn-action danger" onclick="moveAll()"><i class="fa fa-arrow-right"></i> Move ALL to Array</button>
         </div>
 
         <div class="ptc-col" id="ptc-col-log">
@@ -592,38 +509,6 @@ function testConnection(service, btn) {
     });
 }
 
-function clearCache() {
-    if (!confirm('This will move all media files cached by this plugin back to the array. Continue?')) return;
-    alert('Moving cached media files... This may take a while.');
-    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=clearcache', function(data) {
-        alert(data.message);
-        location.reload();
-    }).fail(function() {
-        alert('Failed to move cached media');
-    });
-}
-
-function moveOther() {
-    if (!confirm('This will move ALL files from cache to array EXCEPT the media files cached by this plugin. Continue?')) return;
-    alert('Moving files... This may take a while. Check the log for progress.');
-    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=moveother', function(data) {
-        alert(data.message);
-        refreshLog();
-    }).fail(function() {
-        alert('Failed to move files');
-    });
-}
-
-function moveAll() {
-    if (!confirm('This will move ALL files from cache to array, including media files cached by this plugin. Continue?')) return;
-    alert('Moving all files... This may take a while. Check the log for progress.');
-    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=moveall', function(data) {
-        alert(data.message);
-        location.reload();
-    }).fail(function() {
-        alert('Failed to move files');
-    });
-}
 
 function serviceControl(cmd) {
     $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=service&cmd=' + cmd, function(data) {

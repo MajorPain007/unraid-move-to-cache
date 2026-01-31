@@ -8,12 +8,10 @@ Supports Plex, Emby, and Jellyfin.
 import os
 import sys
 import re
-import json
 import time
 import fcntl
 import shutil
 import signal
-import argparse
 import subprocess
 from pathlib import Path
 
@@ -422,122 +420,6 @@ def handle_series(array_path):
                 copy_file_to_cache(os.path.join(season_dir, f))
 
 # =============================================================================
-# CLI ACTIONS
-# =============================================================================
-
-def cli_move_tracked():
-    """Move all plugin-tracked files back to array."""
-    load_config()
-    tracked = TrackedFiles.load()
-
-    moved, deleted, total_size, errors = 0, 0, 0, []
-
-    for cache_path in list(tracked.keys()):
-        success, was_deleted, size = move_file_to_array(cache_path)
-        if success:
-            total_size += size
-            if was_deleted:
-                deleted += 1
-            else:
-                moved += 1
-        else:
-            errors.append(os.path.basename(cache_path))
-
-    TrackedFiles.clear()
-
-    size_mb = round(total_size / 1024 / 1024, 2)
-    return {
-        "success": True,
-        "message": f"Done: {moved + deleted} files ({size_mb} MB). Moved: {moved}, Deleted: {deleted}",
-        "moved": moved, "deleted": deleted, "errors": errors
-    }
-
-def cli_move_other():
-    """Move all non-tracked files from cache to array."""
-    load_config()
-    tracked = set(TrackedFiles.load().keys())
-    cache_root = cfg("CACHE_ROOT")
-
-    if not os.path.isdir(cache_root):
-        return {"success": False, "message": f"Cache not found: {cache_root}"}
-
-    moved, deleted, skipped, total, total_size, errors = 0, 0, 0, 0, 0, []
-
-    for root, _, files in os.walk(cache_root):
-        for filename in files:
-            total += 1
-            cache_path = os.path.join(root, filename)
-
-            if cache_path in tracked:
-                skipped += 1
-                continue
-
-            success, was_deleted, size = move_file_to_array(cache_path, track=False)
-            if success:
-                total_size += size
-                if was_deleted:
-                    deleted += 1
-                else:
-                    moved += 1
-            else:
-                errors.append(filename)
-
-    # Cleanup empty directories
-    for root, dirs, _ in os.walk(cache_root, topdown=False):
-        for d in dirs:
-            try:
-                os.rmdir(os.path.join(root, d))
-            except OSError:
-                pass
-
-    size_gb = round(total_size / 1024 / 1024 / 1024, 2)
-    msg = f"Moved {moved + deleted} files ({size_gb} GB). Total: {total}, Skipped: {skipped}"
-    if errors:
-        msg += f", Errors: {len(errors)}"
-
-    return {"success": True, "message": msg, "moved": moved, "deleted": deleted, "skipped": skipped}
-
-def cli_move_all():
-    """Move ALL files from cache to array."""
-    load_config()
-    cache_root = cfg("CACHE_ROOT")
-
-    if not os.path.isdir(cache_root):
-        return {"success": False, "message": f"Cache not found: {cache_root}"}
-
-    moved, deleted, total_size, errors = 0, 0, 0, []
-
-    for root, _, files in os.walk(cache_root):
-        for filename in files:
-            cache_path = os.path.join(root, filename)
-            success, was_deleted, size = move_file_to_array(cache_path, track=False)
-            if success:
-                total_size += size
-                if was_deleted:
-                    deleted += 1
-                else:
-                    moved += 1
-            else:
-                errors.append(filename)
-
-    # Cleanup empty directories
-    for root, dirs, _ in os.walk(cache_root, topdown=False):
-        for d in dirs:
-            try:
-                os.rmdir(os.path.join(root, d))
-            except OSError:
-                pass
-
-    TrackedFiles.clear()
-
-    size_gb = round(total_size / 1024 / 1024 / 1024, 2)
-    return {
-        "success": True,
-        "message": f"Moved {moved + deleted} files ({size_gb} GB) to array",
-        "moved": moved, "deleted": deleted
-    }
-
-# =============================================================================
 # DAEMON
 # =============================================================================
 
@@ -654,14 +536,4 @@ def run_daemon():
 # =============================================================================
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Plex to Cache daemon')
-    parser.add_argument('--action', choices=['daemon', 'clearcache', 'moveother', 'moveall'], default='daemon')
-    args = parser.parse_args()
-
-    actions = {
-        'daemon': run_daemon,
-        'clearcache': lambda: print(json.dumps(cli_move_tracked())),
-        'moveother': lambda: print(json.dumps(cli_move_other())),
-        'moveall': lambda: print(json.dumps(cli_move_all()))
-    }
-    actions[args.action]()
+    run_daemon()
