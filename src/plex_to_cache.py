@@ -1,551 +1,489 @@
 #!/usr/bin/python3
-import requests
+"""
+Plex to Cache - Automatic media caching daemon for Unraid
+Moves actively streamed media from array to cache for faster playback.
+Supports Plex, Emby, and Jellyfin.
+"""
+
 import os
-import shutil
-import subprocess
-import time
 import sys
 import re
-import fcntl
-import signal
-import urllib3
 import json
+import time
+import fcntl
+import shutil
+import signal
 import argparse
+import subprocess
 from pathlib import Path
 
-# Disable SSL warnings for self-signed certificates
+import requests
+import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ==========================================
-# --- CONFIGURATION DEFAULTS ---
-# ==========================================
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
 
 CONFIG_FILE = "/boot/config/plugins/plex_to_cache/settings.cfg"
 TRACKED_FILES = "/boot/config/plugins/plex_to_cache/cached_files.list"
-LOCK_FILE_PATH = "/tmp/media_cache_cleaner.lock"
+LOCK_FILE = "/tmp/media_cache_cleaner.lock"
+ARRAY_ROOT = "/mnt/user0"  # Physical array path (no cache)
 
-# Hardcoded Perms Root (Physical Disks ONLY - No Cache)
-# We use /mnt/user0 to verify if a file is really on the array.
-PERMS_ROOT = "/mnt/user0"
-
-CONFIG = {
-    "ENABLE_PLEX": "False",
-    "PLEX_URL": "http://localhost:32400",
-    "PLEX_TOKEN": "",
-
-    "ENABLE_EMBY": "False",
-    "EMBY_URL": "http://localhost:8096",
-    "EMBY_API_KEY": "",
-
-    "ENABLE_JELLYFIN": "False",
-    "JELLYFIN_URL": "http://localhost:8096",
-    "JELLYFIN_API_KEY": "",
-
-    "CHECK_INTERVAL": "10",
-    "CACHE_MAX_USAGE": "80",
-    "COPY_DELAY": "30",
-    "CLEANUP_MODE": "none",  # "none", "smart", or "days"
-    "MOVIE_DELETE_DELAY": "1800",
-    "EPISODE_KEEP_PREVIOUS": "2",
-    "CACHE_MAX_DAYS": "7",  # Days before files are moved back to array
-    "EXCLUDE_DIRS": "",
-    "MEDIA_FILETYPES": ".mkv .mp4 .avi",
-    "ARRAY_ROOT": "/mnt/user",
-    "CACHE_ROOT": "/mnt/cache",
-    "DOCKER_MAPPINGS": ""
+DEFAULT_CONFIG = {
+    "ENABLE_PLEX": "False", "PLEX_URL": "http://localhost:32400", "PLEX_TOKEN": "",
+    "ENABLE_EMBY": "False", "EMBY_URL": "http://localhost:8096", "EMBY_API_KEY": "",
+    "ENABLE_JELLYFIN": "False", "JELLYFIN_URL": "http://localhost:8096", "JELLYFIN_API_KEY": "",
+    "CHECK_INTERVAL": "10", "CACHE_MAX_USAGE": "80", "COPY_DELAY": "30",
+    "CLEANUP_MODE": "none", "MOVIE_DELETE_DELAY": "1800", "EPISODE_KEEP_PREVIOUS": "2",
+    "CACHE_MAX_DAYS": "7", "EXCLUDE_DIRS": "", "MEDIA_FILETYPES": ".mkv .mp4 .avi",
+    "ARRAY_ROOT": "/mnt/user", "CACHE_ROOT": "/mnt/cache", "DOCKER_MAPPINGS": ""
 }
 
-# --- INTERNAL VARIABLES ---
-movie_deletion_queue = {}
-stream_start_times = {}
-metadata_path_cache = {}
-parsed_docker_mappings = {}
+# Runtime state
+config = dict(DEFAULT_CONFIG)
+docker_mappings = {}
+metadata_cache = {}
+stream_timers = {}
+deletion_queue = {}
 
-# ---------------------
+# =============================================================================
+# UTILITIES
+# =============================================================================
 
-def log_info(msg):
-    print(msg, flush=True)
+def log(msg, error=False):
+    prefix = "[Error] " if error else ""
+    print(f"{prefix}{msg}", flush=True)
 
-def log_error(msg):
-    print(f"[Error] {msg}", flush=True)
-
-# --- TRACKING FUNCTIONS ---
-
-def load_tracked_files():
-    """Load tracked files with timestamps. Format: path|timestamp"""
-    tracked = {}
-    if os.path.exists(TRACKED_FILES):
+def load_config():
+    global config, docker_mappings
+    config = dict(DEFAULT_CONFIG)
+    if os.path.exists(CONFIG_FILE):
         try:
-            with open(TRACKED_FILES, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
+            for line in Path(CONFIG_FILE).read_text().splitlines():
+                if '=' in line and not line.strip().startswith('#'):
+                    k, v = line.split('=', 1)
+                    config[k.strip()] = v.strip().strip('"\'')
+        except Exception as e:
+            log(f"Config load failed: {e}", error=True)
+
+    # Parse docker mappings
+    docker_mappings = {}
+    for pair in config.get("DOCKER_MAPPINGS", "").split(';'):
+        if ':' in pair:
+            k, v = pair.split(':', 1)
+            docker_mappings[k.strip()] = v.strip()
+
+def cfg(key, as_int=False, as_bool=False):
+    val = config.get(key, DEFAULT_CONFIG.get(key, ""))
+    if as_bool:
+        return val.lower() in ("true", "1")
+    if as_int:
+        try: return int(val)
+        except: return 0
+    return val
+
+# =============================================================================
+# FILE TRACKING
+# =============================================================================
+
+class TrackedFiles:
+    """Manages the list of plugin-cached files with timestamps."""
+
+    @staticmethod
+    def load():
+        """Load tracked files. Returns dict: {path: timestamp}"""
+        tracked = {}
+        if os.path.exists(TRACKED_FILES):
+            try:
+                for line in Path(TRACKED_FILES).read_text().splitlines():
                     if '|' in line:
                         path, ts = line.rsplit('|', 1)
                         tracked[path] = float(ts)
-                    else:
-                        # Legacy format without timestamp
-                        tracked[line] = time.time()
-        except Exception as e:
-            log_error(f"Failed to load tracked files: {e}")
-    return tracked
+                    elif line.strip():
+                        tracked[line.strip()] = time.time()
+            except Exception as e:
+                log(f"Tracking load failed: {e}", error=True)
+        return tracked
 
-def save_tracked_files(tracked):
-    """Save tracked files with timestamps."""
-    try:
-        with open(TRACKED_FILES, 'w') as f:
-            for path, ts in sorted(tracked.items()):
-                f.write(f"{path}|{ts}\n")
-    except Exception as e:
-        log_error(f"Failed to save tracked files: {e}")
-
-def track_cached_file(cache_path):
-    """Add a file to the tracking list with current timestamp."""
-    tracked = load_tracked_files()
-    if cache_path not in tracked:
-        tracked[cache_path] = time.time()
-        save_tracked_files(tracked)
-
-def untrack_cached_file(cache_path):
-    """Remove a file from the tracking list."""
-    tracked = load_tracked_files()
-    if cache_path in tracked:
-        del tracked[cache_path]
-        save_tracked_files(tracked)
-
-def get_tracked_files_set():
-    """Get just the file paths as a set (for compatibility)."""
-    return set(load_tracked_files().keys())
-
-def parse_docker_mappings(mapping_str):
-    mappings = {}
-    if not mapping_str:
-        return mappings
-    pairs = mapping_str.split(';')
-    for pair in pairs:
-        if ':' in pair:
-            k, v = pair.split(':', 1)
-            mappings[k.strip()] = v.strip()
-    return mappings
-
-def load_config():
-    global CONFIG, parsed_docker_mappings
-    if os.path.exists(CONFIG_FILE):
+    @staticmethod
+    def save(tracked):
+        """Save tracked files dict to disk."""
         try:
-            with open(CONFIG_FILE, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"): continue
-                    if "=" in line:
-                        key, value = line.split("=", 1)
-                        key = key.strip()
-                        value = value.strip().strip('"').strip("'")
-                        CONFIG[key] = value
+            content = '\n'.join(f"{p}|{t}" for p, t in sorted(tracked.items()))
+            Path(TRACKED_FILES).write_text(content + '\n' if content else '')
         except Exception as e:
-            log_error(f"Failed to load config: {e}")
+            log(f"Tracking save failed: {e}", error=True)
 
-    parsed_docker_mappings = parse_docker_mappings(CONFIG.get("DOCKER_MAPPINGS", ""))
+    @staticmethod
+    def add(path):
+        """Add file to tracking."""
+        tracked = TrackedFiles.load()
+        if path not in tracked:
+            tracked[path] = time.time()
+            TrackedFiles.save(tracked)
 
-def get_config_bool(key):
-    val = CONFIG.get(key, "False")
-    return val.lower() == "true" or val == "1"
+    @staticmethod
+    def remove(path):
+        """Remove file from tracking."""
+        tracked = TrackedFiles.load()
+        if path in tracked:
+            del tracked[path]
+            TrackedFiles.save(tracked)
 
-def get_config_int(key):
-    try: return int(CONFIG.get(key, 0))
-    except: return 0
+    @staticmethod
+    def clear():
+        """Clear all tracked files."""
+        TrackedFiles.save({})
 
-def acquire_lock():
-    global lock_file
-    lock_file = open(LOCK_FILE_PATH, 'w')
-    try:
-        fcntl.lockf(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except IOError:
-        log_error("Another instance is already running")
-        sys.exit(1)
+# =============================================================================
+# PATH UTILITIES
+# =============================================================================
 
-# --- PERMISSIONS LOGIC ---
+def cache_to_array(cache_path):
+    """Convert cache path to array path."""
+    return cache_path.replace(cfg("CACHE_ROOT"), ARRAY_ROOT, 1)
 
-def get_perms_reference_path(cache_path):
-    CACHE_ROOT = CONFIG["CACHE_ROOT"]
-    if cache_path.startswith(CACHE_ROOT):
-        return cache_path.replace(CACHE_ROOT, PERMS_ROOT, 1)
-    return None
+def array_to_cache(array_path):
+    """Convert array path to cache path."""
+    return array_path.replace(cfg("ARRAY_ROOT"), cfg("CACHE_ROOT"), 1)
 
-def clone_rights_from_disk(dst_path):
-    src_path = get_perms_reference_path(dst_path)
-    if not src_path or not os.path.exists(src_path):
-        return
-    try:
-        st = os.stat(src_path)
-        os.chown(dst_path, st.st_uid, st.st_gid)
-        os.chmod(dst_path, st.st_mode)
-    except Exception as e:
-        log_error(f"Failed to clone permissions: {e}")
-
-# --- HELPERS ---
+def translate_docker_path(docker_path):
+    """Translate docker container path to host path."""
+    path = docker_path.replace('\\', '/')
+    for docker_prefix, host_prefix in docker_mappings.items():
+        if path.startswith(docker_prefix):
+            rel = path[len(docker_prefix):].lstrip('/')
+            base = host_prefix if host_prefix.startswith(cfg("ARRAY_ROOT")) else os.path.join(cfg("ARRAY_ROOT"), host_prefix.lstrip('/'))
+            return os.path.join(base, rel)
+    return path
 
 def is_excluded(path):
-    EXCLUDE_DIRS = CONFIG["EXCLUDE_DIRS"]
-    if not EXCLUDE_DIRS: return False
-    path_parts = path.split(os.sep)
-    excludes = [x.strip() for x in EXCLUDE_DIRS.split(',')]
-    for exc in excludes:
-        if exc and exc in path_parts: return True
-    return False
+    """Check if path should be excluded."""
+    excludes = [x.strip() for x in cfg("EXCLUDE_DIRS").split(',') if x.strip()]
+    return any(exc in path.split(os.sep) for exc in excludes)
 
-def is_trigger_filetype(filename):
-    MEDIA_FILETYPES = CONFIG["MEDIA_FILETYPES"]
-    if not MEDIA_FILETYPES: return True
-    valid_exts = [x.strip().lower() for x in MEDIA_FILETYPES.split()]
-    lower_name = filename.lower()
-    for ext in valid_exts:
-        if lower_name.endswith(ext): return True
-    return False
+def is_media_file(filename):
+    """Check if file is a media file."""
+    extensions = cfg("MEDIA_FILETYPES").split()
+    return not extensions or any(filename.lower().endswith(ext.lower()) for ext in extensions)
 
-# --- API CLIENTS ---
-
-def plex_api_get(endpoint):
-    headers = {'X-Plex-Token': CONFIG["PLEX_TOKEN"], 'Accept': 'application/json'}
-    try:
-        r = requests.get(f"{CONFIG['PLEX_URL']}{endpoint}", headers=headers, timeout=5, verify=False)
-        return r.json()
-    except Exception as e:
-        log_error(f"Plex API request failed: {e}")
-        return None
-
-def emby_api_get(endpoint, key, url):
-    headers = {'X-Emby-Token': key, 'Accept': 'application/json'}
-    try:
-        r = requests.get(f"{url}{endpoint}", headers=headers, timeout=5, verify=False)
-        return r.json()
-    except Exception as e:
-        log_error(f"Emby/Jellyfin API request failed: {e}")
-        return None
-
-def get_active_sessions():
-    active_items = {}
-    if get_config_bool("ENABLE_PLEX"):
-        data = plex_api_get("/status/sessions")
-        if data and 'MediaContainer' in data and 'Metadata' in data['MediaContainer']:
-            for item in data['MediaContainer']['Metadata']:
-                rk = item.get('ratingKey')
-                found = metadata_path_cache.get(rk)
-                if not found and 'Media' in item:
-                    for media in item['Media']:
-                        for part in media.get('Part', []):
-                            if part.get('file'): found = part['file']; break
-                if not found and rk:
-                    meta = plex_api_get(f"/library/metadata/{rk}")
-                    if meta and 'MediaContainer' in meta and 'Metadata' in meta['MediaContainer']:
-                        for m in meta['MediaContainer']['Metadata']:
-                            for med in m.get('Media', []):
-                                for p in med.get('Part', []):
-                                    if p.get('file'): found = p['file']; break
-                if found:
-                    metadata_path_cache[rk] = found
-                    active_items[found] = {'service': 'plex', 'id': rk}
-
-    for svc in [("ENABLE_EMBY", "EMBY_API_KEY", "EMBY_URL", "emby"), ("ENABLE_JELLYFIN", "JELLYFIN_API_KEY", "JELLYFIN_URL", "jellyfin")]:
-        if get_config_bool(svc[0]):
-            data = emby_api_get("/Sessions", CONFIG[svc[1]], CONFIG[svc[2]])
-            if data:
-                for s in data:
-                    p = s.get('NowPlayingItem', {}).get('Path')
-                    if p: active_items[p] = {'service': svc[3], 'id': s['NowPlayingItem'].get('Id'), 'user': s.get('UserId')}
-    return active_items
-
-def check_is_watched(session_data):
-    if not session_data: return False
-    service = session_data.get('service')
-    if service == 'plex':
-        rk = session_data.get('id')
-        data = plex_api_get(f"/library/metadata/{rk}")
-        if data and 'MediaContainer' in data and 'Metadata' in data['MediaContainer']:
-            meta = data['MediaContainer']['Metadata'][0]
-            if 'viewCount' in meta and meta['viewCount'] > 0: return True
-    elif service in ['emby', 'jellyfin']:
-        u = CONFIG["EMBY_URL"] if service == 'emby' else CONFIG["JELLYFIN_URL"]
-        k = CONFIG["EMBY_API_KEY"] if service == 'emby' else CONFIG["JELLYFIN_API_KEY"]
-        d = emby_api_get(f"/Users/{session_data.get('user')}/Items/{session_data.get('id')}", k, u)
-        if d and 'UserData' in d: return d['UserData'].get('Played', False)
-    return False
-
-# --- PATH TOOLS ---
-
-def translate_path(docker_path):
-    clean_path = docker_path.replace('\\', '/')
-    ARRAY_ROOT = CONFIG["ARRAY_ROOT"]
-    for d_prefix, real_prefix in parsed_docker_mappings.items():
-        if clean_path.startswith(d_prefix):
-            rel_path = clean_path[len(d_prefix):].lstrip('/')
-            return os.path.join(real_prefix if real_prefix.startswith(ARRAY_ROOT) else os.path.join(ARRAY_ROOT, real_prefix.lstrip('/')), rel_path).replace('//', '/')
-    return clean_path
-
-def get_cache_path(array_path):
-    ARRAY_ROOT = CONFIG["ARRAY_ROOT"]
-    CACHE_ROOT = CONFIG["CACHE_ROOT"]
-    if array_path.startswith(ARRAY_ROOT): return array_path.replace(ARRAY_ROOT, CACHE_ROOT, 1)
-    return None
-
-def parse_episode_number(filename):
+def parse_episode(filename):
+    """Extract episode number from filename. Returns None if not an episode."""
     match = re.search(r"[sS]\d+[eE](\d+)", filename)
     return int(match.group(1)) if match else None
 
-def is_last_episode_on_array(file_path):
+# =============================================================================
+# PERMISSIONS
+# =============================================================================
+
+def clone_permissions(dest_path):
+    """Clone permissions from array original to dest_path."""
+    src = cache_to_array(dest_path) if dest_path.startswith(cfg("CACHE_ROOT")) else None
+    if not src or not os.path.exists(src):
+        return
     try:
-        ep_num = parse_episode_number(os.path.basename(file_path))
-        if ep_num is None: return False
-        folder = os.path.dirname(file_path)
-        max_ep = 0
-        if os.path.exists(folder):
-            for f in os.listdir(folder):
-                e = parse_episode_number(f)
-                if e and e > max_ep: max_ep = e
-        return ep_num >= max_ep
+        st = os.stat(src)
+        os.chown(dest_path, st.st_uid, st.st_gid)
+        os.chmod(dest_path, st.st_mode)
     except Exception as e:
-        log_error(f"Failed to check last episode: {e}")
+        log(f"Permission clone failed: {e}", error=True)
+
+# =============================================================================
+# FILE OPERATIONS
+# =============================================================================
+
+def rsync_move(src, dst, remove_source=True):
+    """Move file using rsync with proper options."""
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    cmd = ["rsync", "-a", "--inplace"]
+    if remove_source:
+        cmd.append("--remove-source-files")
+    cmd.extend([src, dst])
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def cleanup_empty_dirs(start_path):
+    """Remove empty parent directories up to CACHE_ROOT."""
+    cache_root = cfg("CACHE_ROOT")
+    protected = {os.path.join(cache_root, m.strip("/")) for m in docker_mappings.values()}
+
+    parent = os.path.dirname(start_path)
+    while parent.startswith(cache_root) and len(parent) > len(cache_root):
+        if parent in protected:
+            break
+        try:
+            os.rmdir(parent)
+            parent = os.path.dirname(parent)
+        except OSError:
+            break
+
+def move_file_to_array(cache_path, track=True):
+    """Move a single file from cache to array. Returns (success, was_deleted, size)."""
+    if not os.path.exists(cache_path):
+        if track:
+            TrackedFiles.remove(cache_path)
+        return True, False, 0
+
+    try:
+        size = os.path.getsize(cache_path)
+        array_path = cache_to_array(cache_path)
+
+        # If already on array, just delete cache copy
+        if os.path.exists(array_path):
+            os.remove(cache_path)
+            cleanup_empty_dirs(cache_path)
+            if track:
+                TrackedFiles.remove(cache_path)
+            return True, True, size
+
+        # Move to array
+        rsync_move(cache_path, array_path)
+        clone_permissions(array_path)
+        cleanup_empty_dirs(cache_path)
+        if track:
+            TrackedFiles.remove(cache_path)
+        return True, False, size
+
+    except Exception as e:
+        return False, False, 0
+
+def copy_file_to_cache(array_path):
+    """Copy file from array to cache."""
+    if is_excluded(array_path) or not is_media_file(os.path.basename(array_path)):
+        return
+
+    cache_path = array_to_cache(array_path)
+
+    # Already cached?
+    if os.path.exists(cache_path):
+        if os.path.getsize(array_path) == os.path.getsize(cache_path):
+            deletion_queue.pop(cache_path, None)
+            TrackedFiles.add(cache_path)
+            return
+
+    # Check disk space
+    try:
+        usage = shutil.disk_usage(cfg("CACHE_ROOT"))
+        if (usage.used / usage.total) * 100 >= cfg("CACHE_MAX_USAGE", as_int=True):
+            return
+    except:
+        return
+
+    log(f"[Copy] -> {os.path.basename(array_path)}")
+    try:
+        # Create directory structure with proper permissions
+        cache_dir = os.path.dirname(cache_path)
+        cache_root = cfg("CACHE_ROOT")
+        for part in os.path.relpath(cache_dir, cache_root).split(os.sep):
+            if not part or part == '.':
+                continue
+            cache_root = os.path.join(cache_root, part)
+            if not os.path.exists(cache_root):
+                os.mkdir(cache_root)
+                clone_permissions(cache_root)
+
+        rsync_move(array_path, cache_path, remove_source=False)
+        clone_permissions(cache_path)
+        TrackedFiles.add(cache_path)
+    except Exception as e:
+        log(f"Copy failed: {e}", error=True)
+
+# =============================================================================
+# API CLIENTS
+# =============================================================================
+
+def api_get(url, headers):
+    """Make API GET request."""
+    try:
+        r = requests.get(url, headers=headers, timeout=5, verify=False)
+        return r.json() if r.ok else None
+    except:
+        return None
+
+def get_active_streams():
+    """Get currently playing files from all enabled services."""
+    streams = {}
+
+    # Plex
+    if cfg("ENABLE_PLEX", as_bool=True):
+        headers = {'X-Plex-Token': cfg("PLEX_TOKEN"), 'Accept': 'application/json'}
+        data = api_get(f"{cfg('PLEX_URL')}/status/sessions", headers)
+        if data and 'MediaContainer' in data:
+            for item in data['MediaContainer'].get('Metadata', []):
+                rk = item.get('ratingKey')
+                path = metadata_cache.get(rk)
+
+                if not path:
+                    for media in item.get('Media', []):
+                        for part in media.get('Part', []):
+                            if part.get('file'):
+                                path = part['file']
+                                break
+
+                if not path and rk:
+                    meta = api_get(f"{cfg('PLEX_URL')}/library/metadata/{rk}", headers)
+                    if meta and 'MediaContainer' in meta:
+                        for m in meta['MediaContainer'].get('Metadata', []):
+                            for med in m.get('Media', []):
+                                for p in med.get('Part', []):
+                                    if p.get('file'):
+                                        path = p['file']
+                                        break
+
+                if path:
+                    metadata_cache[rk] = path
+                    streams[path] = {'service': 'plex', 'id': rk}
+
+    # Emby / Jellyfin
+    for enabled, api_key, url, name in [
+        ("ENABLE_EMBY", "EMBY_API_KEY", "EMBY_URL", "emby"),
+        ("ENABLE_JELLYFIN", "JELLYFIN_API_KEY", "JELLYFIN_URL", "jellyfin")
+    ]:
+        if cfg(enabled, as_bool=True):
+            headers = {'X-Emby-Token': cfg(api_key), 'Accept': 'application/json'}
+            data = api_get(f"{cfg(url)}/Sessions", headers)
+            if data:
+                for s in data:
+                    item = s.get('NowPlayingItem', {})
+                    if item.get('Path'):
+                        streams[item['Path']] = {
+                            'service': name,
+                            'id': item.get('Id'),
+                            'user': s.get('UserId')
+                        }
+
+    return streams
+
+def is_watched(session):
+    """Check if media item has been watched."""
+    if not session:
         return False
 
-# --- MOVER / DELETE LOGIC ---
+    service = session.get('service')
 
-def cleanup_empty_parent_dirs(path):
-    parent_dir = os.path.dirname(path)
-    CACHE_ROOT = CONFIG["CACHE_ROOT"]
-    protected = [os.path.join(CACHE_ROOT, m.strip("/")) for m in parsed_docker_mappings.values()]
-    while parent_dir.startswith(CACHE_ROOT) and len(parent_dir) > len(CACHE_ROOT):
-        if parent_dir in protected: break
-        try:
-            os.rmdir(parent_dir)
-            parent_dir = os.path.dirname(parent_dir)
-        except OSError: break
+    if service == 'plex':
+        headers = {'X-Plex-Token': cfg("PLEX_TOKEN"), 'Accept': 'application/json'}
+        data = api_get(f"{cfg('PLEX_URL')}/library/metadata/{session.get('id')}", headers)
+        if data and 'MediaContainer' in data:
+            meta = data['MediaContainer'].get('Metadata', [{}])[0]
+            return meta.get('viewCount', 0) > 0
 
-def move_to_array(cache_path):
-    CACHE_ROOT = CONFIG["CACHE_ROOT"]
-    rel_path = cache_path.replace(CACHE_ROOT, "").lstrip("/")
-    dest_path = os.path.join(PERMS_ROOT, rel_path)
+    elif service in ('emby', 'jellyfin'):
+        url_key = "EMBY_URL" if service == 'emby' else "JELLYFIN_URL"
+        api_key = "EMBY_API_KEY" if service == 'emby' else "JELLYFIN_API_KEY"
+        headers = {'X-Emby-Token': cfg(api_key), 'Accept': 'application/json'}
+        data = api_get(f"{cfg(url_key)}/Users/{session.get('user')}/Items/{session.get('id')}", headers)
+        if data:
+            return data.get('UserData', {}).get('Played', False)
 
-    log_info(f"[Mover] -> Array: {os.path.basename(cache_path)}")
-    try:
-        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        subprocess.run(["rsync", "-a", "--inplace", "--remove-source-files", cache_path, dest_path], check=True, stdout=subprocess.DEVNULL)
-        clone_rights_from_disk(dest_path)
-        cleanup_empty_parent_dirs(cache_path)
-        untrack_cached_file(cache_path)
-    except Exception as e:
-        log_error(f"Move to array failed: {e}")
+    return False
 
-def smart_manage_cache_file(cache_path, reason="Cleanup"):
-    if not os.path.exists(cache_path): return
-    rel_path = cache_path.replace(CONFIG["CACHE_ROOT"], "").lstrip("/")
-    array_path = os.path.join(PERMS_ROOT, rel_path)
+# =============================================================================
+# STREAM HANDLERS
+# =============================================================================
 
-    # We check against PERMS_ROOT (/mnt/user0) to be absolutely sure the file is on the array
-    if os.path.exists(array_path):
-        if os.path.getsize(cache_path) == os.path.getsize(array_path):
-            os.remove(cache_path)
-            log_info(f"[{reason}] Deleted: {os.path.basename(cache_path)}")
-            cleanup_empty_parent_dirs(cache_path)
-            untrack_cached_file(cache_path)
-    else:
-        # Not on array yet, so move it instead of just deleting
-        move_to_array(cache_path)
+def handle_movie(array_path):
+    """Handle movie caching - cache main file and related files."""
+    copy_file_to_cache(array_path)
 
-def ensure_structure(full_cache_file_path):
-    CACHE_ROOT = CONFIG["CACHE_ROOT"]
-    try: rel_path = os.path.relpath(os.path.dirname(full_cache_file_path), CACHE_ROOT)
-    except: return
-    curr = CACHE_ROOT
-    for part in rel_path.split(os.sep):
-        if not part or part == ".": continue
-        curr = os.path.join(curr, part)
-        if not os.path.exists(curr):
-            try:
-                os.mkdir(curr)
-                clone_rights_from_disk(curr)
-            except Exception as e:
-                log_error(f"Failed to create directory {curr}: {e}")
+    folder = os.path.dirname(array_path)
+    stem = os.path.splitext(os.path.basename(array_path))[0]
 
-def cache_file_if_needed(source_path):
-    rel_path = source_path.replace(CONFIG["ARRAY_ROOT"], "").lstrip("/")
-    if not rel_path or is_excluded(rel_path): return
-    dest_path = os.path.join(CONFIG["CACHE_ROOT"], rel_path)
+    if os.path.exists(folder):
+        for f in os.listdir(folder):
+            if f.startswith(stem):
+                copy_file_to_cache(os.path.join(folder, f))
 
-    if os.path.exists(dest_path) and os.path.getsize(source_path) == os.path.getsize(dest_path):
-        if dest_path in movie_deletion_queue: del movie_deletion_queue[dest_path]
-        # Make sure it's tracked even if already exists
-        track_cached_file(dest_path)
-        return
+def handle_series(array_path):
+    """Handle series caching - cache current and upcoming episodes."""
+    episode = parse_episode(os.path.basename(array_path))
+    if episode is None:
+        return handle_movie(array_path)
 
-    try:
-        usage = shutil.disk_usage(CONFIG["CACHE_ROOT"])
-        if (usage.used / usage.total) * 100 >= get_config_int("CACHE_MAX_USAGE"): return
-    except Exception as e:
-        log_error(f"Failed to check disk usage: {e}")
-        return
+    season_dir = os.path.dirname(array_path)
+    cache_season_dir = array_to_cache(season_dir)
 
-    log_info(f"[Copy] -> {os.path.basename(source_path)}")
-    try:
-        ensure_structure(dest_path)
-        subprocess.run(["rsync", "-a", "--inplace", source_path, dest_path], check=True, stdout=subprocess.DEVNULL)
-        clone_rights_from_disk(dest_path)
-        track_cached_file(dest_path)
-    except Exception as e:
-        log_error(f"Copy failed: {e}")
+    # Smart cleanup: remove old episodes
+    if cfg("CLEANUP_MODE").lower() == "smart" and os.path.exists(cache_season_dir):
+        threshold = episode - cfg("EPISODE_KEEP_PREVIOUS", as_int=True)
+        for f in os.listdir(cache_season_dir):
+            ep = parse_episode(f)
+            if ep is not None and ep < threshold:
+                cache_path = os.path.join(cache_season_dir, f)
+                if os.path.exists(cache_path):
+                    move_file_to_array(cache_path)
+                    log(f"[Smart Cleanup] {f}")
 
-# --- HANDLER ---
+    # Cache current and upcoming episodes
+    if os.path.exists(season_dir):
+        for f in sorted(os.listdir(season_dir)):
+            ep = parse_episode(f)
+            if ep is not None and ep >= episode:
+                copy_file_to_cache(os.path.join(season_dir, f))
 
-def handle_series_smart(rp):
-    curr_ep = parse_episode_number(os.path.basename(rp))
-    if curr_ep is None: return handle_movie_logic(rp)
-    sd_array = os.path.dirname(rp)
-    sd_cache = get_cache_path(sd_array)
-    cleanup_mode = CONFIG.get("CLEANUP_MODE", "none").lower()
-    if cleanup_mode == "smart" and sd_cache and os.path.exists(sd_cache):
-        th = curr_ep - get_config_int("EPISODE_KEEP_PREVIOUS")
-        for f in os.listdir(sd_cache):
-            num = parse_episode_number(f)
-            if num is not None and num < th:
-                smart_manage_cache_file(os.path.join(sd_cache, f), "Smart Cleanup")
-    try:
-        if os.path.exists(sd_array):
-            for f in sorted(os.listdir(sd_array)):
-                num = parse_episode_number(f)
-                if num is not None and num >= curr_ep: cache_file_if_needed(os.path.join(sd_array, f))
-    except Exception as e:
-        log_error(f"Series handling failed: {e}")
+# =============================================================================
+# CLI ACTIONS
+# =============================================================================
 
-def handle_movie_logic(rp):
-    cache_file_if_needed(rp)
-    try:
-        folder, stem = os.path.dirname(rp), os.path.splitext(os.path.basename(rp))[0]
-        if os.path.exists(folder):
-            for f in os.listdir(folder):
-                if f.startswith(stem): cache_file_if_needed(os.path.join(folder, f))
-    except Exception as e:
-        log_error(f"Movie handling failed: {e}")
-
-def cleanup_by_days():
-    """Move files back to array if they've been cached longer than CACHE_MAX_DAYS."""
-    max_days = get_config_int("CACHE_MAX_DAYS")
-    if max_days <= 0:
-        return
-
-    max_age_seconds = max_days * 24 * 60 * 60
-    tracked = load_tracked_files()
-    now = time.time()
-
-    for cache_path, cached_time in list(tracked.items()):
-        age = now - cached_time
-        if age > max_age_seconds:
-            if os.path.exists(cache_path):
-                log_info(f"[Days Cleanup] {os.path.basename(cache_path)} cached for {int(age/86400)} days")
-                smart_manage_cache_file(cache_path, "Days Cleanup")
-
-# --- CLI ACTIONS (called from PHP) ---
-
-def cli_move_cached_files():
-    """Move only plugin-tracked files back to array. Called via --action=clearcache"""
+def cli_move_tracked():
+    """Move all plugin-tracked files back to array."""
     load_config()
-    tracked = load_tracked_files()
-    CACHE_ROOT = CONFIG["CACHE_ROOT"]
+    tracked = TrackedFiles.load()
 
-    moved = 0
-    deleted = 0
-    total_size = 0
-    errors = []
+    moved, deleted, total_size, errors = 0, 0, 0, []
 
     for cache_path in list(tracked.keys()):
-        if not os.path.exists(cache_path):
-            untrack_cached_file(cache_path)
-            continue
-
-        try:
-            file_size = os.path.getsize(cache_path)
-            rel_path = cache_path.replace(CACHE_ROOT, "").lstrip("/")
-            array_path = os.path.join(PERMS_ROOT, rel_path)
-
-            # If file exists on array, just delete cache copy
-            if os.path.exists(array_path):
-                os.remove(cache_path)
-                cleanup_empty_parent_dirs(cache_path)
-                untrack_cached_file(cache_path)
+        success, was_deleted, size = move_file_to_array(cache_path)
+        if success:
+            total_size += size
+            if was_deleted:
                 deleted += 1
-                total_size += file_size
             else:
-                # Move to array
-                os.makedirs(os.path.dirname(array_path), exist_ok=True)
-                subprocess.run(["rsync", "-a", "--inplace", "--remove-source-files", cache_path, array_path],
-                              check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                clone_rights_from_disk(array_path)
-                cleanup_empty_parent_dirs(cache_path)
-                untrack_cached_file(cache_path)
                 moved += 1
-                total_size += file_size
-        except Exception as e:
-            errors.append(f"{os.path.basename(cache_path)}: {str(e)}")
+        else:
+            errors.append(os.path.basename(cache_path))
+
+    TrackedFiles.clear()
 
     size_mb = round(total_size / 1024 / 1024, 2)
-    total = moved + deleted
     return {
         "success": True,
-        "message": f"Done: {total} files ({size_mb} MB). Moved: {moved}, Deleted (existed on array): {deleted}",
-        "moved": moved,
-        "deleted": deleted,
-        "size": total_size,
-        "errors": errors
+        "message": f"Done: {moved + deleted} files ({size_mb} MB). Moved: {moved}, Deleted: {deleted}",
+        "moved": moved, "deleted": deleted, "errors": errors
     }
 
-def cli_move_other_files():
-    """Move all files EXCEPT plugin-tracked files to array. Called via --action=moveother"""
+def cli_move_other():
+    """Move all non-tracked files from cache to array."""
     load_config()
-    tracked_paths = set(load_tracked_files().keys())
-    CACHE_ROOT = CONFIG["CACHE_ROOT"]
+    tracked = set(TrackedFiles.load().keys())
+    cache_root = cfg("CACHE_ROOT")
 
-    moved = 0
-    deleted = 0
-    skipped = 0
-    total_files = 0
-    total_size = 0
-    errors = []
+    if not os.path.isdir(cache_root):
+        return {"success": False, "message": f"Cache not found: {cache_root}"}
 
-    if not os.path.isdir(CACHE_ROOT):
-        return {"success": False, "message": f"Cache root not found: {CACHE_ROOT}"}
+    moved, deleted, skipped, total, total_size, errors = 0, 0, 0, 0, 0, []
 
-    # Collect all files
-    for root, dirs, files in os.walk(CACHE_ROOT):
+    for root, _, files in os.walk(cache_root):
         for filename in files:
-            total_files += 1
+            total += 1
             cache_path = os.path.join(root, filename)
 
-            # Skip tracked files
-            if cache_path in tracked_paths:
+            if cache_path in tracked:
                 skipped += 1
                 continue
 
-            try:
-                file_size = os.path.getsize(cache_path)
-                rel_path = cache_path.replace(CACHE_ROOT, "").lstrip("/")
-                array_path = os.path.join(PERMS_ROOT, rel_path)
-
-                # If file exists on array, just delete cache copy
-                if os.path.exists(array_path):
-                    os.remove(cache_path)
+            success, was_deleted, size = move_file_to_array(cache_path, track=False)
+            if success:
+                total_size += size
+                if was_deleted:
                     deleted += 1
-                    total_size += file_size
                 else:
-                    # Move to array
-                    os.makedirs(os.path.dirname(array_path), exist_ok=True)
-                    subprocess.run(["rsync", "-a", "--inplace", "--remove-source-files", cache_path, array_path],
-                                  check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    clone_rights_from_disk(array_path)
                     moved += 1
-                    total_size += file_size
-            except Exception as e:
-                errors.append(f"{filename}: {str(e)}")
+            else:
+                errors.append(filename)
 
-    # Clean empty directories
-    for root, dirs, files in os.walk(CACHE_ROOT, topdown=False):
+    # Cleanup empty directories
+    for root, dirs, _ in os.walk(cache_root, topdown=False):
         for d in dirs:
             try:
                 os.rmdir(os.path.join(root, d))
@@ -553,152 +491,177 @@ def cli_move_other_files():
                 pass
 
     size_gb = round(total_size / 1024 / 1024 / 1024, 2)
-    total = moved + deleted
-    msg = f"Moved {total} files ({size_gb} GB). Total: {total_files}, Skipped (tracked): {skipped}"
+    msg = f"Moved {moved + deleted} files ({size_gb} GB). Total: {total}, Skipped: {skipped}"
     if errors:
-        msg += f". Errors: {len(errors)}"
+        msg += f", Errors: {len(errors)}"
 
-    return {
-        "success": True,
-        "message": msg,
-        "moved": moved,
-        "deleted": deleted,
-        "skipped": skipped,
-        "total_files": total_files,
-        "size": total_size,
-        "errors": errors
-    }
+    return {"success": True, "message": msg, "moved": moved, "deleted": deleted, "skipped": skipped}
 
-def cli_move_all_files():
-    """Move ALL files from cache to array. Called via --action=moveall"""
+def cli_move_all():
+    """Move ALL files from cache to array."""
     load_config()
-    CACHE_ROOT = CONFIG["CACHE_ROOT"]
+    cache_root = cfg("CACHE_ROOT")
 
-    moved = 0
-    deleted = 0
-    total_size = 0
-    errors = []
+    if not os.path.isdir(cache_root):
+        return {"success": False, "message": f"Cache not found: {cache_root}"}
 
-    if not os.path.isdir(CACHE_ROOT):
-        return {"success": False, "message": f"Cache root not found: {CACHE_ROOT}"}
+    moved, deleted, total_size, errors = 0, 0, 0, []
 
-    # Collect all files
-    for root, dirs, files in os.walk(CACHE_ROOT):
+    for root, _, files in os.walk(cache_root):
         for filename in files:
             cache_path = os.path.join(root, filename)
-
-            try:
-                file_size = os.path.getsize(cache_path)
-                rel_path = cache_path.replace(CACHE_ROOT, "").lstrip("/")
-                array_path = os.path.join(PERMS_ROOT, rel_path)
-
-                # If file exists on array, just delete cache copy
-                if os.path.exists(array_path):
-                    os.remove(cache_path)
+            success, was_deleted, size = move_file_to_array(cache_path, track=False)
+            if success:
+                total_size += size
+                if was_deleted:
                     deleted += 1
-                    total_size += file_size
                 else:
-                    # Move to array
-                    os.makedirs(os.path.dirname(array_path), exist_ok=True)
-                    subprocess.run(["rsync", "-a", "--inplace", "--remove-source-files", cache_path, array_path],
-                                  check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    clone_rights_from_disk(array_path)
                     moved += 1
-                    total_size += file_size
-            except Exception as e:
-                errors.append(f"{filename}: {str(e)}")
+            else:
+                errors.append(filename)
 
-    # Clean empty directories
-    for root, dirs, files in os.walk(CACHE_ROOT, topdown=False):
+    # Cleanup empty directories
+    for root, dirs, _ in os.walk(cache_root, topdown=False):
         for d in dirs:
             try:
                 os.rmdir(os.path.join(root, d))
             except OSError:
                 pass
 
-    # Clear tracking file since all files moved
-    if os.path.exists(TRACKED_FILES):
-        with open(TRACKED_FILES, 'w') as f:
-            f.write('')
+    TrackedFiles.clear()
 
     size_gb = round(total_size / 1024 / 1024 / 1024, 2)
-    total = moved + deleted
     return {
         "success": True,
-        "message": f"Moved {total} files ({size_gb} GB) to array",
-        "moved": moved,
-        "deleted": deleted,
-        "size": total_size,
-        "errors": errors
+        "message": f"Moved {moved + deleted} files ({size_gb} GB) to array",
+        "moved": moved, "deleted": deleted
     }
 
+# =============================================================================
+# DAEMON
+# =============================================================================
+
 def run_daemon():
-    load_config(); acquire_lock()
+    """Main daemon loop."""
+    load_config()
+
+    # Acquire lock
+    lock_fd = open(LOCK_FILE, 'w')
+    try:
+        fcntl.lockf(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except IOError:
+        log("Another instance is already running", error=True)
+        sys.exit(1)
+
     signal.signal(signal.SIGHUP, lambda s, f: load_config())
-    log_info("Service started. Waiting for streams...")
-    last_loop_sessions = {}
+    log("Service started. Waiting for streams...")
+
+    last_streams = {}
     last_days_check = 0
+
     while True:
         try:
-            curr_sessions = get_active_sessions()
-            active_paths = []
-            for dp, s_data in curr_sessions.items():
-                rp = translate_path(dp)
-                if not rp.startswith(CONFIG["ARRAY_ROOT"]) or is_excluded(rp) or not is_trigger_filetype(os.path.basename(rp)): continue
-                active_paths.append(rp)
-                if rp not in stream_start_times:
-                    log_info(f"[Stream] Active: {os.path.basename(rp)}")
-                    stream_start_times[rp] = time.time(); continue
-                if time.time() - stream_start_times[rp] >= get_config_int("COPY_DELAY"):
-                    if parse_episode_number(os.path.basename(rp)) is not None: handle_series_smart(rp)
-                    else: handle_movie_logic(rp)
-            for p in list(stream_start_times.keys()):
-                if p not in set(active_paths): del stream_start_times[p]
+            streams = get_active_streams()
+            active_paths = set()
 
-            cleanup_mode = CONFIG.get("CLEANUP_MODE", "none").lower()
+            for docker_path, session in streams.items():
+                array_path = translate_docker_path(docker_path)
 
-            # Smart cleanup: triggered by watching behavior
+                if not array_path.startswith(cfg("ARRAY_ROOT")):
+                    continue
+                if is_excluded(array_path):
+                    continue
+                if not is_media_file(os.path.basename(array_path)):
+                    continue
+
+                active_paths.add(array_path)
+
+                # New stream?
+                if array_path not in stream_timers:
+                    log(f"[Stream] Active: {os.path.basename(array_path)}")
+                    stream_timers[array_path] = time.time()
+                    continue
+
+                # Copy delay passed?
+                if time.time() - stream_timers[array_path] >= cfg("COPY_DELAY", as_int=True):
+                    if parse_episode(os.path.basename(array_path)) is not None:
+                        handle_series(array_path)
+                    else:
+                        handle_movie(array_path)
+
+            # Remove inactive streams
+            for path in list(stream_timers.keys()):
+                if path not in active_paths:
+                    del stream_timers[path]
+
+            cleanup_mode = cfg("CLEANUP_MODE").lower()
+
+            # Smart cleanup
             if cleanup_mode == "smart":
-                stopped = set(last_loop_sessions.keys()) - set(curr_sessions.keys())
-                for d_p in stopped:
-                    s_d, r_p = last_loop_sessions[d_p], translate_path(d_p)
-                    if check_is_watched(s_d):
-                        cp = get_cache_path(r_p)
-                        if cp and os.path.exists(cp):
-                            if parse_episode_number(os.path.basename(r_p)) is None: movie_deletion_queue[cp] = time.time()
-                            elif is_last_episode_on_array(r_p):
-                                for f in os.listdir(os.path.dirname(cp)):
-                                    movie_deletion_queue[os.path.join(os.path.dirname(cp), f)] = time.time()
-                for cp, ts in list(movie_deletion_queue.items()):
-                    if time.time() - ts > get_config_int("MOVIE_DELETE_DELAY"):
-                        smart_manage_cache_file(cp, "Deletion Timer"); del movie_deletion_queue[cp]
+                stopped = set(last_streams.keys()) - set(streams.keys())
+                for docker_path in stopped:
+                    session = last_streams[docker_path]
+                    array_path = translate_docker_path(docker_path)
 
-            # Days-based cleanup: check once per hour
+                    if is_watched(session):
+                        cache_path = array_to_cache(array_path)
+                        if os.path.exists(cache_path):
+                            ep = parse_episode(os.path.basename(array_path))
+                            if ep is None:
+                                deletion_queue[cache_path] = time.time()
+                            else:
+                                # Check if last episode
+                                folder = os.path.dirname(array_path)
+                                if os.path.exists(folder):
+                                    max_ep = max((parse_episode(f) or 0) for f in os.listdir(folder))
+                                    if ep >= max_ep:
+                                        cache_dir = os.path.dirname(cache_path)
+                                        for f in os.listdir(cache_dir):
+                                            deletion_queue[os.path.join(cache_dir, f)] = time.time()
+
+                # Process deletion queue
+                delay = cfg("MOVIE_DELETE_DELAY", as_int=True)
+                for cache_path, queued_time in list(deletion_queue.items()):
+                    if time.time() - queued_time > delay:
+                        if os.path.exists(cache_path):
+                            move_file_to_array(cache_path)
+                            log(f"[Cleanup] {os.path.basename(cache_path)}")
+                        del deletion_queue[cache_path]
+
+            # Days-based cleanup (hourly check)
             elif cleanup_mode == "days":
                 if time.time() - last_days_check > 3600:
-                    cleanup_by_days()
+                    max_age = cfg("CACHE_MAX_DAYS", as_int=True) * 86400
+                    tracked = TrackedFiles.load()
+                    now = time.time()
+
+                    for cache_path, cached_time in list(tracked.items()):
+                        if now - cached_time > max_age and os.path.exists(cache_path):
+                            log(f"[Days Cleanup] {os.path.basename(cache_path)}")
+                            move_file_to_array(cache_path)
+
                     last_days_check = time.time()
 
-            last_loop_sessions = curr_sessions
-        except Exception as e:
-            log_error(f"Main loop error: {e}")
-        time.sleep(get_config_int("CHECK_INTERVAL"))
+            last_streams = streams
 
+        except Exception as e:
+            log(f"Loop error: {e}", error=True)
+
+        time.sleep(cfg("CHECK_INTERVAL", as_int=True))
+
+# =============================================================================
+# MAIN
+# =============================================================================
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Plex to Cache - Media caching daemon')
-    parser.add_argument('--action', choices=['daemon', 'clearcache', 'moveother', 'moveall'],
-                        default='daemon', help='Action to perform')
+    parser = argparse.ArgumentParser(description='Plex to Cache daemon')
+    parser.add_argument('--action', choices=['daemon', 'clearcache', 'moveother', 'moveall'], default='daemon')
     args = parser.parse_args()
 
-    if args.action == 'daemon':
-        run_daemon()
-    elif args.action == 'clearcache':
-        result = cli_move_cached_files()
-        print(json.dumps(result))
-    elif args.action == 'moveother':
-        result = cli_move_other_files()
-        print(json.dumps(result))
-    elif args.action == 'moveall':
-        result = cli_move_all_files()
-        print(json.dumps(result))
+    actions = {
+        'daemon': run_daemon,
+        'clearcache': lambda: print(json.dumps(cli_move_tracked())),
+        'moveother': lambda: print(json.dumps(cli_move_other())),
+        'moveall': lambda: print(json.dumps(cli_move_all()))
+    }
+    actions[args.action]()
