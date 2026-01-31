@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.01.30k">
+<!ENTITY version   "2026.01.30l">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,30 +13,9 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
-### 2026.01.30k
-- Complete code optimization and cleanup
-- Python: Reorganized into logical sections with clear documentation
-- Python: Unified file operations through move_file_to_array() function
-- Python: TrackedFiles class for cleaner tracking management
-- Python: Simplified API client code
-- Reduced code size by ~30%
-
-### 2026.01.30j
-- Refactored: PHP now calls Python for all move operations (clearcache, moveother, moveall)
-- Eliminates code duplication between PHP and Python
-- All move operations now use Python's clone_rights_from_disk() for proper permissions
-- Single source of truth for rsync logic
-
-### 2026.01.30i
-- Fixed: Better debug output for move operations
-- Shows: Total files found, skipped (tracked), moved, deleted (existed on array)
-- Shows error count if rsync fails
-- Validates cache_root exists before starting
-
-### 2026.01.30h
-- Fixed: "Move Other Files to Array" now works (tracked file format was parsed incorrectly)
-- Fixed: Removed --chown/--chmod from rsync (permissions cloned from original via Python)
-- Fixed: Tracked files use path|timestamp format, now correctly parsed
+### 2026.01.30l
+- Removed: "Move to Array" buttons (clearcache, moveother, moveall) - feature was unstable
+- Simplified: Cleaner codebase without unused CLI actions
 
 ### 2026.01.30g
 - Fixed: rsync now uses --inplace (no temp files with random suffixes)
@@ -147,7 +126,6 @@ $ptc_plugin = "plex_to_cache";
 $ptc_cfg_file = "/boot/config/plugins/$ptc_plugin/settings.cfg";
 $ptc_log_file = "/var/log/plex_to_cache.log";
 $ptc_pid_file = "/var/run/plex_to_cache.pid";
-$ptc_tracked_file = "/boot/config/plugins/$ptc_plugin/cached_files.list";
 
 // Defaults
 $ptc_cfg = [
@@ -259,44 +237,6 @@ if (isset($_GET['action']) && $_GET['action'] === 'test') {
     exit;
 }
 
-// AJAX: Clear all cached media (moves plugin-cached files back to array)
-if (isset($_GET['action']) && $_GET['action'] === 'clearcache') {
-    header('Content-Type: application/json');
-    $output = shell_exec("python3 /usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py --action=clearcache 2>&1");
-    $result = json_decode($output, true);
-    if ($result === null) {
-        echo json_encode(['success' => false, 'message' => 'Failed to execute Python script: ' . $output]);
-    } else {
-        echo json_encode($result);
-    }
-    exit;
-}
-
-// AJAX: Move ALL files to array (including plugin-cached media)
-if (isset($_GET['action']) && $_GET['action'] === 'moveall') {
-    header('Content-Type: application/json');
-    $output = shell_exec("python3 /usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py --action=moveall 2>&1");
-    $result = json_decode($output, true);
-    if ($result === null) {
-        echo json_encode(['success' => false, 'message' => 'Failed to execute Python script: ' . $output]);
-    } else {
-        echo json_encode($result);
-    }
-    exit;
-}
-
-// AJAX: Move other files to array (everything EXCEPT plugin-cached media)
-if (isset($_GET['action']) && $_GET['action'] === 'moveother') {
-    header('Content-Type: application/json');
-    $output = shell_exec("python3 /usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py --action=moveother 2>&1");
-    $result = json_decode($output, true);
-    if ($result === null) {
-        echo json_encode(['success' => false, 'message' => 'Failed to execute Python script: ' . $output]);
-    } else {
-        echo json_encode($result);
-    }
-    exit;
-}
 
 // AJAX: Service control
 if (isset($_GET['action']) && $_GET['action'] === 'service') {
@@ -348,12 +288,6 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 
 // Check service status
 $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($ptc_pid_file), 0);
-
-// Count tracked files
-$tracked_count = 0;
-if (file_exists($ptc_tracked_file)) {
-    $tracked_count = count(array_filter(array_map('trim', file($ptc_tracked_file))));
-}
 ?>
 <style>
 :root { --primary-blue: #00aaff; --bg-dark: #111; --success-green: #00cc66; --error-red: #ff4444; --warning-orange: #ff9900; }
@@ -520,39 +454,6 @@ if (file_exists($ptc_tracked_file)) {
 .btn-test.success { border-color: var(--success-green); color: var(--success-green); }
 .btn-test.error { border-color: var(--error-red); color: var(--error-red); }
 
-/* Action buttons */
-.btn-action {
-    padding: 8px 16px;
-    font-size: 12px;
-    cursor: pointer;
-    border-radius: 4px;
-    background: transparent;
-    margin-top: 10px;
-    display: block;
-    width: 100%;
-    text-align: center;
-}
-.btn-action.danger {
-    border: 1px solid var(--error-red);
-    color: var(--error-red);
-}
-.btn-action.danger:hover { background: var(--error-red); color: #fff; }
-.btn-action.warning {
-    border: 1px solid var(--warning-orange);
-    color: var(--warning-orange);
-}
-.btn-action.warning:hover { background: var(--warning-orange); color: #fff; }
-
-.cache-info {
-    font-size: 12px;
-    color: #888;
-    margin-top: 15px;
-    padding: 10px;
-    background: #1a1a1a;
-    border-radius: 4px;
-}
-.cache-info strong { color: var(--primary-blue); }
-
 /* Cleanup mode selector */
 .cleanup-mode-selector {
     display: flex;
@@ -647,14 +548,6 @@ if (file_exists($ptc_tracked_file)) {
             <div id="days-cleanup-options" class="cleanup-options" style="display: <?= $ptc_cfg['CLEANUP_MODE'] == 'days' ? 'block' : 'none' ?>;">
                 <div class="form-pair"><label data-tooltip="Move cached files back to array after this many days.">Max Days:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_DAYS" value="<?= htmlspecialchars($ptc_cfg['CACHE_MAX_DAYS']) ?>" class="ptc-input input-small"><span class="unit-label">days</span></div></div>
             </div>
-
-            <div class="cache-info">
-                <strong>Tracked Media Files:</strong> <?= $tracked_count ?> files cached by this plugin
-            </div>
-
-            <button type="button" class="btn-action warning" onclick="moveOther()"><i class="fa fa-arrow-right"></i> Move Other Files to Array</button>
-            <button type="button" class="btn-action warning" onclick="clearCache()"><i class="fa fa-arrow-right"></i> Move Cached Media to Array</button>
-            <button type="button" class="btn-action danger" onclick="moveAll()"><i class="fa fa-arrow-right"></i> Move ALL to Array</button>
         </div>
 
         <div class="ptc-col" id="ptc-col-log">
@@ -735,39 +628,6 @@ function testConnection(service, btn) {
     });
 }
 
-function clearCache() {
-    if (!confirm('This will move all media files cached by this plugin back to the array. Continue?')) return;
-    alert('Moving cached media files... This may take a while.');
-    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=clearcache', function(data) {
-        alert(data.message);
-        location.reload();
-    }).fail(function() {
-        alert('Failed to move cached media');
-    });
-}
-
-function moveOther() {
-    if (!confirm('This will move ALL files from cache to array EXCEPT the media files cached by this plugin. Continue?')) return;
-    alert('Moving files... This may take a while. Check the log for progress.');
-    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=moveother', function(data) {
-        alert(data.message);
-        refreshLog();
-    }).fail(function() {
-        alert('Failed to move files');
-    });
-}
-
-function moveAll() {
-    if (!confirm('This will move ALL files from cache to array, including media files cached by this plugin. Continue?')) return;
-    alert('Moving all files... This may take a while. Check the log for progress.');
-    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=moveall', function(data) {
-        alert(data.message);
-        location.reload();
-    }).fail(function() {
-        alert('Failed to move files');
-    });
-}
-
 function serviceControl(cmd) {
     $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=service&cmd=' + cmd, function(data) {
         var dot = document.getElementById('status-dot');
@@ -817,12 +677,10 @@ Supports Plex, Emby, and Jellyfin.
 import os
 import sys
 import re
-import json
 import time
 import fcntl
 import shutil
 import signal
-import argparse
 import subprocess
 from pathlib import Path
 
@@ -1169,93 +1027,6 @@ def handle_series(array_path):
                 copy_file_to_cache(os.path.join(season_dir, f))
 
 # =============================================================================
-# CLI ACTIONS
-# =============================================================================
-
-def cli_move_tracked():
-    load_config()
-    tracked = TrackedFiles.load()
-    moved, deleted, total_size, errors = 0, 0, 0, []
-    for cache_path in list(tracked.keys()):
-        success, was_deleted, size = move_file_to_array(cache_path)
-        if success:
-            total_size += size
-            if was_deleted:
-                deleted += 1
-            else:
-                moved += 1
-        else:
-            errors.append(os.path.basename(cache_path))
-    TrackedFiles.clear()
-    size_mb = round(total_size / 1024 / 1024, 2)
-    return {"success": True, "message": f"Done: {moved + deleted} files ({size_mb} MB). Moved: {moved}, Deleted: {deleted}",
-            "moved": moved, "deleted": deleted, "errors": errors}
-
-def cli_move_other():
-    load_config()
-    tracked = set(TrackedFiles.load().keys())
-    cache_root = cfg("CACHE_ROOT")
-    if not os.path.isdir(cache_root):
-        return {"success": False, "message": f"Cache not found: {cache_root}"}
-    moved, deleted, skipped, total, total_size, errors = 0, 0, 0, 0, 0, []
-    for root, _, files in os.walk(cache_root):
-        for filename in files:
-            total += 1
-            cache_path = os.path.join(root, filename)
-            if cache_path in tracked:
-                skipped += 1
-                continue
-            success, was_deleted, size = move_file_to_array(cache_path, track=False)
-            if success:
-                total_size += size
-                if was_deleted:
-                    deleted += 1
-                else:
-                    moved += 1
-            else:
-                errors.append(filename)
-    for root, dirs, _ in os.walk(cache_root, topdown=False):
-        for d in dirs:
-            try:
-                os.rmdir(os.path.join(root, d))
-            except OSError:
-                pass
-    size_gb = round(total_size / 1024 / 1024 / 1024, 2)
-    msg = f"Moved {moved + deleted} files ({size_gb} GB). Total: {total}, Skipped: {skipped}"
-    if errors:
-        msg += f", Errors: {len(errors)}"
-    return {"success": True, "message": msg, "moved": moved, "deleted": deleted, "skipped": skipped}
-
-def cli_move_all():
-    load_config()
-    cache_root = cfg("CACHE_ROOT")
-    if not os.path.isdir(cache_root):
-        return {"success": False, "message": f"Cache not found: {cache_root}"}
-    moved, deleted, total_size, errors = 0, 0, 0, []
-    for root, _, files in os.walk(cache_root):
-        for filename in files:
-            cache_path = os.path.join(root, filename)
-            success, was_deleted, size = move_file_to_array(cache_path, track=False)
-            if success:
-                total_size += size
-                if was_deleted:
-                    deleted += 1
-                else:
-                    moved += 1
-            else:
-                errors.append(filename)
-    for root, dirs, _ in os.walk(cache_root, topdown=False):
-        for d in dirs:
-            try:
-                os.rmdir(os.path.join(root, d))
-            except OSError:
-                pass
-    TrackedFiles.clear()
-    size_gb = round(total_size / 1024 / 1024 / 1024, 2)
-    return {"success": True, "message": f"Moved {moved + deleted} files ({size_gb} GB) to array",
-            "moved": moved, "deleted": deleted}
-
-# =============================================================================
 # DAEMON
 # =============================================================================
 
@@ -1343,16 +1114,7 @@ def run_daemon():
 # =============================================================================
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Plex to Cache daemon')
-    parser.add_argument('--action', choices=['daemon', 'clearcache', 'moveother', 'moveall'], default='daemon')
-    args = parser.parse_args()
-    actions = {
-        'daemon': run_daemon,
-        'clearcache': lambda: print(json.dumps(cli_move_tracked())),
-        'moveother': lambda: print(json.dumps(cli_move_other())),
-        'moveall': lambda: print(json.dumps(cli_move_all()))
-    }
-    actions[args.action]()
+    run_daemon()
 ]]>
 </INLINE>
 </FILE>
