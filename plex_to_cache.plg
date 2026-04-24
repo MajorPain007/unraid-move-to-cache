@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.01.30l">
+<!ENTITY version   "2026.04.24a">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,6 +13,29 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
+### 2026.04.24a
+- No internet required on boot: requests dependency removed, daemon
+  now uses Python's built-in urllib. On Unraid the root filesystem is
+  tmpfs — the previous install step downloaded pip and installed
+  `requests` on every install/boot. Without internet the service
+  failed to start. Now the plugin has zero external Python
+  dependencies.
+- Automatic service start on boot: the rc.d script is now registered
+  at /etc/rc.d/rc.plex_to_cache and called by Unraid at boot, so the
+  daemon comes up on its own. Previously it only started on install
+  and when settings were saved.
+- Bugfix (cleanup): `cleanup_empty_dirs` no longer computes wrong
+  protected paths when docker mappings use absolute host paths. The
+  set of paths that must never be rmdir'd is now derived correctly
+  by translating ARRAY_ROOT → CACHE_ROOT.
+- Bugfix (exceptions): replaced bare `except:` in the API/file path
+  with specific exception classes so Ctrl-C / SIGTERM and programming
+  errors are no longer silently swallowed.
+- Log rotation: /var/log/plex_to_cache.log is now rotated at 5 MB
+  on daemon start (one .1 copy is kept).
+- rc.plex_to_cache: adds a `status` verb, cleans up stale PID files
+  on start, and waits up to 5 s on SIGTERM before SIGKILL.
+
 ### 2026.01.30l
 - Removed: "Move to Array" buttons (clearcache, moveother, moveall) - feature was unstable
 - Simplified: Cleaner codebase without unused CLI actions
@@ -74,37 +97,36 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 - UI: New Layout Ratio (25% Server / 25% Tuning / 50% Log)
 </CHANGES>
 
+<!-- Pre-install: stop running service, clean old files -->
 <FILE Run="/bin/bash">
 <INLINE>
 <![CDATA[
-# Stop service
+# Stop previous service (if any)
 if [ -f /var/run/plex_to_cache.pid ]; then
     kill $(cat /var/run/plex_to_cache.pid) 2>/dev/null
     rm /var/run/plex_to_cache.pid
 fi
 pkill -f plex_to_cache.py 2>/dev/null
 
-# Remove old plugin files (force update)
+# Remove old plugin files so updates take effect cleanly
 rm -f /usr/local/emhttp/plugins/plex_to_cache/plex_to_cache.php
 rm -f /usr/local/emhttp/plugins/plex_to_cache/plex_to_cache.page
 rm -f /usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py
 rm -f /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache
 
-# Create Directories
+# Create plugin directories
 mkdir -p /usr/local/emhttp/plugins/plex_to_cache/scripts
 mkdir -p /boot/config/plugins/plex_to_cache
 
-# Check Python Requests
-if ! python3 -c "import requests" 2>/dev/null; then
-    echo "Installing Python Requests..."
-    curl -s https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
-    python3 /tmp/get-pip.py >/dev/null 2>&1
-    pip3 install requests >/dev/null 2>&1
-fi
+# NOTE: no pip / curl here on purpose — this plugin has no external
+# Python dependencies any more. Everything the daemon needs is in the
+# stdlib (urllib, ssl, json, fcntl, subprocess). Install & boot work
+# offline.
 ]]>
 </INLINE>
 </FILE>
 
+<!-- Plugin page wrapper -->
 <FILE Name="/usr/local/emhttp/plugins/plex_to_cache/plex_to_cache.page">
 <INLINE>
 <![CDATA[
@@ -118,6 +140,7 @@ Description="Automatically moves viewed media from the array to the cache for fa
 </INLINE>
 </FILE>
 
+<!-- Web UI (PHP) -->
 <FILE Name="/usr/local/emhttp/plugins/plex_to_cache/plex_to_cache.php">
 <INLINE>
 <![CDATA[
@@ -288,6 +311,7 @@ if (!empty($ptc_cfg['DOCKER_MAPPINGS'])) {
 
 // Check service status
 $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($ptc_pid_file), 0);
+
 ?>
 <style>
 :root { --primary-blue: #00aaff; --bg-dark: #111; --success-green: #00cc66; --error-red: #ff4444; --warning-orange: #ff9900; }
@@ -439,6 +463,7 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
 #mapping_table th { text-align: left; color: var(--primary-blue); padding: 8px; border-bottom: 1px solid #333; font-size: 13px; }
 #mapping_table td { padding: 5px 0; }
 
+
 /* Test button */
 .btn-test {
     padding: 4px 10px;
@@ -453,6 +478,7 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
 .btn-test:hover { background: #333; border-color: var(--primary-blue); }
 .btn-test.success { border-color: var(--success-green); color: var(--success-green); }
 .btn-test.error { border-color: var(--error-red); color: var(--error-red); }
+
 
 /* Cleanup mode selector */
 .cleanup-mode-selector {
@@ -548,6 +574,7 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
             <div id="days-cleanup-options" class="cleanup-options" style="display: <?= $ptc_cfg['CLEANUP_MODE'] == 'days' ? 'block' : 'none' ?>;">
                 <div class="form-pair"><label data-tooltip="Move cached files back to array after this many days.">Max Days:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_DAYS" value="<?= htmlspecialchars($ptc_cfg['CACHE_MAX_DAYS']) ?>" class="ptc-input input-small"><span class="unit-label">days</span></div></div>
             </div>
+
         </div>
 
         <div class="ptc-col" id="ptc-col-log">
@@ -628,6 +655,7 @@ function testConnection(service, btn) {
     });
 }
 
+
 function serviceControl(cmd) {
     $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=service&cmd=' + cmd, function(data) {
         var dot = document.getElementById('status-dot');
@@ -664,6 +692,7 @@ $(function() {
 </INLINE>
 </FILE>
 
+<!-- Daemon (Python) -->
 <FILE Name="/usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py" Mode="0755">
 <INLINE>
 <![CDATA[
@@ -672,30 +701,39 @@ $(function() {
 Plex to Cache - Automatic media caching daemon for Unraid
 Moves actively streamed media from array to cache for faster playback.
 Supports Plex, Emby, and Jellyfin.
+
+No external Python dependencies — uses only the standard library
+(urllib/ssl/json). This keeps the plugin offline-bootable: Unraid's
+root filesystem is a tmpfs, so anything in /usr/local/lib/pythonX/
+site-packages gets wiped on reboot. Relying on `requests` means the
+daemon would need internet on every boot to reinstall it.
 """
 
 import os
 import sys
 import re
 import time
+import json
+import ssl
 import fcntl
 import shutil
 import signal
 import subprocess
+import urllib.request
+import urllib.parse
+import urllib.error
 from pathlib import Path
-
-import requests
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-CONFIG_FILE = "/boot/config/plugins/plex_to_cache/settings.cfg"
+CONFIG_FILE   = "/boot/config/plugins/plex_to_cache/settings.cfg"
 TRACKED_FILES = "/boot/config/plugins/plex_to_cache/cached_files.list"
-LOCK_FILE = "/tmp/media_cache_cleaner.lock"
-ARRAY_ROOT = "/mnt/user0"  # Physical array path (no cache)
+LOCK_FILE     = "/tmp/media_cache_cleaner.lock"
+LOG_FILE      = "/var/log/plex_to_cache.log"
+LOG_MAX_BYTES = 5 * 1024 * 1024   # rotate when the log reaches 5 MB
+ARRAY_ROOT    = "/mnt/user0"      # physical array path (no cache) — used for permission cloning
 
 DEFAULT_CONFIG = {
     "ENABLE_PLEX": "False", "PLEX_URL": "http://localhost:32400", "PLEX_TOKEN": "",
@@ -708,11 +746,16 @@ DEFAULT_CONFIG = {
 }
 
 # Runtime state
-config = dict(DEFAULT_CONFIG)
+config          = dict(DEFAULT_CONFIG)
 docker_mappings = {}
-metadata_cache = {}
-stream_timers = {}
-deletion_queue = {}
+metadata_cache  = {}
+stream_timers   = {}
+deletion_queue  = {}
+
+# SSL context: Plex / Emby / Jellyfin typically use self-signed certs on the
+# local network, so we intentionally skip verification. This is equivalent
+# to the old `verify=False` on the `requests` calls.
+_SSL_CTX = ssl._create_unverified_context()
 
 # =============================================================================
 # UTILITIES
@@ -721,6 +764,18 @@ deletion_queue = {}
 def log(msg, error=False):
     prefix = "[Error] " if error else ""
     print(f"{prefix}{msg}", flush=True)
+
+def rotate_log_if_needed():
+    """Rotate /var/log/plex_to_cache.log if it grew past LOG_MAX_BYTES.
+    Keeps one previous copy as .log.1. Called once at daemon start."""
+    try:
+        if os.path.isfile(LOG_FILE) and os.path.getsize(LOG_FILE) > LOG_MAX_BYTES:
+            rotated = LOG_FILE + ".1"
+            if os.path.exists(rotated):
+                os.remove(rotated)
+            os.rename(LOG_FILE, rotated)
+    except OSError:
+        pass
 
 def load_config():
     global config, docker_mappings
@@ -731,9 +786,10 @@ def load_config():
                 if '=' in line and not line.strip().startswith('#'):
                     k, v = line.split('=', 1)
                     config[k.strip()] = v.strip().strip('"\'')
-        except Exception as e:
+        except OSError as e:
             log(f"Config load failed: {e}", error=True)
 
+    # Parse docker mappings (stored as docker_path:host_path;...)
     docker_mappings = {}
     for pair in config.get("DOCKER_MAPPINGS", "").split(';'):
         if ':' in pair:
@@ -745,8 +801,8 @@ def cfg(key, as_int=False, as_bool=False):
     if as_bool:
         return val.lower() in ("true", "1")
     if as_int:
-        try: return int(val)
-        except: return 0
+        try:    return int(val)
+        except (ValueError, TypeError): return 0
     return val
 
 # =============================================================================
@@ -754,27 +810,34 @@ def cfg(key, as_int=False, as_bool=False):
 # =============================================================================
 
 class TrackedFiles:
+    """Manages the list of plugin-cached files with timestamps."""
+
     @staticmethod
     def load():
+        """Load tracked files. Returns dict: {path: timestamp}"""
         tracked = {}
         if os.path.exists(TRACKED_FILES):
             try:
                 for line in Path(TRACKED_FILES).read_text().splitlines():
                     if '|' in line:
                         path, ts = line.rsplit('|', 1)
-                        tracked[path] = float(ts)
+                        try:
+                            tracked[path] = float(ts)
+                        except ValueError:
+                            continue
                     elif line.strip():
                         tracked[line.strip()] = time.time()
-            except Exception as e:
+            except OSError as e:
                 log(f"Tracking load failed: {e}", error=True)
         return tracked
 
     @staticmethod
     def save(tracked):
+        """Save tracked files dict to disk."""
         try:
             content = '\n'.join(f"{p}|{t}" for p, t in sorted(tracked.items()))
             Path(TRACKED_FILES).write_text(content + '\n' if content else '')
-        except Exception as e:
+        except OSError as e:
             log(f"Tracking save failed: {e}", error=True)
 
     @staticmethod
@@ -800,29 +863,43 @@ class TrackedFiles:
 # =============================================================================
 
 def cache_to_array(cache_path):
+    """Convert cache path (/mnt/cache/x) to physical array path (/mnt/user0/x)."""
     return cache_path.replace(cfg("CACHE_ROOT"), ARRAY_ROOT, 1)
 
 def array_to_cache(array_path):
+    """Convert user share path (/mnt/user/x) to cache path (/mnt/cache/x)."""
     return array_path.replace(cfg("ARRAY_ROOT"), cfg("CACHE_ROOT"), 1)
 
+def array_share_to_cache(host_path):
+    """Translate a user-share host path to its cache equivalent.
+    Same as array_to_cache but keeps the result when already on cache."""
+    if host_path.startswith(cfg("CACHE_ROOT")):
+        return host_path
+    return array_to_cache(host_path)
+
 def translate_docker_path(docker_path):
+    """Translate docker container path to host path."""
     path = docker_path.replace('\\', '/')
     for docker_prefix, host_prefix in docker_mappings.items():
         if path.startswith(docker_prefix):
             rel = path[len(docker_prefix):].lstrip('/')
-            base = host_prefix if host_prefix.startswith(cfg("ARRAY_ROOT")) else os.path.join(cfg("ARRAY_ROOT"), host_prefix.lstrip('/'))
+            base = host_prefix if host_prefix.startswith(cfg("ARRAY_ROOT")) \
+                   else os.path.join(cfg("ARRAY_ROOT"), host_prefix.lstrip('/'))
             return os.path.join(base, rel)
     return path
 
 def is_excluded(path):
+    """Check if path contains any of the configured excluded folder names."""
     excludes = [x.strip() for x in cfg("EXCLUDE_DIRS").split(',') if x.strip()]
     return any(exc in path.split(os.sep) for exc in excludes)
 
 def is_media_file(filename):
+    """Check if file is a media file according to the configured extensions."""
     extensions = cfg("MEDIA_FILETYPES").split()
     return not extensions or any(filename.lower().endswith(ext.lower()) for ext in extensions)
 
 def parse_episode(filename):
+    """Extract episode number from filename. Returns None if not an episode."""
     match = re.search(r"[sS]\d+[eE](\d+)", filename)
     return int(match.group(1)) if match else None
 
@@ -831,6 +908,7 @@ def parse_episode(filename):
 # =============================================================================
 
 def clone_permissions(dest_path):
+    """Clone permissions from the array original (via /mnt/user0) to dest_path."""
     src = cache_to_array(dest_path) if dest_path.startswith(cfg("CACHE_ROOT")) else None
     if not src or not os.path.exists(src):
         return
@@ -838,7 +916,7 @@ def clone_permissions(dest_path):
         st = os.stat(src)
         os.chown(dest_path, st.st_uid, st.st_gid)
         os.chmod(dest_path, st.st_mode)
-    except Exception as e:
+    except OSError as e:
         log(f"Permission clone failed: {e}", error=True)
 
 # =============================================================================
@@ -846,6 +924,7 @@ def clone_permissions(dest_path):
 # =============================================================================
 
 def rsync_move(src, dst, remove_source=True):
+    """Move (or copy) a file using rsync --inplace."""
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     cmd = ["rsync", "-a", "--inplace"]
     if remove_source:
@@ -853,9 +932,29 @@ def rsync_move(src, dst, remove_source=True):
     cmd.extend([src, dst])
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-def cleanup_empty_dirs(start_path):
+def _protected_cache_dirs():
+    """Dirs inside CACHE_ROOT that must never be rmdir'd by cleanup_empty_dirs.
+    Derived from the docker mappings: every mapped host path, translated to
+    its cache-side equivalent."""
     cache_root = cfg("CACHE_ROOT")
-    protected = {os.path.join(cache_root, m.strip("/")) for m in docker_mappings.values()}
+    array_root = cfg("ARRAY_ROOT")
+    protected  = {cache_root}
+    for host_path in docker_mappings.values():
+        if host_path.startswith(array_root):
+            protected.add(host_path.replace(array_root, cache_root, 1))
+        elif host_path.startswith(cache_root):
+            protected.add(host_path)
+        else:
+            # host_path given as a relative share name — prepend cache root
+            protected.add(os.path.join(cache_root, host_path.lstrip('/')))
+    return protected
+
+def cleanup_empty_dirs(start_path):
+    """Remove empty parent directories up to CACHE_ROOT, but stop at any
+    directory that's protected by a docker mapping."""
+    cache_root = cfg("CACHE_ROOT")
+    protected  = _protected_cache_dirs()
+
     parent = os.path.dirname(start_path)
     while parent.startswith(cache_root) and len(parent) > len(cache_root):
         if parent in protected:
@@ -867,73 +966,113 @@ def cleanup_empty_dirs(start_path):
             break
 
 def move_file_to_array(cache_path, track=True):
+    """Move a single file from cache to array. Returns (success, was_deleted, size)."""
     if not os.path.exists(cache_path):
         if track:
             TrackedFiles.remove(cache_path)
         return True, False, 0
+
     try:
         size = os.path.getsize(cache_path)
         array_path = cache_to_array(cache_path)
+
+        # If already on array, just delete cache copy
         if os.path.exists(array_path):
             os.remove(cache_path)
             cleanup_empty_dirs(cache_path)
             if track:
                 TrackedFiles.remove(cache_path)
             return True, True, size
+
+        # Move to array
         rsync_move(cache_path, array_path)
         clone_permissions(array_path)
         cleanup_empty_dirs(cache_path)
         if track:
             TrackedFiles.remove(cache_path)
         return True, False, size
-    except Exception as e:
+
+    except (OSError, subprocess.CalledProcessError) as e:
+        log(f"Move failed: {e}", error=True)
         return False, False, 0
 
 def copy_file_to_cache(array_path):
+    """Copy file from array to cache."""
     if is_excluded(array_path) or not is_media_file(os.path.basename(array_path)):
         return
+
     cache_path = array_to_cache(array_path)
+
+    # Already cached and same size?
     if os.path.exists(cache_path):
-        if os.path.getsize(array_path) == os.path.getsize(cache_path):
-            deletion_queue.pop(cache_path, None)
-            TrackedFiles.add(cache_path)
-            return
+        try:
+            if os.path.getsize(array_path) == os.path.getsize(cache_path):
+                deletion_queue.pop(cache_path, None)
+                TrackedFiles.add(cache_path)
+                return
+        except OSError:
+            pass
+
+    # Check disk space
     try:
         usage = shutil.disk_usage(cfg("CACHE_ROOT"))
         if (usage.used / usage.total) * 100 >= cfg("CACHE_MAX_USAGE", as_int=True):
             return
-    except:
+    except OSError:
         return
+
     log(f"[Copy] -> {os.path.basename(array_path)}")
     try:
-        cache_dir = os.path.dirname(cache_path)
+        # Create directory structure with proper permissions
+        cache_dir  = os.path.dirname(cache_path)
         cache_root = cfg("CACHE_ROOT")
+        cur = cache_root
         for part in os.path.relpath(cache_dir, cache_root).split(os.sep):
             if not part or part == '.':
                 continue
-            cache_root = os.path.join(cache_root, part)
-            if not os.path.exists(cache_root):
-                os.mkdir(cache_root)
-                clone_permissions(cache_root)
+            cur = os.path.join(cur, part)
+            if not os.path.exists(cur):
+                os.mkdir(cur)
+                clone_permissions(cur)
+
         rsync_move(array_path, cache_path, remove_source=False)
         clone_permissions(cache_path)
         TrackedFiles.add(cache_path)
-    except Exception as e:
+    except (OSError, subprocess.CalledProcessError) as e:
         log(f"Copy failed: {e}", error=True)
 
 # =============================================================================
-# API CLIENTS
+# API CLIENTS — urllib-based, no external deps
 # =============================================================================
 
-def api_get(url, headers):
+def api_get(url, headers, timeout=5):
+    """Make an API GET request and return parsed JSON, or None on failure.
+
+    Uses urllib from the stdlib so this plugin doesn't depend on the
+    `requests` package (which needs to be pip-installed on every boot
+    because Unraid's root FS is tmpfs). SSL verification is disabled
+    to support the self-signed certs that Plex/Emby/Jellyfin typically
+    use on LAN."""
     try:
-        r = requests.get(url, headers=headers, timeout=5, verify=False)
-        return r.json() if r.ok else None
-    except:
+        req = urllib.request.Request(url, headers=headers, method='GET')
+        with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as resp:
+            if resp.status != 200:
+                return None
+            body = resp.read()
+            if not body:
+                return None
+            try:
+                return json.loads(body.decode('utf-8', errors='replace'))
+            except ValueError:
+                return None
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
         return None
 
 def get_active_streams():
+    """Get currently playing files from all enabled services."""
     streams = {}
+
+    # --- Plex ---
     if cfg("ENABLE_PLEX", as_bool=True):
         headers = {'X-Plex-Token': cfg("PLEX_TOKEN"), 'Accept': 'application/json'}
         data = api_get(f"{cfg('PLEX_URL')}/status/sessions", headers)
@@ -941,12 +1080,16 @@ def get_active_streams():
             for item in data['MediaContainer'].get('Metadata', []):
                 rk = item.get('ratingKey')
                 path = metadata_cache.get(rk)
+
                 if not path:
                     for media in item.get('Media', []):
                         for part in media.get('Part', []):
                             if part.get('file'):
                                 path = part['file']
                                 break
+                        if path:
+                            break
+
                 if not path and rk:
                     meta = api_get(f"{cfg('PLEX_URL')}/library/metadata/{rk}", headers)
                     if meta and 'MediaContainer' in meta:
@@ -956,40 +1099,57 @@ def get_active_streams():
                                     if p.get('file'):
                                         path = p['file']
                                         break
+                                if path:
+                                    break
+                            if path:
+                                break
+
                 if path:
                     metadata_cache[rk] = path
                     streams[path] = {'service': 'plex', 'id': rk}
-    for enabled, api_key, url, name in [
-        ("ENABLE_EMBY", "EMBY_API_KEY", "EMBY_URL", "emby"),
-        ("ENABLE_JELLYFIN", "JELLYFIN_API_KEY", "JELLYFIN_URL", "jellyfin")
+
+    # --- Emby / Jellyfin ---
+    for enabled_key, api_key, url_key, name in [
+        ("ENABLE_EMBY",     "EMBY_API_KEY",     "EMBY_URL",     "emby"),
+        ("ENABLE_JELLYFIN", "JELLYFIN_API_KEY", "JELLYFIN_URL", "jellyfin"),
     ]:
-        if cfg(enabled, as_bool=True):
+        if cfg(enabled_key, as_bool=True):
             headers = {'X-Emby-Token': cfg(api_key), 'Accept': 'application/json'}
-            data = api_get(f"{cfg(url)}/Sessions", headers)
+            data = api_get(f"{cfg(url_key)}/Sessions", headers)
             if data:
                 for s in data:
-                    item = s.get('NowPlayingItem', {})
+                    item = s.get('NowPlayingItem', {}) or {}
                     if item.get('Path'):
-                        streams[item['Path']] = {'service': name, 'id': item.get('Id'), 'user': s.get('UserId')}
+                        streams[item['Path']] = {
+                            'service': name,
+                            'id':      item.get('Id'),
+                            'user':    s.get('UserId'),
+                        }
+
     return streams
 
 def is_watched(session):
+    """Check if media item has been watched."""
     if not session:
         return False
+
     service = session.get('service')
+
     if service == 'plex':
         headers = {'X-Plex-Token': cfg("PLEX_TOKEN"), 'Accept': 'application/json'}
         data = api_get(f"{cfg('PLEX_URL')}/library/metadata/{session.get('id')}", headers)
         if data and 'MediaContainer' in data:
-            meta = data['MediaContainer'].get('Metadata', [{}])[0]
+            meta = (data['MediaContainer'].get('Metadata') or [{}])[0]
             return meta.get('viewCount', 0) > 0
+
     elif service in ('emby', 'jellyfin'):
-        url_key = "EMBY_URL" if service == 'emby' else "JELLYFIN_URL"
+        url_key = "EMBY_URL"     if service == 'emby' else "JELLYFIN_URL"
         api_key = "EMBY_API_KEY" if service == 'emby' else "JELLYFIN_API_KEY"
         headers = {'X-Emby-Token': cfg(api_key), 'Accept': 'application/json'}
         data = api_get(f"{cfg(url_key)}/Users/{session.get('user')}/Items/{session.get('id')}", headers)
         if data:
             return data.get('UserData', {}).get('Played', False)
+
     return False
 
 # =============================================================================
@@ -997,82 +1157,121 @@ def is_watched(session):
 # =============================================================================
 
 def handle_movie(array_path):
+    """Handle movie caching - cache main file and related side-car files."""
     copy_file_to_cache(array_path)
+
     folder = os.path.dirname(array_path)
-    stem = os.path.splitext(os.path.basename(array_path))[0]
+    stem   = os.path.splitext(os.path.basename(array_path))[0]
+
     if os.path.exists(folder):
-        for f in os.listdir(folder):
-            if f.startswith(stem):
-                copy_file_to_cache(os.path.join(folder, f))
+        try:
+            for f in os.listdir(folder):
+                if f.startswith(stem):
+                    copy_file_to_cache(os.path.join(folder, f))
+        except OSError:
+            pass
 
 def handle_series(array_path):
+    """Handle series caching - cache current and upcoming episodes."""
     episode = parse_episode(os.path.basename(array_path))
     if episode is None:
         return handle_movie(array_path)
-    season_dir = os.path.dirname(array_path)
+
+    season_dir       = os.path.dirname(array_path)
     cache_season_dir = array_to_cache(season_dir)
+
+    # Smart cleanup: remove old episodes
     if cfg("CLEANUP_MODE").lower() == "smart" and os.path.exists(cache_season_dir):
         threshold = episode - cfg("EPISODE_KEEP_PREVIOUS", as_int=True)
-        for f in os.listdir(cache_season_dir):
-            ep = parse_episode(f)
-            if ep is not None and ep < threshold:
-                cache_path = os.path.join(cache_season_dir, f)
-                if os.path.exists(cache_path):
-                    move_file_to_array(cache_path)
-                    log(f"[Smart Cleanup] {f}")
+        try:
+            for f in os.listdir(cache_season_dir):
+                ep = parse_episode(f)
+                if ep is not None and ep < threshold:
+                    cache_path = os.path.join(cache_season_dir, f)
+                    if os.path.exists(cache_path):
+                        move_file_to_array(cache_path)
+                        log(f"[Smart Cleanup] {f}")
+        except OSError:
+            pass
+
+    # Cache current and upcoming episodes
     if os.path.exists(season_dir):
-        for f in sorted(os.listdir(season_dir)):
-            ep = parse_episode(f)
-            if ep is not None and ep >= episode:
-                copy_file_to_cache(os.path.join(season_dir, f))
+        try:
+            for f in sorted(os.listdir(season_dir)):
+                ep = parse_episode(f)
+                if ep is not None and ep >= episode:
+                    copy_file_to_cache(os.path.join(season_dir, f))
+        except OSError:
+            pass
 
 # =============================================================================
 # DAEMON
 # =============================================================================
 
 def run_daemon():
+    """Main daemon loop."""
+    rotate_log_if_needed()
     load_config()
+
+    # Acquire lock
     lock_fd = open(LOCK_FILE, 'w')
     try:
         fcntl.lockf(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except IOError:
         log("Another instance is already running", error=True)
         sys.exit(1)
-    signal.signal(signal.SIGHUP, lambda s, f: load_config())
+
+    signal.signal(signal.SIGHUP,  lambda s, f: load_config())
+    signal.signal(signal.SIGTERM, lambda s, f: (_shutdown_cleanup(), sys.exit(0)))
     log("Service started. Waiting for streams...")
-    last_streams = {}
+
+    last_streams    = {}
     last_days_check = 0
+
     while True:
         try:
             streams = get_active_streams()
             active_paths = set()
+
             for docker_path, session in streams.items():
                 array_path = translate_docker_path(docker_path)
+
                 if not array_path.startswith(cfg("ARRAY_ROOT")):
                     continue
                 if is_excluded(array_path):
                     continue
                 if not is_media_file(os.path.basename(array_path)):
                     continue
+
                 active_paths.add(array_path)
+
+                # New stream?
                 if array_path not in stream_timers:
                     log(f"[Stream] Active: {os.path.basename(array_path)}")
                     stream_timers[array_path] = time.time()
                     continue
+
+                # Copy delay passed?
                 if time.time() - stream_timers[array_path] >= cfg("COPY_DELAY", as_int=True):
                     if parse_episode(os.path.basename(array_path)) is not None:
                         handle_series(array_path)
                     else:
                         handle_movie(array_path)
+
+            # Remove inactive streams from the timer map
             for path in list(stream_timers.keys()):
                 if path not in active_paths:
                     del stream_timers[path]
+
             cleanup_mode = cfg("CLEANUP_MODE").lower()
+
+            # Smart cleanup (fires when a session has stopped)
             if cleanup_mode == "smart":
                 stopped = set(last_streams.keys()) - set(streams.keys())
                 for docker_path in stopped:
-                    session = last_streams[docker_path]
+                    session    = last_streams[docker_path]
                     array_path = translate_docker_path(docker_path)
+
                     if is_watched(session):
                         cache_path = array_to_cache(array_path)
                         if os.path.exists(cache_path):
@@ -1080,13 +1279,26 @@ def run_daemon():
                             if ep is None:
                                 deletion_queue[cache_path] = time.time()
                             else:
+                                # If this was the last episode in the season folder,
+                                # queue the whole season for deletion.
                                 folder = os.path.dirname(array_path)
                                 if os.path.exists(folder):
-                                    max_ep = max((parse_episode(f) or 0) for f in os.listdir(folder))
+                                    try:
+                                        max_ep = max(
+                                            (parse_episode(f) or 0)
+                                            for f in os.listdir(folder)
+                                        )
+                                    except (OSError, ValueError):
+                                        max_ep = ep
                                     if ep >= max_ep:
                                         cache_dir = os.path.dirname(cache_path)
-                                        for f in os.listdir(cache_dir):
-                                            deletion_queue[os.path.join(cache_dir, f)] = time.time()
+                                        try:
+                                            for f in os.listdir(cache_dir):
+                                                deletion_queue[os.path.join(cache_dir, f)] = time.time()
+                                        except OSError:
+                                            pass
+
+                # Process deletion queue
                 delay = cfg("MOVIE_DELETE_DELAY", as_int=True)
                 for cache_path, queued_time in list(deletion_queue.items()):
                     if time.time() - queued_time > delay:
@@ -1094,20 +1306,34 @@ def run_daemon():
                             move_file_to_array(cache_path)
                             log(f"[Cleanup] {os.path.basename(cache_path)}")
                         del deletion_queue[cache_path]
+
+            # Days-based cleanup (runs at most once per hour)
             elif cleanup_mode == "days":
                 if time.time() - last_days_check > 3600:
                     max_age = cfg("CACHE_MAX_DAYS", as_int=True) * 86400
                     tracked = TrackedFiles.load()
                     now = time.time()
+
                     for cache_path, cached_time in list(tracked.items()):
                         if now - cached_time > max_age and os.path.exists(cache_path):
                             log(f"[Days Cleanup] {os.path.basename(cache_path)}")
                             move_file_to_array(cache_path)
+
                     last_days_check = time.time()
+
             last_streams = streams
+
         except Exception as e:
             log(f"Loop error: {e}", error=True)
+
         time.sleep(cfg("CHECK_INTERVAL", as_int=True))
+
+def _shutdown_cleanup():
+    """Called on SIGTERM so systemd/rc.d stop reports cleanly."""
+    try:
+        log("Service stopped.")
+    except Exception:
+        pass
 
 # =============================================================================
 # MAIN
@@ -1119,46 +1345,134 @@ if __name__ == "__main__":
 </INLINE>
 </FILE>
 
+<!-- Service control script -->
 <FILE Name="/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache" Mode="0755">
 <INLINE>
 <![CDATA[
 #!/bin/bash
+# Plex to Cache — service control script
+# Usage: rc.plex_to_cache {start|stop|restart|status}
+
 PYTHON_SCRIPT="/usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py"
 PID_FILE="/var/run/plex_to_cache.pid"
 LOG_FILE="/var/log/plex_to_cache.log"
+
+is_running() {
+    [ -f "$PID_FILE" ] || return 1
+    local pid
+    pid=$(cat "$PID_FILE" 2>/dev/null)
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
 start() {
-    if [ -f "$PID_FILE" ] && ps -p $(cat "$PID_FILE") > /dev/null; then return;
+    if is_running; then
+        echo "Plex to Cache is already running (PID $(cat "$PID_FILE"))."
+        return 0
     fi
-    echo "Starting Plex to Cache Service..."
-    nohup python3 "$PYTHON_SCRIPT" > "$LOG_FILE" 2>&1 &
-    echo $! > "$PID_FILE"
+
+    # Clean stale PID file from a previous crash/reboot
+    [ -f "$PID_FILE" ] && rm -f "$PID_FILE"
+
+    # Make sure logfile exists and is writable before the daemon touches it
+    touch "$LOG_FILE" 2>/dev/null
+    chmod 666 "$LOG_FILE" 2>/dev/null
+
+    echo "Starting Plex to Cache service..."
+    nohup python3 "$PYTHON_SCRIPT" >> "$LOG_FILE" 2>&1 &
+    local pid=$!
+    echo "$pid" > "$PID_FILE"
+
+    # Give the daemon a moment to acquire its flock — if another instance
+    # already has the lock, our process exits fast and we should reflect that.
+    sleep 1
+    if ! kill -0 "$pid" 2>/dev/null; then
+        rm -f "$PID_FILE"
+        echo "Service failed to start — check $LOG_FILE"
+        return 1
+    fi
+    echo "Service started (PID $pid)."
 }
+
 stop() {
-    if [ -f "$PID_FILE" ]; then kill $(cat "$PID_FILE") 2>/dev/null; rm "$PID_FILE"; fi
-    pkill -f plex_to_cache.py 2>/dev/null
+    if [ -f "$PID_FILE" ]; then
+        local pid
+        pid=$(cat "$PID_FILE" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            echo "Stopping Plex to Cache service (PID $pid)..."
+            kill "$pid" 2>/dev/null
+            # Wait up to 5 s for graceful shutdown, then SIGKILL
+            for _ in 1 2 3 4 5; do
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 1
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+                kill -9 "$pid" 2>/dev/null
+            fi
+        fi
+        rm -f "$PID_FILE"
+    fi
+    # Paranoia: kill anything that looks like our daemon
+    pkill -f "$PYTHON_SCRIPT" 2>/dev/null
+    echo "Service stopped."
 }
+
+restart() {
+    stop
+    sleep 1
+    start
+}
+
+status() {
+    if is_running; then
+        echo "Plex to Cache is running (PID $(cat "$PID_FILE"))."
+        exit 0
+    fi
+    echo "Plex to Cache is stopped."
+    exit 3
+}
+
 case "$1" in
-    start) start ;;
-    stop) stop ;;
-    restart) stop; sleep 1; start ;;
+    start)   start ;;
+    stop)    stop ;;
+    restart) restart ;;
+    status)  status ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
 esac
 ]]>
 </INLINE>
 </FILE>
 
+<!-- Register a boot-time autostart. Unraid runs /etc/rc.d/rc.<name> at
+     boot if present (tmpfs root — must be re-created on every install). -->
+<FILE Name="/etc/rc.d/rc.plex_to_cache" Mode="0755">
+<INLINE>
+<![CDATA[
+#!/bin/bash
+# Auto-start wrapper — Unraid calls this at boot.
+/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache start >> /var/log/plex_to_cache.log 2>&1
+]]>
+</INLINE>
+</FILE>
+
+<!-- Post-install: permissions, logfile, start the service -->
 <FILE Run="/bin/bash">
 <INLINE>
 <![CDATA[
 chmod +x /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache
 chmod +x /usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py
+chmod +x /etc/rc.d/rc.plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart
-echo "Plex to Cache v&version; installed successfully."
+echo "Plex to Cache v2026.04.24a installed successfully."
 ]]>
 </INLINE>
 </FILE>
 
+<!-- Uninstall -->
 <FILE Run="/bin/bash" Method="remove">
 <INLINE>
 <![CDATA[
@@ -1167,9 +1481,10 @@ if [ -f /var/run/plex_to_cache.pid ]; then
     rm /var/run/plex_to_cache.pid
 fi
 pkill -f plex_to_cache.py 2>/dev/null
+rm -f /etc/rc.d/rc.plex_to_cache
 rm -rf /usr/local/emhttp/plugins/plex_to_cache
-rm /var/log/plex_to_cache.log
-echo "Plex to Cache uninstalled."
+rm -f /var/log/plex_to_cache.log
+echo "Plex to Cache uninstalled. Settings in /boot/config/plugins/plex_to_cache preserved."
 ]]>
 </INLINE>
 </FILE>
