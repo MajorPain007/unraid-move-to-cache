@@ -1,10 +1,29 @@
 #!/bin/bash
 # Plex to Cache — service control script
-# Usage: rc.plex_to_cache {start|stop|restart|status}
+# Usage: rc.plex_to_cache {start|stop|restart|condrestart|boot|status}
+#
+# Persistent user intent:
+#   A manual `stop` writes a flag file to the flash drive (survives
+#   reboots, since Unraid's root FS is tmpfs). The boot-time `boot`
+#   verb and `condrestart` respect that flag, so a stopped service
+#   stays stopped until the user explicitly runs `start` again.
+#
+# Verbs:
+#   start        Enable the service and start it now.
+#   stop         Stop the service and keep it stopped across reboots.
+#   restart      Enable the service and (re)start it.
+#   condrestart  Restart only if the service is enabled (used after
+#                settings changes / plugin updates).
+#   boot         Start only if the service is enabled (used by
+#                /etc/rc.d at system boot).
+#   status       Report running/enabled state.
 
 PYTHON_SCRIPT="/usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py"
 PID_FILE="/var/run/plex_to_cache.pid"
 LOG_FILE="/var/log/plex_to_cache.log"
+DISABLED_FLAG="/boot/config/plugins/plex_to_cache/service_disabled"
+
+# --- state helpers ---------------------------------------------------------
 
 is_running() {
     [ -f "$PID_FILE" ] || return 1
@@ -13,14 +32,29 @@ is_running() {
     [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
 
-start() {
+is_disabled() {
+    [ -f "$DISABLED_FLAG" ]
+}
+
+mark_enabled() {
+    rm -f "$DISABLED_FLAG"
+}
+
+mark_disabled() {
+    mkdir -p "$(dirname "$DISABLED_FLAG")"
+    touch "$DISABLED_FLAG"
+}
+
+# --- start/stop primitives (no flag handling) ------------------------------
+
+do_start() {
     if is_running; then
         echo "Plex to Cache is already running (PID $(cat "$PID_FILE"))."
         return 0
     fi
 
     # Clean stale PID file from a previous crash/reboot
-    [ -f "$PID_FILE" ] && rm -f "$PID_FILE"
+    rm -f "$PID_FILE"
 
     # Make sure logfile exists and is writable before the daemon touches it
     touch "$LOG_FILE" 2>/dev/null
@@ -42,7 +76,7 @@ start() {
     echo "Service started (PID $pid)."
 }
 
-stop() {
+do_stop() {
     if [ -f "$PID_FILE" ]; then
         local pid
         pid=$(cat "$PID_FILE" 2>/dev/null)
@@ -65,10 +99,42 @@ stop() {
     echo "Service stopped."
 }
 
+# --- user-facing verbs ------------------------------------------------------
+
+start() {
+    mark_enabled
+    do_start
+}
+
+stop() {
+    mark_disabled
+    do_stop
+    echo "Autostart disabled — the service stays stopped until you start it again."
+}
+
 restart() {
-    stop
+    mark_enabled
+    do_stop
     sleep 1
-    start
+    do_start
+}
+
+condrestart() {
+    if is_disabled; then
+        echo "Service is disabled by user — not restarting."
+        return 0
+    fi
+    do_stop
+    sleep 1
+    do_start
+}
+
+boot() {
+    if is_disabled; then
+        echo "Service is disabled by user — skipping autostart."
+        return 0
+    fi
+    do_start
 }
 
 status() {
@@ -76,17 +142,23 @@ status() {
         echo "Plex to Cache is running (PID $(cat "$PID_FILE"))."
         exit 0
     fi
-    echo "Plex to Cache is stopped."
+    if is_disabled; then
+        echo "Plex to Cache is stopped (autostart disabled by user)."
+    else
+        echo "Plex to Cache is stopped."
+    fi
     exit 3
 }
 
 case "$1" in
-    start)   start ;;
-    stop)    stop ;;
-    restart) restart ;;
-    status)  status ;;
+    start)       start ;;
+    stop)        stop ;;
+    restart)     restart ;;
+    condrestart) condrestart ;;
+    boot)        boot ;;
+    status)      status ;;
     *)
-        echo "Usage: $0 {start|stop|restart|status}"
+        echo "Usage: $0 {start|stop|restart|condrestart|boot|status}"
         exit 1
         ;;
 esac

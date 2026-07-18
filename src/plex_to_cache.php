@@ -12,7 +12,10 @@ $ptc_cfg = [
     "CHECK_INTERVAL" => "10", "CACHE_MAX_USAGE" => "80", "COPY_DELAY" => "30",
     "CLEANUP_MODE" => "none", "MOVIE_DELETE_DELAY" => "1800", "EPISODE_KEEP_PREVIOUS" => "2",
     "CACHE_MAX_DAYS" => "7", "EXCLUDE_DIRS" => "", "MEDIA_FILETYPES" => ".mkv .mp4 .avi",
-    "ARRAY_ROOT" => "/mnt/user", "CACHE_ROOT" => "/mnt/cache", "DOCKER_MAPPINGS" => ""
+    "ARRAY_ROOT" => "/mnt/user", "CACHE_ROOT" => "/mnt/cache", "DOCKER_MAPPINGS" => "",
+    "ENABLE_EPISODE_BATCHING" => "False", "EPISODE_BATCH_SIZE" => "30",
+    "EPISODE_BATCH_TOLERANCE" => "10", "EPISODE_BATCH_PREFETCH" => "4",
+    "ENABLE_CACHE_EVICTION" => "True", "ENABLE_NEXT_SEASON_PREFETCH" => "False"
 ];
 
 if (file_exists($ptc_cfg_file)) {
@@ -24,6 +27,14 @@ if (file_exists($ptc_cfg_file)) {
 if (isset($_GET['action']) && $_GET['action'] === 'log') {
     header('Content-Type: text/plain');
     echo file_exists($ptc_log_file) ? shell_exec("tail -n 200 " . escapeshellarg($ptc_log_file)) : "Log file not found. Service might be starting...";
+    exit;
+}
+
+// AJAX: Daemon status snapshot (written periodically by the Python daemon)
+if (isset($_GET['action']) && $_GET['action'] === 'status') {
+    header('Content-Type: application/json');
+    $ptc_status_file = '/var/run/plex_to_cache.status.json';
+    echo file_exists($ptc_status_file) ? file_get_contents($ptc_status_file) : '{}';
     exit;
 }
 
@@ -152,7 +163,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!is_dir(dirname($ptc_cfg_file))) mkdir(dirname($ptc_cfg_file), 0777, true);
     file_put_contents($ptc_cfg_file, $content);
 
-    shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache restart > /dev/null 2>&1 &");
+    // condrestart: apply new settings if the service is enabled, but do not
+    // force-start a service the user has stopped on purpose.
+    shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache condrestart > /dev/null 2>&1 &");
     echo "<script>window.location.href = window.location.href;</script>";
     exit;
 }
@@ -400,6 +413,16 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
             <div class="form-pair"><label data-tooltip="Interval in seconds to check for active streams.">Interval:</label><div class="form-input-wrapper"><input type="number" name="CHECK_INTERVAL" value="<?= htmlspecialchars($ptc_cfg['CHECK_INTERVAL']) ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
             <div class="form-pair"><label data-tooltip="Delay before starting to copy files.">Copy Delay:</label><div class="form-input-wrapper"><input type="number" name="COPY_DELAY" value="<?= htmlspecialchars($ptc_cfg['COPY_DELAY']) ?>" class="ptc-input input-small"><span class="unit-label">sec</span></div></div>
             <div class="form-pair"><label data-tooltip="Maximum cache usage percentage before stopping copies.">Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= htmlspecialchars($ptc_cfg['CACHE_MAX_USAGE']) ?>" class="ptc-input input-small"><span class="unit-label">%</span></div></div>
+            <div class="form-pair"><label data-tooltip="When the cache is full, move the oldest plugin-cached files back to the array to make room for the currently streamed media (LRU). Active streams and queued files are never evicted.">Eviction:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_CACHE_EVICTION" value="True" <?= $ptc_cfg['ENABLE_CACHE_EVICTION'] == 'True' ? 'checked' : '' ?>></div></div>
+
+            <div class="section-header"><i class="fa fa-list-ol"></i> Season Batching</div>
+            <div class="form-pair"><label data-tooltip="For long seasons, only cache one batch of episodes at a time instead of the whole season. The next batch starts copying automatically shortly before the current one runs out.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_EPISODE_BATCHING" value="True" <?= $ptc_cfg['ENABLE_EPISODE_BATCHING'] == 'True' ? 'checked' : '' ?> onchange="updateBatchingUI()"></div></div>
+            <div id="batching-options" class="cleanup-options" style="display: <?= $ptc_cfg['ENABLE_EPISODE_BATCHING'] == 'True' ? 'block' : 'none' ?>;">
+                <div class="form-pair"><label data-tooltip="Number of episodes cached per batch.">Batch Size:</label><div class="form-input-wrapper"><input type="number" min="1" name="EPISODE_BATCH_SIZE" value="<?= htmlspecialchars($ptc_cfg['EPISODE_BATCH_SIZE']) ?>" class="ptc-input input-small"><span class="unit-label">ep</span></div></div>
+                <div class="form-pair"><label data-tooltip="Buffer: if a season exceeds the batch size by no more than this many episodes, it is cached completely instead of split (e.g. 36 episodes with batch 30 + buffer 10 = all at once).">Buffer:</label><div class="form-input-wrapper"><input type="number" min="0" name="EPISODE_BATCH_TOLERANCE" value="<?= htmlspecialchars($ptc_cfg['EPISODE_BATCH_TOLERANCE']) ?>" class="ptc-input input-small"><span class="unit-label">ep</span></div></div>
+                <div class="form-pair"><label data-tooltip="Start caching the next batch when this many episodes remain in the current batch (e.g. 4 = next batch starts at episode 26 of 30).">Prefetch At:</label><div class="form-input-wrapper"><input type="number" min="0" name="EPISODE_BATCH_PREFETCH" value="<?= htmlspecialchars($ptc_cfg['EPISODE_BATCH_PREFETCH']) ?>" class="ptc-input input-small"><span class="unit-label">ep left</span></div></div>
+            </div>
+            <div class="form-pair"><label data-tooltip="Near the end of a season, pre-cache the beginning of the next season (first batch if batching is enabled, otherwise the whole season). Uses the 'Prefetch At' threshold.">Next Season:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_NEXT_SEASON_PREFETCH" value="True" <?= $ptc_cfg['ENABLE_NEXT_SEASON_PREFETCH'] == 'True' ? 'checked' : '' ?>></div></div>
 
             <div class="section-header"><i class="fa fa-clock-o"></i> Auto Cleanup</div>
             <div class="cleanup-mode-selector">
@@ -441,6 +464,7 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
                     <button type="button" onclick="refreshLog();" style="padding: 4px 10px; font-size: 12px; cursor: pointer;">Refresh</button>
                 </div>
             </div>
+            <div id="ptc-status" style="color:#888; font-size:12px; margin-top:8px; min-height:16px;"></div>
             <div id="ptc-log">Loading Logs...</div>
         </div>
     </div>
@@ -453,6 +477,19 @@ function refreshLog() {
         logDiv.text(data);
         logDiv.scrollTop(logDiv[0].scrollHeight);
     });
+}
+
+function refreshStatus() {
+    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=status', function(d) {
+        if (!d || !d.updated) { $('#ptc-status').text(''); return; }
+        var parts = [];
+        parts.push('Cached: ' + d.cached_files + ' files / ' + (d.cached_bytes / 1073741824).toFixed(1) + ' GB');
+        if (d.cache_usage_pct !== null && d.cache_usage_pct !== undefined) parts.push('Cache used: ' + d.cache_usage_pct + '%');
+        parts.push('Queue: ' + d.queue_length);
+        if (d.copying) parts.push('Copying: ' + d.copying);
+        if (d.active_streams && d.active_streams.length) parts.push('Streams: ' + d.active_streams.length);
+        $('#ptc-status').text(parts.join('  ·  '));
+    }).fail(function() { $('#ptc-status').text(''); });
 }
 
 function addMappingRow(dockerVal = '', hostVal = '') {
@@ -523,6 +560,11 @@ function serviceControl(cmd) {
     });
 }
 
+function updateBatchingUI() {
+    var enabled = document.querySelector('input[name="ENABLE_EPISODE_BATCHING"]').checked;
+    document.getElementById('batching-options').style.display = enabled ? 'block' : 'none';
+}
+
 function updateCleanupUI() {
     var mode = document.querySelector('input[name="CLEANUP_MODE"]:checked').value;
     document.getElementById('smart-cleanup-options').style.display = mode === 'smart' ? 'block' : 'none';
@@ -539,6 +581,9 @@ $(function() {
     <?php endforeach; ?>
     if (document.getElementById('mapping_table').rows.length <= 1) { addMappingRow(); }
     refreshLog();
-    setInterval(function() { if ($('#auto_refresh').is(':checked')) refreshLog(); }, 3000);
+    refreshStatus();
+    setInterval(function() {
+        if ($('#auto_refresh').is(':checked')) { refreshLog(); refreshStatus(); }
+    }, 3000);
 });
 </script>
