@@ -549,65 +549,52 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
     min-width: 0;
 }
 
-/* The table always fits its box: fixed columns, and a long name is truncated
-   with the full path in the row's tooltip. Nothing scrolls sideways, so nothing
-   has to be pinned to the right edge - and a pinned column covers whatever sits
-   beneath it, which is what hid the On cache column. */
-#ptc-cached-wrap {
-    overflow-x: hidden;
-    overflow-y: auto;
-    border: 1px solid #333;
-    border-radius: 8px;
-    background: var(--bg-dark);
-}
-#ptc-cached-table { table-layout: fixed; }
-#ptc-cached-table td:first-child,
-#ptc-cached-table th:first-child {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
+/* The list is two tables sharing one set of column widths: the header and ../
+   sit in a static block, the rows in a scrolling one. That is the only way to
+   have them always visible without content sliding underneath, which is what
+   position:sticky does by definition. The scrollbar of the lower box would
+   offset the columns by its own width, so the head reserves the same gap -
+   measured, not guessed. */
+#ptc-cached-head { border: 1px solid #333; border-bottom: none;
+                   border-radius: 8px 8px 0 0; background: var(--bg-dark); }
+#ptc-cached-wrap { max-height: 260px; overflow-x: hidden; overflow-y: auto;
+                   margin: 0 0 18px; border: 1px solid #333; border-radius: 0 0 8px 8px;
+                   background: var(--bg-dark); }
+
+table.ptc-list { width: 100%; font-size: 12px; border-collapse: collapse;
+                 table-layout: fixed; }
+table.ptc-list th, table.ptc-list td { padding: 5px 6px; }
+table.ptc-list td:first-child,
+table.ptc-list th:first-child { white-space: nowrap; overflow: hidden;
+                                text-overflow: ellipsis; }
 /* Unraid styles bare buttons uppercase and letter-spaced, which makes the label
    wider than the column reserved for it. */
-#ptc-cached-table .btn-test { text-transform: none; letter-spacing: 0; }
-/* Rows carry their own background so the pinned cell can inherit it. Without
-   an explicit colour it would have to hardcode one, and that is what left a
-   black block behind the button while the rest of the row was grey. */
-#ptc-cached-table thead tr        { background: #262b33; }
-#ptc-cached-table thead th        { background: #262b33; color: #c3ccd4;
-                                    border-bottom: 1px solid #333a44; }
-#ptc-cached-table tbody tr        { background: #17191d; }
-#ptc-cached-table tbody tr:nth-child(even) { background: #1b1e23; }
-#ptc-cached-table tbody tr.ptc-up-row { background: #1e2228; }
-/* Last, so hovering still highlights - equal specificity, later wins. */
-#ptc-cached-table tbody tr:hover  { background: #223142; }
+table.ptc-list .btn-test { text-transform: none; letter-spacing: 0; }
 
-#ptc-cached-table thead th {
-    position: sticky;
-    top: 0;
-    z-index: 3;
-    /* Content scrolls underneath, so the header has to look like it is on top -
-       without this the row passing behind it reads as a glitch. */
-    box-shadow: 0 4px 6px -3px rgba(0, 0, 0, .65);
-}
-#ptc-cached-table thead th { height: 26px; box-sizing: border-box; }
-/* ../ stays under the header. It carries the same shadow: without an edge, a
-   row scrolling behind it reads as a fault rather than as a layer. */
-#ptc-cached-table tbody tr.ptc-up-row td {
-    position: sticky;
-    top: 26px;
-    z-index: 2;
-    box-shadow: 0 4px 6px -3px rgba(0, 0, 0, .65);
-}
-/* A full-width message row is both the first and the last cell, so it would
-   otherwise stick to the edge and refuse to wrap. */
-#ptc-cached-table td[colspan] {
-    position: static;
-    white-space: normal;
-    overflow-wrap: anywhere;
-    box-shadow: none;
-    background: none;
-}
+table.ptc-list thead tr { background: #262b33; }
+table.ptc-list thead th { background: #262b33; color: #c3ccd4;
+                          border-bottom: 1px solid #333a44; }
+table.ptc-list tbody tr { background: #17191d; }
+#ptc-cached-table tbody tr:nth-child(even) { background: #1b1e23; }
+table.ptc-list tbody tr.ptc-up-row { background: #1e2228; }
+/* Last, so hovering still highlights - equal specificity, later wins. */
+table.ptc-list tbody tr:hover { background: #223142; }
+
+table.ptc-list a { color: var(--primary-blue); text-decoration: none; }
+table.ptc-list a:hover { text-decoration: underline; }
+table.ptc-list .ptc-ico { width: 14px; display: inline-block; text-align: center;
+                          margin-right: 6px; color: #7a8894; }
+table.ptc-list .ptc-ico.folder { color: var(--primary-blue); }
+/* The whole name cell opens the folder, not just the text - at narrow widths
+   the label is shortened to almost nothing and would be hard to hit. */
+table.ptc-list td.ptc-openable { cursor: pointer; }
+.btn-test:disabled { opacity: .45; cursor: default; border-color: #333; }
+#ptc-crumbs a { color: var(--primary-blue); text-decoration: none; }
+#ptc-crumbs a:hover { text-decoration: underline; }
+table.ptc-list col.ptc-c-size { width: 64px; }
+table.ptc-list col.ptc-c-note { width: 84px; }
+table.ptc-list col.ptc-c-act  { width: 92px; }
+table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
 #ptc-cached-table a { color: var(--primary-blue); text-decoration: none; }
 #ptc-cached-table a:hover { text-decoration: underline; }
 #ptc-cached-table .ptc-ico { width: 14px; display: inline-block; text-align: center;
@@ -890,15 +877,23 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
             </div>
             <div id="ptc-cached-summary" style="color:#888; font-size:12px; margin-top:6px;"></div>
             <div id="ptc-crumbs" style="color:#8b98a5; font-size:12px; margin:4px 0; word-break:break-all;"></div>
-            <div id="ptc-cached-wrap" style="max-height:260px; overflow:auto; margin:4px 0 18px;">
-                <table id="ptc-cached-table" style="width:100%; font-size:12px; border-collapse:collapse;">
+            <!-- Header and ../ live outside the scrolling box, so nothing can
+                 scroll underneath them. Both tables share the column widths. -->
+            <div id="ptc-cached-head">
+                <table class="ptc-list">
                     <colgroup><col><col class="ptc-c-size"><col class="ptc-c-note"><col class="ptc-c-act"></colgroup>
                     <thead><tr>
-                        <th style="text-align:left; padding:4px 6px;">Name</th>
-                        <th style="text-align:right; padding:4px 6px;">Size</th>
-                        <th style="text-align:right; padding:4px 6px;">On cache</th>
-                        <th style="padding:4px 6px;"></th>
+                        <th style="text-align:left;">Name</th>
+                        <th style="text-align:right;">Size</th>
+                        <th style="text-align:right;">On cache</th>
+                        <th></th>
                     </tr></thead>
+                    <tbody id="ptc-up-holder"></tbody>
+                </table>
+            </div>
+            <div id="ptc-cached-wrap">
+                <table id="ptc-cached-table" class="ptc-list">
+                    <colgroup><col><col class="ptc-c-size"><col class="ptc-c-note"><col class="ptc-c-act"></colgroup>
                     <tbody><tr><td colspan="4" style="padding:6px; color:#888;">Loading...</td></tr></tbody>
                 </table>
             </div>
@@ -969,20 +964,22 @@ function refreshCached() { browseCache(ptcBrowsePath); }
 
 function ptcRow(body, o) {
     var tr = $('<tr>').css('border-top', '1px solid #222').addClass(o.cls || '');
-    var cell = $('<td>').css({padding: '5px 6px'}).attr('title', o.title || '');
+    var cell = $('<td>').attr('title', o.title || '');
     $('<i>').addClass('ptc-ico ' + (o.icon || '')).addClass(o.folder ? 'folder' : '').appendTo(cell);
     if (o.open) {
-        $('<a href="#">').text(o.name).css('cursor', 'pointer')
-            .on('click', function(e) { e.preventDefault(); o.open(); }).appendTo(cell);
+        // The whole cell is the target: at narrow widths the label is cut down
+        // to an ellipsis and would be almost impossible to hit.
+        cell.addClass('ptc-openable').on('click', function(e) { e.preventDefault(); o.open(); });
+        $('<a href="#">').text(o.name).appendTo(cell);
     } else {
         $('<span>').text(o.name).appendTo(cell);
     }
     cell.appendTo(tr);
-    $('<td>').css({padding: '5px 6px', textAlign: 'right'}).text(o.size || '').appendTo(tr);
-    $('<td>').css({padding: '5px 6px', textAlign: 'right', color: '#98a5b2',
-                   whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'})
+    $('<td>').css('textAlign', 'right').text(o.size || '').appendTo(tr);
+    $('<td>').css({textAlign: 'right', color: '#98a5b2', whiteSpace: 'nowrap',
+                   overflow: 'hidden', textOverflow: 'ellipsis'})
              .attr('title', o.note || '').text(o.note || '').appendTo(tr);
-    var last = $('<td>').css({padding: '5px 6px', textAlign: 'right'}).appendTo(tr);
+    var last = $('<td>').css('textAlign', 'right').appendTo(tr);
     if (o.move) {
         $('<button type="button" class="btn-test">')
             .text(o.disabled ? 'in use' : 'To Array')
@@ -1017,6 +1014,16 @@ function ptcCrumbs(path, roots) {
     });
 }
 
+// The scrolling box has a scrollbar and the static head does not, which would
+// offset the columns by exactly its width. Measure it rather than guess: it
+// differs between platforms and is zero with overlay scrollbars.
+function ptcAlignHead() {
+    var wrap = document.getElementById('ptc-cached-wrap');
+    if (!wrap) return;
+    var gap = wrap.offsetWidth - wrap.clientWidth;
+    $('#ptc-cached-head').css('padding-right', (gap > 0 ? gap : 0) + 'px');
+}
+
 function browseCache(path) {
     // POST rather than a GET carrying the path in the query string: content
     // blockers match on URLs, and a request they drop arrives here as status 0
@@ -1033,8 +1040,9 @@ function browseCache(path) {
         ptcBrowsePath = d.path || '';
         ptcCrumbs(ptcBrowsePath, d.roots || []);
 
+        var head = $('#ptc-up-holder').empty();
         if (d.parent !== null && d.parent !== undefined) {
-            ptcRow(body, {name: '../', cls: 'ptc-up-row', icon: 'fa fa-level-up',
+            ptcRow(head, {name: '../', cls: 'ptc-up-row', icon: 'fa fa-level-up',
                           title: 'One folder up',
                           open: function() { browseCache(d.parent); }});
         }
@@ -1065,12 +1073,14 @@ function browseCache(path) {
         if (!d.dirs.length && !d.files.length) {
             body.append('<tr><td colspan="4" style="padding:6px; color:#888;">Empty</td></tr>');
         }
+        ptcAlignHead();
     }).fail(function(xhr) {
         // Say what went wrong in the table itself. Leaving "Loading..." sitting
         // there says nothing and looks like the request is still running.
         var detail = 'HTTP ' + (xhr.status || '?');
         if (xhr.responseText) detail += ': ' + xhr.responseText.substring(0, 300);
         $('#ptc-crumbs').text('Could not read the folder.');
+        $('#ptc-up-holder').empty();
         $('#ptc-cached-table tbody').empty().append(
             $('<tr>').append($('<td colspan="4">').css({padding: '6px', color: '#e0654a',
                                                         whiteSpace: 'pre-wrap'}).text(detail)));

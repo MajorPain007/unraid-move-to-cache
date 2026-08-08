@@ -1,3 +1,13 @@
+### 2026.08.08.14
+
+- The header and "../" now sit in their own block above the scrolling list
+  rather than being pinned inside it. Nothing can pass underneath them, so the
+  edge is straight by construction instead of by styling.
+- A folder opens when you click anywhere in its name cell. In a narrow column
+  the label is shortened to an ellipsis and was nearly impossible to hit.
+- The narrow columns give back some width, so the name keeps more room on a
+  small window.
+
 ### 2026.08.08.13
 
 - "On cache" was hidden behind the To Array column. Pinning a column to the
