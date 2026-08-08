@@ -562,10 +562,11 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
 /* Rows carry their own background so the pinned cell can inherit it. Without
    an explicit colour it would have to hardcode one, and that is what left a
    black block behind the button while the rest of the row was grey. */
-#ptc-cached-table thead th        { background: #15181c; }
+#ptc-cached-table thead th        { background: #262b33; color: #c3ccd4;
+                                    border-bottom: 1px solid #333a44; }
 #ptc-cached-table tbody tr        { background: #17191d; }
 #ptc-cached-table tbody tr:nth-child(even) { background: #1b1e23; }
-#ptc-cached-table tbody tr.ptc-up-row { background: #15181c; }
+#ptc-cached-table tbody tr.ptc-up-row { background: #1e2228; }
 /* Last, so hovering still highlights - equal specificity, later wins. */
 #ptc-cached-table tbody tr:hover  { background: #223142; }
 
@@ -972,7 +973,7 @@ function ptcRow(body, o) {
     }
     cell.appendTo(tr);
     $('<td>').css({padding: '5px 6px', textAlign: 'right'}).text(o.size || '').appendTo(tr);
-    $('<td>').css({padding: '5px 6px', textAlign: 'right', color: '#8b98a5'})
+    $('<td>').css({padding: '5px 6px', textAlign: 'right', color: '#98a5b2'})
              .text(o.note || '').appendTo(tr);
     var last = $('<td>').css({padding: '5px 6px', textAlign: 'right'}).appendTo(tr);
     if (o.move) {

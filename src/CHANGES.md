@@ -1,3 +1,10 @@
+### 2026.08.08.10
+
+- The list header was darker than the rows below it, so it read as a black band
+  rather than a header. The shades now step up evenly from the card to the rows
+  to the header, and every label clears the AA contrast threshold against the
+  background it actually sits on.
+
 ### 2026.08.08.09
 
 - One level up is the familiar "../" entry at the top of the list again, not a
