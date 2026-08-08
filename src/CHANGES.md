@@ -1,3 +1,12 @@
+### 2026.08.08.12
+
+- The pinned "../" row was covering the buttons of the rows scrolling under it.
+  It is an ordinary first row again - keeping it in place bought nothing, since
+  the clickable path above the list is always visible and reaches any level in
+  one click.
+- The column headers stay pinned but now cast a shadow, so a row passing behind
+  them reads as passing behind them rather than as something broken.
+
 ### 2026.08.08.11
 
 - The top right corner of the list stayed black. The pinned column inherits the

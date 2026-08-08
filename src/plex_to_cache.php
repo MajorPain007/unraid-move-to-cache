@@ -577,15 +577,14 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
     position: sticky;
     top: 0;
     z-index: 3;
+    /* Content scrolls underneath, so the header has to look like it is on top -
+       without this the row passing behind it reads as a glitch. */
+    box-shadow: 0 4px 6px -3px rgba(0, 0, 0, .65);
 }
-/* ../ stays put under the header, so it is reachable from anywhere in a long
-   folder. The header has a fixed height, or this offset would be a guess. */
+/* ../ is an ordinary first row. Pinning it made rows scroll underneath and cut
+   their buttons in half, and it bought nothing: the path above the box is
+   always visible and jumps to any level in one click. */
 #ptc-cached-table thead th { height: 26px; box-sizing: border-box; }
-#ptc-cached-table tbody tr.ptc-up-row td {
-    position: sticky;
-    top: 26px;
-    z-index: 2;
-}
 #ptc-cached-table td:last-child,
 #ptc-cached-table th:last-child {
     position: sticky;
@@ -594,7 +593,6 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
     box-shadow: -6px 0 6px -4px rgba(0, 0, 0, .55);
     z-index: 1;
 }
-#ptc-cached-table tbody tr.ptc-up-row td:last-child { z-index: 2; }
 #ptc-cached-table thead th:last-child { z-index: 4; }
 /* A full-width message row is both the first and the last cell, so it would
    otherwise stick to the edge and refuse to wrap. */
