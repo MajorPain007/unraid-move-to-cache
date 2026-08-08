@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.08.08.14">
+<!ENTITY version   "2026.08.08.15">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,6 +13,17 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
+### 2026.08.08.15
+
+- A folder can be moved whether or not this plugin put its contents on the
+  cache. Clicking To Array is an explicit instruction; the Scope setting decides
+  that question for the unattended daily run, where nobody is watching what gets
+  picked.
+- Folders show their real size and file count again, so an empty one is
+  recognisable as empty, with "3 of 12" saying how much of it this plugin holds.
+  The scan is capped, and a folder that hits the cap is marked with a "+".
+- A failed request reports what the server said instead of "Request failed.".
+
 ### 2026.08.08.14
 
 - The header and "../" now sit in their own block above the scrolling list
@@ -476,9 +487,15 @@ function ptc_is_media($name) {
     return false;
 }
 
-/** Media files anywhere under $dir, as path => size. */
-function ptc_media_under($dir) {
-    $out = [];
+define('PTC_SCAN_CAP', 20000);   // media files counted per folder before giving up
+
+/**
+ * Media files anywhere under $dir as path => size, plus whether the walk hit
+ * the cap. Listing a folder walks it once per row, so an unbounded scan of a
+ * very large library would be the slowest thing on the page.
+ */
+function ptc_media_under($dir, $cap = 0) {
+    $out = ['files' => [], 'capped' => false];
     if (!is_dir($dir)) return $out;
     try {
         $it = new RecursiveIteratorIterator(
@@ -486,7 +503,8 @@ function ptc_media_under($dir) {
             RecursiveIteratorIterator::LEAVES_ONLY);
         foreach ($it as $file) {
             if (!$file->isFile() || !ptc_is_media($file->getFilename())) continue;
-            $out[$file->getPathname()] = $file->getSize();
+            $out['files'][$file->getPathname()] = $file->getSize();
+            if ($cap > 0 && count($out['files']) >= $cap) { $out['capped'] = true; break; }
         }
     } catch (Exception $e) {
         // Unreadable subtree - report what was collected so far
@@ -698,21 +716,22 @@ if (isset($_GET['action']) && $_GET['action'] === 'browse') {
     $files = [];
     $here = '';
 
-    // Per-folder totals come from the tracked list, not from walking the tree.
-    // Walking it for every row meant a recursive scan per line, which is fine
-    // on a handful of files and not fine on a real library over FUSE.
+    // What is actually in the folder, not just what the plugin put there - the
+    // point of the number is to tell a full folder from an empty one. Capped so
+    // an enormous tree cannot stall the request; the UI says when it was.
     $summarise = function ($dir) use ($tracked, $streaming) {
-        $prefix = rtrim($dir, '/') . '/';
-        $files = 0; $bytes = 0; $busy = 0;
-        foreach ($tracked as $path => $ts) {
-            if (strpos($path, $prefix) !== 0) continue;
-            $size = @filesize($path);
-            if ($size === false) continue;
-            $files++;
-            $bytes += $size;
+        $under  = ptc_media_under($dir, PTC_SCAN_CAP);
+        $cached = 0; $busy = 0;
+        foreach ($under['files'] as $path => $size) {
+            if (!array_key_exists($path, $tracked)) continue;
+            $cached++;
             if (in_array(basename($path), $streaming, true)) $busy++;
         }
-        return ['files' => $files, 'size' => $bytes, 'busy' => $busy];
+        return ['files'  => count($under['files']),
+                'size'   => array_sum($under['files']),
+                'capped' => $under['capped'],
+                'cached' => $cached,
+                'busy'   => $busy];
     };
 
     if ($want === '') {
@@ -825,25 +844,20 @@ if (isset($_GET['action']) && $_GET['action'] === 'uncache') {
         exit;
     }
 
-    $tracked = ptc_tracked();
-    $scope_all = strtolower($ptc_cfg['FLUSH_SCOPE']) === 'all';
-
+    // Clicking To Array on a specific file or folder is an explicit instruction,
+    // so it moves whatever media is in there whether this plugin put it on the
+    // cache or not. FLUSH_SCOPE governs the unattended daily run, where the
+    // difference between "what I cached" and "everything" actually matters.
     if (is_dir($path)) {
-        $under = ptc_media_under($path);
-        $count = $scope_all ? count($under) : count(array_intersect_key($under, $tracked));
+        $under = ptc_media_under($path, PTC_SCAN_CAP);
+        $count = count($under['files']);
         if ($count === 0) {
-            echo json_encode(['success' => false, 'message' => $scope_all
-                ? 'No media files in that folder'
-                : 'Nothing in that folder was cached by the plugin - set Scope to "All media in mapped folders" to move it anyway']);
-            exit;
-        }
-        $label = $count . ' file(s) from ' . basename($path);
-    } else {
-        if (!array_key_exists($path, $tracked) && !$scope_all) {
             echo json_encode(['success' => false,
-                'message' => 'Not a file this plugin cached - set Scope to "All media in mapped folders" to move it anyway']);
+                'message' => 'No media files in ' . basename($path)]);
             exit;
         }
+        $label = $count . ($under['capped'] ? '+' : '') . ' file(s) from ' . basename($path);
+    } else {
         $label = basename($path);
     }
 
@@ -1370,7 +1384,7 @@ function ptcRow(body, o) {
     $('<td>').css('textAlign', 'right').text(o.size || '').appendTo(tr);
     $('<td>').css({textAlign: 'right', color: '#98a5b2', whiteSpace: 'nowrap',
                    overflow: 'hidden', textOverflow: 'ellipsis'})
-             .attr('title', o.note || '').text(o.note || '').appendTo(tr);
+             .attr('title', o.noteTitle || o.note || '').text(o.note || '').appendTo(tr);
     var last = $('<td>').css('textAlign', 'right').appendTo(tr);
     if (o.move) {
         $('<button type="button" class="btn-test">')
@@ -1440,21 +1454,31 @@ function browseCache(path) {
         }
 
         d.dirs.forEach(function(dir) {
-            var note = dir.files ? dir.files + ' file' + (dir.files === 1 ? '' : 's') : '-';
-            if (dir.busy) note += ', ' + dir.busy + ' streaming';
+            var note, full;
+            if (!dir.files) {
+                note = 'empty';
+                full = 'No media files in this folder';
+            } else {
+                note = dir.cached + ' of ' + dir.files + (dir.capped ? '+' : '');
+                full = dir.files + (dir.capped ? '+' : '') + ' media files, '
+                     + dir.cached + ' on cache'
+                     + (dir.busy ? ', ' + dir.busy + ' being streamed' : '');
+            }
             ptcRow(body, {
                 name: dir.name, icon: 'fa fa-folder', folder: true, title: dir.path,
-                size: dir.size ? ptcBytes(dir.size) : '', note: note,
+                size: dir.size ? ptcBytes(dir.size) : '', note: note, noteTitle: full,
                 open: function() { browseCache(dir.path); },
-                move: function(btn) { uncacheFile(dir.path, btn); },
-                moveTitle: 'Move this folder back to the array. Anything being streamed stays.'
+                move: dir.files ? function(btn) { uncacheFile(dir.path, btn); } : null,
+                moveTitle: 'Move everything in this folder to the array. Anything being streamed stays.'
             });
         });
 
         d.files.forEach(function(f) {
             ptcRow(body, {
                 name: f.name, icon: 'fa fa-film', title: f.path,
-                size: ptcBytes(f.size), note: f.tracked ? 'cached' : 'not by plugin',
+                size: ptcBytes(f.size), note: f.tracked ? 'cached' : '-',
+                noteTitle: f.tracked ? 'This plugin put it on the cache'
+                                     : 'On the cache, but not put there by this plugin',
                 move: function(btn) { uncacheFile(f.path, btn); },
                 moveTitle: f.in_use ? 'Being streamed - it stays on the cache'
                                     : 'Move this file back to the array',
@@ -1500,8 +1524,17 @@ function uncacheFile(path, btn) {
         $('#ptc-status').text(data.message || '');
         if (!data.success) { btn.disabled = false; btn.textContent = 'To Array'; }
         setTimeout(refreshCached, 4000);
-    }).fail(function() {
-        $('#ptc-status').text('Request failed.');
+    }).fail(function(xhr) {
+        // Show what the server actually said. A bare "Request failed" hides a
+        // 403 from the CSRF check just as much as a request that never arrived.
+        var msg = 'Request failed (HTTP ' + (xhr.status || '0 - no response') + ')';
+        try {
+            var j = JSON.parse(xhr.responseText);
+            if (j && j.message) msg = j.message;
+        } catch (e) {
+            if (xhr.responseText) msg += ': ' + xhr.responseText.substring(0, 200);
+        }
+        $('#ptc-status').text(msg);
         btn.disabled = false;
         btn.textContent = 'To Array';
     });
@@ -2319,7 +2352,10 @@ def flush_cache_to_array(only=None, label="Flush"):
 
         tracked_map = TrackedFiles.load()
         candidates = dict(tracked_map)
-        if cfg("FLUSH_SCOPE").lower() == "all":
+        # An explicit selection from the browser means "move this", so it covers
+        # media the plugin never copied. FLUSH_SCOPE decides that question only
+        # for the unattended run, where nobody is looking at what gets picked.
+        if only is not None or cfg("FLUSH_SCOPE").lower() == "all":
             extra = _cache_media_files(cfg("FLUSH_MIN_AGE", as_int=True) * 60)
             for path, ts in extra.items():
                 candidates.setdefault(path, ts)
@@ -3338,7 +3374,7 @@ chmod +x /etc/rc.d/rc.plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache condrestart
-echo "Plex to Cache v2026.08.08.14 installed successfully."
+echo "Plex to Cache v2026.08.08.15 installed successfully."
 ]]>
 </INLINE>
 </FILE>

@@ -686,7 +686,10 @@ def flush_cache_to_array(only=None, label="Flush"):
 
         tracked_map = TrackedFiles.load()
         candidates = dict(tracked_map)
-        if cfg("FLUSH_SCOPE").lower() == "all":
+        # An explicit selection from the browser means "move this", so it covers
+        # media the plugin never copied. FLUSH_SCOPE decides that question only
+        # for the unattended run, where nobody is looking at what gets picked.
+        if only is not None or cfg("FLUSH_SCOPE").lower() == "all":
             extra = _cache_media_files(cfg("FLUSH_MIN_AGE", as_int=True) * 60)
             for path, ts in extra.items():
                 candidates.setdefault(path, ts)

@@ -318,6 +318,38 @@ class FlushScopeAll(unittest.TestCase):
 
         self.assertEqual(list(found), [old])
 
+    def test_an_explicit_selection_covers_untracked_media(self):
+        """Clicking To Array on a folder means move it, whatever FLUSH_SCOPE says
+        about the unattended run."""
+        configure(ARRAY_ROOT=self.array, CACHE_ROOT=self.cache,
+                  DOCKER_MAPPINGS="/media:" + os.path.join(self.array, "Media"),
+                  FLUSH_SCOPE="tracked", FLUSH_MIN_AGE="30")
+        untracked = self._make(os.path.join(self.media, "Serie", "e1.mkv"))
+
+        moved = []
+        with mock.patch.object(ptc.TrackedFiles, 'load', return_value={}), \
+             mock.patch.object(ptc, 'move_file_to_array',
+                               side_effect=lambda p, track=True: (moved.append(p), (True, False, 0))[1]), \
+             mock.patch.object(ptc, 'write_status'):
+            ptc.flush_cache_to_array(only=[os.path.join(self.media, "Serie")])
+
+        self.assertEqual(moved, [untracked])
+
+    def test_without_a_selection_scope_tracked_still_means_tracked(self):
+        configure(ARRAY_ROOT=self.array, CACHE_ROOT=self.cache,
+                  DOCKER_MAPPINGS="/media:" + os.path.join(self.array, "Media"),
+                  FLUSH_SCOPE="tracked", FLUSH_MIN_AGE="30")
+        self._make(os.path.join(self.media, "Serie", "e1.mkv"))
+
+        moved = []
+        with mock.patch.object(ptc.TrackedFiles, 'load', return_value={}), \
+             mock.patch.object(ptc, 'move_file_to_array',
+                               side_effect=lambda p, track=True: (moved.append(p), (True, False, 0))[1]), \
+             mock.patch.object(ptc, 'write_status'):
+            ptc.flush_cache_to_array()
+
+        self.assertEqual(moved, [], "the daily run must not sweep up untracked media")
+
     def test_untracked_file_is_not_deleted_when_the_name_exists_on_the_array(self):
         """move_file_to_array drops the cache copy when the destination exists.
         That is right for a plugin copy and wrong for anything else."""

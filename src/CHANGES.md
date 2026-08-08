@@ -1,3 +1,14 @@
+### 2026.08.08.15
+
+- A folder can be moved whether or not this plugin put its contents on the
+  cache. Clicking To Array is an explicit instruction; the Scope setting decides
+  that question for the unattended daily run, where nobody is watching what gets
+  picked.
+- Folders show their real size and file count again, so an empty one is
+  recognisable as empty, with "3 of 12" saying how much of it this plugin holds.
+  The scan is capped, and a folder that hits the cap is marked with a "+".
+- A failed request reports what the server said instead of "Request failed.".
+
 ### 2026.08.08.14
 
 - The header and "../" now sit in their own block above the scrolling list
