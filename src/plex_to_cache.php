@@ -23,6 +23,39 @@ if (file_exists($ptc_cfg_file)) {
     if ($ptc_loaded) { $ptc_cfg = array_merge($ptc_cfg, $ptc_loaded); }
 }
 
+/**
+ * Unraid's CSRF token.
+ *
+ * Without it, any page an authenticated admin visits can trigger the
+ * state-changing endpoints below - an <img src="...?action=service&cmd=stop">
+ * is enough to stop the daemon. $var is normally provided by the page layout;
+ * fall back to var.ini so the check also works when this file is requested
+ * directly by the AJAX calls.
+ */
+function ptc_csrf_token() {
+    global $var;
+    if (isset($var['csrf_token']) && $var['csrf_token'] !== '') return $var['csrf_token'];
+    $ini = @parse_ini_file('/usr/local/emhttp/state/var.ini');
+    return ($ini && isset($ini['csrf_token'])) ? $ini['csrf_token'] : '';
+}
+
+function ptc_require_csrf($as_json = true) {
+    $expected = ptc_csrf_token();
+    if ($expected === '') return;                       // nothing to check against
+    $got = isset($_REQUEST['csrf_token']) ? $_REQUEST['csrf_token'] : '';
+    if (!hash_equals($expected, (string)$got)) {
+        http_response_code(403);
+        if ($as_json) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'message' => 'Invalid or missing CSRF token']);
+        } else {
+            header('Content-Type: text/plain');
+            echo 'Invalid or missing CSRF token';
+        }
+        exit;
+    }
+}
+
 // AJAX: Get log
 if (isset($_GET['action']) && $_GET['action'] === 'log') {
     header('Content-Type: text/plain');
@@ -40,6 +73,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'status') {
 
 // AJAX: Test connection (uses form values sent via POST, not saved config)
 if (isset($_GET['action']) && $_GET['action'] === 'test') {
+    ptc_require_csrf();
     header('Content-Type: application/json');
     $service = $_GET['service'] ?? '';
     $result = ['success' => false, 'message' => 'Unknown service'];
@@ -128,6 +162,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'test') {
 
 // AJAX: Service control
 if (isset($_GET['action']) && $_GET['action'] === 'service') {
+    ptc_require_csrf();
     header('Content-Type: application/json');
     $cmd = $_GET['cmd'] ?? '';
     if (in_array($cmd, ['start', 'stop', 'restart'])) {
@@ -143,6 +178,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'service') {
 
 // POST: Save settings
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    ptc_require_csrf(false);
     foreach ($ptc_cfg as $key => $val) {
         if (isset($_POST[$key])) { $ptc_cfg[$key] = $_POST[$key]; }
         else { if (strpos($key, "ENABLE_") === 0 || $key === "ENABLE_SMART_CLEANUP") { $ptc_cfg[$key] = "False"; } }
@@ -374,6 +410,7 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
 </style>
 
 <form method="post" autocomplete="off">
+<input type="hidden" name="csrf_token" value="<?= htmlspecialchars(ptc_csrf_token(), ENT_QUOTES) ?>">
     <div id="ptc-wrapper">
         <div class="ptc-col" id="ptc-col-servers">
             <div class="top-control-bar">
@@ -492,6 +529,12 @@ function refreshStatus() {
     }).fail(function() { $('#ptc-status').text(''); });
 }
 
+// Unraid exposes csrf_token as a global on its own pages; fall back to the
+// hidden field in the form so the AJAX calls work either way.
+var ptcToken = (typeof csrf_token !== 'undefined' && csrf_token)
+    ? csrf_token
+    : ($('input[name="csrf_token"]').val() || '');
+
 function addMappingRow(dockerVal = '', hostVal = '') {
     var table = document.getElementById('mapping_table').getElementsByTagName('tbody')[0];
     var row = table.insertRow(-1);
@@ -523,7 +566,8 @@ function testConnection(service, btn) {
         key = $('input[name="JELLYFIN_API_KEY"]').val();
     }
 
-    $.post('/plugins/plex_to_cache/plex_to_cache.php?action=test&service=' + service, {url: url, key: key}, function(data) {
+    $.post('/plugins/plex_to_cache/plex_to_cache.php?action=test&service=' + service,
+            {url: url, key: key, csrf_token: ptcToken}, function(data) {
         if (data.success) {
             btn.textContent = 'OK';
             btn.className = 'btn-test success';
@@ -548,7 +592,8 @@ function testConnection(service, btn) {
 
 
 function serviceControl(cmd) {
-    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=service&cmd=' + cmd, function(data) {
+    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=service&cmd=' + cmd
+              + '&csrf_token=' + encodeURIComponent(ptcToken), function(data) {
         var dot = document.getElementById('status-dot');
         if (data.running) {
             dot.className = 'status-dot running';

@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.07.18">
+<!ENTITY version   "2026.08.08">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,6 +13,67 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
+### 2026.08.08
+- Watched detection is now session-based: a title counts as watched
+  when playback reached >= 90% in the session that just ended, instead
+  of relying on the server's lifetime "played" flag (Plex viewCount /
+  Emby-Jellyfin Played). Fixes rewatches being deleted from cache
+  immediately after starting them. Server flags remain as fallback.
+- Cache eviction (new option, default on): when the cache is full, the
+  oldest plugin-cached files are moved back to the array (LRU) to make
+  room for the currently streamed media. Active streams and queued
+  files are never evicted.
+- Next-season prefetch (new option, default off): near the end of a
+  season the beginning of the next season is pre-cached (first batch
+  if batching is enabled, otherwise the whole season).
+- Startup consistency check: stale entries are removed from the
+  tracked-files list and orphaned plugin copies (cache duplicates of
+  array files inside the mapped media dirs) are re-adopted, so cleanup
+  keeps working after crashes. Only mapped media directories are
+  scanned — appdata/system shares and cache-only files are untouched.
+- Proper log rotation: the daemon now logs through Python's
+  RotatingFileHandler (5 MB, one backup), which also rotates while
+  running. Previously rotation only happened at start and the stdout
+  redirect kept writing to the renamed file.
+- Live status in the web UI: the daemon writes a JSON snapshot
+  (/var/run/plex_to_cache.status.json) with cached files/GB, cache
+  usage, copy queue, current transfer and active streams; the settings
+  page shows it above the log.
+- Manual stop is now persistent: stopping the service (UI or CLI)
+  writes a flag to the flash drive, and the service stays stopped
+  across reboots, plugin updates and settings saves until you start
+  it again. New rc verbs: `boot` (autostart, respects the flag) and
+  `condrestart` (restart only if enabled).
+- Season batching (new option): long seasons are now cached in
+  configurable batches (default 30 episodes) instead of all at once.
+  The next batch starts copying automatically when only a few episodes
+  (default 4, i.e. around episode 26/30) remain in the current batch.
+  A buffer/tolerance (default 10) makes sure seasons that only
+  slightly exceed the batch size (e.g. 36 episodes) are still cached
+  completely in one go.
+- rsync robustness: stderr is now captured and logged (previously
+  discarded, so "exit status 23" gave no clue what went wrong).
+  Transfers are retried up to 3 times and resume via --partial.
+  Exit codes 23/24 are tolerated when the destination file is
+  verifiably complete (size check) — exit 23 is often only a
+  chown/chmod/utime problem on FUSE shares although the data copied
+  fine; permissions are re-applied afterwards anyway.
+- Copies run in a background worker thread: a multi-gigabyte transfer
+  no longer blocks stream detection and cleanup for minutes.
+- Failed copies get a 5-minute cooldown instead of being retried
+  (and logged) every poll interval.
+- Log lines now carry timestamps.
+- Free-space check now also verifies the specific file fits on the
+  cache (with 512 MB headroom), not just the max-usage percentage.
+- Episode detection additionally understands the "1x05" naming style
+  (without matching resolutions like 1920x1080).
+- Hardened config parsing: invalid numeric settings fall back to
+  their defaults instead of 0 (which could busy-loop the daemon);
+  poll interval is clamped to >= 1 s.
+- Clean shutdown: SIGTERM/SIGINT now also terminates a running rsync
+  instead of leaving it orphaned; tracked-files list is written
+  atomically.
+
 ### 2026.07.18
 - Watched detection is now session-based: a title counts as watched
   when playback reached >= 90% in the session that just ended, instead
@@ -230,6 +291,39 @@ if (file_exists($ptc_cfg_file)) {
     if ($ptc_loaded) { $ptc_cfg = array_merge($ptc_cfg, $ptc_loaded); }
 }
 
+/**
+ * Unraid's CSRF token.
+ *
+ * Without it, any page an authenticated admin visits can trigger the
+ * state-changing endpoints below - an <img src="...?action=service&cmd=stop">
+ * is enough to stop the daemon. $var is normally provided by the page layout;
+ * fall back to var.ini so the check also works when this file is requested
+ * directly by the AJAX calls.
+ */
+function ptc_csrf_token() {
+    global $var;
+    if (isset($var['csrf_token']) && $var['csrf_token'] !== '') return $var['csrf_token'];
+    $ini = @parse_ini_file('/usr/local/emhttp/state/var.ini');
+    return ($ini && isset($ini['csrf_token'])) ? $ini['csrf_token'] : '';
+}
+
+function ptc_require_csrf($as_json = true) {
+    $expected = ptc_csrf_token();
+    if ($expected === '') return;                       // nothing to check against
+    $got = isset($_REQUEST['csrf_token']) ? $_REQUEST['csrf_token'] : '';
+    if (!hash_equals($expected, (string)$got)) {
+        http_response_code(403);
+        if ($as_json) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'message' => 'Invalid or missing CSRF token']);
+        } else {
+            header('Content-Type: text/plain');
+            echo 'Invalid or missing CSRF token';
+        }
+        exit;
+    }
+}
+
 // AJAX: Get log
 if (isset($_GET['action']) && $_GET['action'] === 'log') {
     header('Content-Type: text/plain');
@@ -247,6 +341,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'status') {
 
 // AJAX: Test connection (uses form values sent via POST, not saved config)
 if (isset($_GET['action']) && $_GET['action'] === 'test') {
+    ptc_require_csrf();
     header('Content-Type: application/json');
     $service = $_GET['service'] ?? '';
     $result = ['success' => false, 'message' => 'Unknown service'];
@@ -335,6 +430,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'test') {
 
 // AJAX: Service control
 if (isset($_GET['action']) && $_GET['action'] === 'service') {
+    ptc_require_csrf();
     header('Content-Type: application/json');
     $cmd = $_GET['cmd'] ?? '';
     if (in_array($cmd, ['start', 'stop', 'restart'])) {
@@ -350,6 +446,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'service') {
 
 // POST: Save settings
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    ptc_require_csrf(false);
     foreach ($ptc_cfg as $key => $val) {
         if (isset($_POST[$key])) { $ptc_cfg[$key] = $_POST[$key]; }
         else { if (strpos($key, "ENABLE_") === 0 || $key === "ENABLE_SMART_CLEANUP") { $ptc_cfg[$key] = "False"; } }
@@ -581,6 +678,7 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
 </style>
 
 <form method="post" autocomplete="off">
+<input type="hidden" name="csrf_token" value="<?= htmlspecialchars(ptc_csrf_token(), ENT_QUOTES) ?>">
     <div id="ptc-wrapper">
         <div class="ptc-col" id="ptc-col-servers">
             <div class="top-control-bar">
@@ -699,6 +797,12 @@ function refreshStatus() {
     }).fail(function() { $('#ptc-status').text(''); });
 }
 
+// Unraid exposes csrf_token as a global on its own pages; fall back to the
+// hidden field in the form so the AJAX calls work either way.
+var ptcToken = (typeof csrf_token !== 'undefined' && csrf_token)
+    ? csrf_token
+    : ($('input[name="csrf_token"]').val() || '');
+
 function addMappingRow(dockerVal = '', hostVal = '') {
     var table = document.getElementById('mapping_table').getElementsByTagName('tbody')[0];
     var row = table.insertRow(-1);
@@ -730,7 +834,8 @@ function testConnection(service, btn) {
         key = $('input[name="JELLYFIN_API_KEY"]').val();
     }
 
-    $.post('/plugins/plex_to_cache/plex_to_cache.php?action=test&service=' + service, {url: url, key: key}, function(data) {
+    $.post('/plugins/plex_to_cache/plex_to_cache.php?action=test&service=' + service,
+            {url: url, key: key, csrf_token: ptcToken}, function(data) {
         if (data.success) {
             btn.textContent = 'OK';
             btn.className = 'btn-test success';
@@ -755,7 +860,8 @@ function testConnection(service, btn) {
 
 
 function serviceControl(cmd) {
-    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=service&cmd=' + cmd, function(data) {
+    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=service&cmd=' + cmd
+              + '&csrf_token=' + encodeURIComponent(ptcToken), function(data) {
         var dot = document.getElementById('status-dot');
         if (data.running) {
             dot.className = 'status-dot running';
@@ -1074,30 +1180,76 @@ def reconcile_tracked_files():
 # PATH UTILITIES
 # =============================================================================
 
+def _under(path, prefix):
+    """True if path is prefix itself or lies below it.
+
+    A plain startswith() also matches a sibling whose name merely begins the
+    same way: /database would count as being under /data.
+    """
+    prefix = prefix.rstrip('/')
+    return path == prefix or path.startswith(prefix + '/')
+
+def _relative_to(path, prefix):
+    """The part of path below prefix, or None if it is not below it."""
+    prefix = prefix.rstrip('/')
+    if path == prefix:
+        return ''
+    if path.startswith(prefix + '/'):
+        return path[len(prefix) + 1:]
+    return None
+
+def physical_array_root():
+    """The array-only view of the configured array root.
+
+    ARRAY_ROOT is normally the user share /mnt/user, which includes the cache
+    pool - writing a file back there could land it straight on cache again.
+    /mnt/user0 is the same share with the cache excluded, so that is what a
+    move back has to target. A root that is not a user share (an unassigned
+    device, a second pool) has no such twin and is used unchanged.
+    """
+    root = cfg("ARRAY_ROOT").rstrip('/')
+    if root == '/mnt/user':
+        return ARRAY_ROOT
+    if root.startswith('/mnt/user/'):
+        return ARRAY_ROOT + root[len('/mnt/user'):]
+    return root
+
 def cache_to_array(cache_path):
-    """Convert cache path (/mnt/cache/x) to physical array path (/mnt/user0/x)."""
-    return cache_path.replace(cfg("CACHE_ROOT"), ARRAY_ROOT, 1)
+    """Cache path -> the physical location of the original on the array."""
+    rel = _relative_to(cache_path, cfg("CACHE_ROOT"))
+    if rel is None:
+        return cache_path
+    return os.path.join(physical_array_root(), rel)
 
 def array_to_cache(array_path):
-    """Convert user share path (/mnt/user/x) to cache path (/mnt/cache/x)."""
-    return array_path.replace(cfg("ARRAY_ROOT"), cfg("CACHE_ROOT"), 1)
+    """Array path -> where its cached copy lives."""
+    rel = _relative_to(array_path, cfg("ARRAY_ROOT"))
+    if rel is None:
+        return array_path
+    return os.path.join(cfg("CACHE_ROOT").rstrip('/'), rel)
 
 def array_share_to_cache(host_path):
     """Translate a user-share host path to its cache equivalent.
     Same as array_to_cache but keeps the result when already on cache."""
-    if host_path.startswith(cfg("CACHE_ROOT")):
+    if _under(host_path, cfg("CACHE_ROOT")):
         return host_path
     return array_to_cache(host_path)
 
 def translate_docker_path(docker_path):
-    """Translate docker container path to host path."""
+    """Translate docker container path to host path.
+
+    Mappings are tried longest prefix first, so a specific /media/movies wins
+    over a general /media no matter which order they were configured in.
+    """
     path = docker_path.replace('\\', '/')
-    for docker_prefix, host_prefix in docker_mappings.items():
-        if path.startswith(docker_prefix):
-            rel = path[len(docker_prefix):].lstrip('/')
-            base = host_prefix if host_prefix.startswith(cfg("ARRAY_ROOT")) \
-                   else os.path.join(cfg("ARRAY_ROOT"), host_prefix.lstrip('/'))
-            return os.path.join(base, rel)
+    for docker_prefix in sorted(docker_mappings, key=len, reverse=True):
+        rel = _relative_to(path, docker_prefix)
+        if rel is None:
+            continue
+        host_prefix = docker_mappings[docker_prefix]
+        base = host_prefix if host_prefix.startswith('/') \
+               else os.path.join(cfg("ARRAY_ROOT"), host_prefix)
+        return os.path.join(base, rel)
     return path
 
 def is_excluded(path):
@@ -1204,7 +1356,11 @@ def rsync_transfer(src, dst, remove_source=True):
     Raises subprocess.CalledProcessError if the transfer really failed.
     """
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-    cmd = ["rsync", "-a", "--inplace", "--partial"]
+    # --partial-dir instead of --inplace: a retry still resumes, but the
+    # partial data sits in a side directory. With --inplace the destination
+    # carries its final name while still incomplete, and Unraid serves new
+    # opens from cache - a stream starting mid-copy could read a truncated file.
+    cmd = ["rsync", "-a", "--partial", "--partial-dir=.plex_to_cache-partial"]
     if remove_source:
         cmd.append("--remove-source-files")
     cmd.extend([src, dst])
@@ -1914,21 +2070,34 @@ def run_daemon():
                                 # If this was the last episode in the season folder,
                                 # queue the whole season for deletion.
                                 folder = os.path.dirname(array_path)
+                                max_ep = None
                                 if os.path.exists(folder):
                                     try:
-                                        max_ep = max(
-                                            (parse_episode(f) or 0)
-                                            for f in os.listdir(folder)
-                                        )
-                                    except (OSError, ValueError):
-                                        max_ep = ep
-                                    if ep >= max_ep:
-                                        cache_dir = os.path.dirname(cache_path)
-                                        try:
-                                            for f in os.listdir(cache_dir):
-                                                deletion_queue[os.path.join(cache_dir, f)] = time.time()
-                                        except OSError:
-                                            pass
+                                        eps = [parse_episode(f) for f in os.listdir(folder)]
+                                        eps = [e for e in eps if e is not None]
+                                        max_ep = max(eps) if eps else None
+                                    except OSError as e:
+                                        # Cannot tell whether this was the finale.
+                                        # Assuming it was would evict the whole
+                                        # season on a transient listing error.
+                                        log(f"Cannot read {folder}: {e} - not treating "
+                                            f"episode {ep} as the season finale", warn=True)
+                                        max_ep = None
+                                if max_ep is not None and ep >= max_ep:
+                                    cache_dir = os.path.dirname(cache_path)
+                                    # Only ever queue files this plugin cached.
+                                    # The season folder can also hold a fresh
+                                    # download waiting for the mover, or a file
+                                    # the user keeps on cache deliberately -
+                                    # moving those to the array is not ours to do.
+                                    ours = TrackedFiles.load()
+                                    try:
+                                        for f in os.listdir(cache_dir):
+                                            candidate = os.path.join(cache_dir, f)
+                                            if candidate in ours:
+                                                deletion_queue[candidate] = time.time()
+                                    except OSError:
+                                        pass
 
                 # Process deletion queue
                 delay = cfg("MOVIE_DELETE_DELAY", as_int=True)
@@ -2187,7 +2356,7 @@ chmod +x /etc/rc.d/rc.plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache condrestart
-echo "Plex to Cache v2026.07.18 installed successfully."
+echo "Plex to Cache v2026.08.08 installed successfully."
 ]]>
 </INLINE>
 </FILE>

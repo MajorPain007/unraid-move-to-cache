@@ -270,30 +270,76 @@ def reconcile_tracked_files():
 # PATH UTILITIES
 # =============================================================================
 
+def _under(path, prefix):
+    """True if path is prefix itself or lies below it.
+
+    A plain startswith() also matches a sibling whose name merely begins the
+    same way: /database would count as being under /data.
+    """
+    prefix = prefix.rstrip('/')
+    return path == prefix or path.startswith(prefix + '/')
+
+def _relative_to(path, prefix):
+    """The part of path below prefix, or None if it is not below it."""
+    prefix = prefix.rstrip('/')
+    if path == prefix:
+        return ''
+    if path.startswith(prefix + '/'):
+        return path[len(prefix) + 1:]
+    return None
+
+def physical_array_root():
+    """The array-only view of the configured array root.
+
+    ARRAY_ROOT is normally the user share /mnt/user, which includes the cache
+    pool - writing a file back there could land it straight on cache again.
+    /mnt/user0 is the same share with the cache excluded, so that is what a
+    move back has to target. A root that is not a user share (an unassigned
+    device, a second pool) has no such twin and is used unchanged.
+    """
+    root = cfg("ARRAY_ROOT").rstrip('/')
+    if root == '/mnt/user':
+        return ARRAY_ROOT
+    if root.startswith('/mnt/user/'):
+        return ARRAY_ROOT + root[len('/mnt/user'):]
+    return root
+
 def cache_to_array(cache_path):
-    """Convert cache path (/mnt/cache/x) to physical array path (/mnt/user0/x)."""
-    return cache_path.replace(cfg("CACHE_ROOT"), ARRAY_ROOT, 1)
+    """Cache path -> the physical location of the original on the array."""
+    rel = _relative_to(cache_path, cfg("CACHE_ROOT"))
+    if rel is None:
+        return cache_path
+    return os.path.join(physical_array_root(), rel)
 
 def array_to_cache(array_path):
-    """Convert user share path (/mnt/user/x) to cache path (/mnt/cache/x)."""
-    return array_path.replace(cfg("ARRAY_ROOT"), cfg("CACHE_ROOT"), 1)
+    """Array path -> where its cached copy lives."""
+    rel = _relative_to(array_path, cfg("ARRAY_ROOT"))
+    if rel is None:
+        return array_path
+    return os.path.join(cfg("CACHE_ROOT").rstrip('/'), rel)
 
 def array_share_to_cache(host_path):
     """Translate a user-share host path to its cache equivalent.
     Same as array_to_cache but keeps the result when already on cache."""
-    if host_path.startswith(cfg("CACHE_ROOT")):
+    if _under(host_path, cfg("CACHE_ROOT")):
         return host_path
     return array_to_cache(host_path)
 
 def translate_docker_path(docker_path):
-    """Translate docker container path to host path."""
+    """Translate docker container path to host path.
+
+    Mappings are tried longest prefix first, so a specific /media/movies wins
+    over a general /media no matter which order they were configured in.
+    """
     path = docker_path.replace('\\', '/')
-    for docker_prefix, host_prefix in docker_mappings.items():
-        if path.startswith(docker_prefix):
-            rel = path[len(docker_prefix):].lstrip('/')
-            base = host_prefix if host_prefix.startswith(cfg("ARRAY_ROOT")) \
-                   else os.path.join(cfg("ARRAY_ROOT"), host_prefix.lstrip('/'))
-            return os.path.join(base, rel)
+    for docker_prefix in sorted(docker_mappings, key=len, reverse=True):
+        rel = _relative_to(path, docker_prefix)
+        if rel is None:
+            continue
+        host_prefix = docker_mappings[docker_prefix]
+        base = host_prefix if host_prefix.startswith('/') \
+               else os.path.join(cfg("ARRAY_ROOT"), host_prefix)
+        return os.path.join(base, rel)
     return path
 
 def is_excluded(path):
@@ -400,7 +446,11 @@ def rsync_transfer(src, dst, remove_source=True):
     Raises subprocess.CalledProcessError if the transfer really failed.
     """
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-    cmd = ["rsync", "-a", "--inplace", "--partial"]
+    # --partial-dir instead of --inplace: a retry still resumes, but the
+    # partial data sits in a side directory. With --inplace the destination
+    # carries its final name while still incomplete, and Unraid serves new
+    # opens from cache - a stream starting mid-copy could read a truncated file.
+    cmd = ["rsync", "-a", "--partial", "--partial-dir=.plex_to_cache-partial"]
     if remove_source:
         cmd.append("--remove-source-files")
     cmd.extend([src, dst])
@@ -1110,21 +1160,34 @@ def run_daemon():
                                 # If this was the last episode in the season folder,
                                 # queue the whole season for deletion.
                                 folder = os.path.dirname(array_path)
+                                max_ep = None
                                 if os.path.exists(folder):
                                     try:
-                                        max_ep = max(
-                                            (parse_episode(f) or 0)
-                                            for f in os.listdir(folder)
-                                        )
-                                    except (OSError, ValueError):
-                                        max_ep = ep
-                                    if ep >= max_ep:
-                                        cache_dir = os.path.dirname(cache_path)
-                                        try:
-                                            for f in os.listdir(cache_dir):
-                                                deletion_queue[os.path.join(cache_dir, f)] = time.time()
-                                        except OSError:
-                                            pass
+                                        eps = [parse_episode(f) for f in os.listdir(folder)]
+                                        eps = [e for e in eps if e is not None]
+                                        max_ep = max(eps) if eps else None
+                                    except OSError as e:
+                                        # Cannot tell whether this was the finale.
+                                        # Assuming it was would evict the whole
+                                        # season on a transient listing error.
+                                        log(f"Cannot read {folder}: {e} - not treating "
+                                            f"episode {ep} as the season finale", warn=True)
+                                        max_ep = None
+                                if max_ep is not None and ep >= max_ep:
+                                    cache_dir = os.path.dirname(cache_path)
+                                    # Only ever queue files this plugin cached.
+                                    # The season folder can also hold a fresh
+                                    # download waiting for the mover, or a file
+                                    # the user keeps on cache deliberately -
+                                    # moving those to the array is not ours to do.
+                                    ours = TrackedFiles.load()
+                                    try:
+                                        for f in os.listdir(cache_dir):
+                                            candidate = os.path.join(cache_dir, f)
+                                            if candidate in ours:
+                                                deletion_queue[candidate] = time.time()
+                                    except OSError:
+                                        pass
 
                 # Process deletion queue
                 delay = cfg("MOVIE_DELETE_DELAY", as_int=True)

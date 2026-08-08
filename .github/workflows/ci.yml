@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.9', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+
+      # Unraid ships its own python3; the daemon must not depend on a recent one.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Compile
+        run: python -m compileall -q src/
+
+      - name: Tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Standard library only
+        run: |
+          # The daemon must import nothing that needs pip: Unraid's root fs is
+          # tmpfs, so site-packages is gone after every reboot.
+          python - <<'PY'
+          import ast, sys, pathlib
+          allowed = set(sys.stdlib_module_names)
+          bad = []
+          for node in ast.walk(ast.parse(pathlib.Path('src/plex_to_cache.py').read_text())):
+              if isinstance(node, ast.Import):
+                  names = [a.name.split('.')[0] for a in node.names]
+              elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                  names = [(node.module or '').split('.')[0]]
+              else:
+                  continue
+              bad += [n for n in names if n and n not in allowed]
+          if bad:
+              print('::error::non-stdlib imports:', ', '.join(sorted(set(bad))))
+              sys.exit(1)
+          print('all imports are stdlib')
+          PY
+
+  php:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.4', '8.3']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: none
+      - name: Syntax check
+        run: php -l src/plex_to_cache.php
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: The .plg must match src/
+        run: |
+          python3 build_plg.py
+          if ! git diff --quiet -- plex_to_cache.plg; then
+            echo "::error::plex_to_cache.plg is out of date - run: python3 build_plg.py"
+            git --no-pager diff --stat -- plex_to_cache.plg
+            exit 1
+          fi
+          echo "plg is in sync with src/"
+
+      - name: Manifest is well-formed XML
+        run: python3 -c "import xml.dom.minidom; xml.dom.minidom.parse('plex_to_cache.plg')"
