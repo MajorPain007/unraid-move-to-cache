@@ -1,3 +1,21 @@
+### 2026.08.08.18
+
+Review pass. Four defects, three of them real:
+
+- A stream starting while a move was already running was not protected. The
+  check read a copy of the list of playing files taken once at the start, and
+  the main loop replaces that list on every pass - so a long move could pull a
+  file out from under a playback that began after it started. It is read per
+  file now.
+- Moving a single episode walked every mapped media folder looking for
+  candidates. The search is limited to what was selected, and still refuses to
+  leave the mapped folders.
+- Moving fifty files rewrote the tracked-files list fifty times. That file lives
+  on the USB flash drive. One write per run now.
+- A move requested while another was running was dropped without a trace, and
+  clicking several rows quickly overwrote the earlier requests. They queue up
+  and run in order.
+
 ### 2026.08.08.17
 
 - The "Move Back to Array" section is gone, along with the daily schedule and

@@ -86,6 +86,7 @@ docker_mappings = {}
 metadata_cache  = {}
 stream_timers   = {}
 deletion_queue  = {}
+move_queue      = []               # paths the web UI asked to move, oldest first
 failed_copies   = {}               # cache_path -> timestamp of last failed attempt
 active_cache_paths = set()         # cache paths of currently streamed files (never evicted)
 
@@ -225,6 +226,21 @@ class TrackedFiles:
             tracked = TrackedFiles.load()
             if path in tracked:
                 del tracked[path]
+                TrackedFiles.save(tracked)
+
+    @staticmethod
+    def remove_many(paths):
+        """Drop several entries with a single write. The list lives on the USB
+        flash drive, so a move of fifty files must not rewrite it fifty times."""
+        if not paths:
+            return
+        with TrackedFiles._lock:
+            tracked = TrackedFiles.load()
+            hit = False
+            for path in paths:
+                if tracked.pop(path, None) is not None:
+                    hit = True
+            if hit:
                 TrackedFiles.save(tracked)
 
     @staticmethod
@@ -439,8 +455,8 @@ def _sizes_match(src, dst):
 def rsync_transfer(src, dst, remove_source=True):
     """Move (or copy) a file using rsync. Robust against transient errors:
 
-    - Retries up to RSYNC_RETRIES times (with --partial --inplace a retry
-      resumes instead of restarting).
+    - Retries up to RSYNC_RETRIES times; --partial-dir lets a retry resume
+      instead of starting over.
     - rsync stderr is captured and logged so failures are diagnosable
       (previously it was thrown away).
     - Exit codes 23 (partial transfer / attribute errors) and 24 (source
@@ -553,8 +569,10 @@ def move_file_to_array(cache_path, track=True):
             return True, True, size
 
         # Move to array
+        # No clone_permissions here: it copies the array original's ownership
+        # onto a cache copy, and this direction has no original to read from -
+        # the call returned immediately. rsync -a carries them across as root.
         rsync_transfer(cache_path, array_path, remove_source=True)
-        clone_permissions(array_path)
         cleanup_empty_dirs(cache_path)
         if track:
             TrackedFiles.remove(cache_path)
@@ -611,57 +629,69 @@ def evict_oldest_cached(needed_size):
 
     return cache_has_room_for(needed_size)
 
-def _cache_media_files(min_age_seconds):
-    """Every media file sitting in the mapped cache folders, whether this
-    plugin put it there or not.
+def _cache_media_files(min_age_seconds, roots=None):
+    """Media files sitting in the mapped cache folders, whether this plugin put
+    them there or not.
 
-    Used by the "all" flush scope. Only the folders from the docker mappings
-    are walked, so a media file that landed there without this plugin is
-    included, while a separate downloads share, appdata, system and every
-    other share on the same pool are left alone.
+    `roots` limits the search - moving one episode should not walk the whole
+    library. Every root is still required to sit inside a mapped folder, so a
+    request naming a path outside them finds nothing: the containment is
+    enforced here rather than trusted from whoever wrote the request.
 
-    Files modified within min_age_seconds are left alone: something still
-    being written into the media folder - an import in progress, say - would
-    otherwise be moved out from under the process writing it.
+    Files modified within min_age_seconds are left alone: something still being
+    written into the media folder - an import in progress, say - would otherwise
+    be moved out from under the process writing it.
     """
-    found = {}
     cache_root = cfg("CACHE_ROOT")
+    mapped = [d for d in sorted(_protected_cache_dirs()) if d != cache_root]
+
+    if roots is None:
+        targets = mapped
+    else:
+        targets = []
+        for r in roots:
+            r = r.rstrip(os.sep)
+            if any(r == m or r.startswith(m + os.sep) for m in mapped):
+                targets.append(r)
+
+    found = {}
     now = time.time()
 
-    for cache_dir in sorted(_protected_cache_dirs()):
-        if cache_dir == cache_root or not os.path.isdir(cache_dir):
+    def consider(path, name):
+        if not is_media_file(name) or is_excluded(path):
+            return
+        try:
+            st = os.stat(path)
+        except OSError:
+            return
+        if now - st.st_mtime < min_age_seconds:
+            return
+        found[path] = st.st_mtime
+
+    for target in targets:
+        if os.path.isfile(target):
+            consider(target, os.path.basename(target))
             continue
-        for root, _dirs, files in os.walk(cache_dir):
+        for root, _dirs, files in os.walk(target):
             for name in files:
-                path = os.path.join(root, name)
-                if not is_media_file(name) or is_excluded(path):
-                    continue
-                try:
-                    st = os.stat(path)
-                except OSError:
-                    continue
-                if now - st.st_mtime < min_age_seconds:
-                    continue
-                found[path] = st.st_mtime
+                consider(os.path.join(root, name), name)
     return found
 
 def flush_cache_to_array(only=None, label="Flush"):
     """Move files this plugin cached back to the array.
 
     Same operation as eviction, but unconditional and not bounded by
-    EVICT_MAX_FILES. With `only` set to a collection of cache paths, just those
-    are moved - that is the per-file button in the UI. The restriction is
-    applied by filtering the tracked list, so a path that is not tracked simply
-    never matches and an untrusted request cannot reach an arbitrary file.
+    EVICT_MAX_FILES.
 
-    Two kinds of file are deliberately left on the cache: those belonging to an
-    active stream, and those queued for copying - moving either would pull the
-    file out from under a running playback. They are counted as skipped so the
-    UI can say so rather than silently doing less than "all".
+    Without `only` this moves what the plugin itself put on the cache. With
+    `only` - a file or folder picked in the browser - it also covers media the
+    plugin never copied, since naming something explicitly says what is meant.
+    Either way nothing outside the mapped media folders is reachable.
 
-    Only tracked files are touched. Anything else on the cache pool - a fresh
-    download waiting for the mover, appdata, files the user put there on
-    purpose - is none of this plugin's business.
+    Left where they are: a file belonging to an active stream, one queued for
+    copying, one written in the last MOVE_MIN_AGE seconds, and an untracked file
+    whose name already exists on the array. Each is counted so the result can
+    say it did less than everything rather than implying otherwise.
     """
     with _flush_lock:
         if _flush_state["active"]:
@@ -670,18 +700,16 @@ def flush_cache_to_array(only=None, label="Flush"):
         _flush_state.update(active=True, total=0, done=0, bytes=0,
                             skipped=0, conflicts=0, failed=0, finished=0)
 
-    try:
-        with _pending_lock:
-            pending = {array_to_cache(p) for p in _pending_copies}
-        protected = set(active_cache_paths) | pending
+    moved_paths = []
 
+    try:
         tracked_map = TrackedFiles.load()
         candidates = dict(tracked_map)
         # An explicit selection means "move this", so it covers media the plugin
         # never copied. Without one - the bare --flush - only what this plugin
         # put on the cache is touched.
         if only is not None:
-            extra = _cache_media_files(MOVE_MIN_AGE)
+            extra = _cache_media_files(MOVE_MIN_AGE, roots=only)
             for path, ts in extra.items():
                 candidates.setdefault(path, ts)
 
@@ -705,7 +733,13 @@ def flush_cache_to_array(only=None, label="Flush"):
                 log(f"[{label}] Aborted: service is shutting down", warn=True)
                 break
 
-            if cache_path in protected:
+            # Read this per file rather than snapshotting it once: the main
+            # loop replaces active_cache_paths every pass, and a move can run
+            # for minutes. A stream started halfway through has to be protected
+            # too, which a snapshot taken at the start cannot do.
+            with _pending_lock:
+                pending = {array_to_cache(p) for p in _pending_copies}
+            if cache_path in active_cache_paths or cache_path in pending:
                 with _flush_lock:
                     _flush_state["skipped"] += 1
                 log(f"[{label}] Skipping {os.path.basename(cache_path)} (in use)")
@@ -722,7 +756,9 @@ def flush_cache_to_array(only=None, label="Flush"):
                     f"of that name is already on the array", warn=True)
                 continue
 
-            ok, _deleted, size = move_file_to_array(cache_path)
+            ok, _deleted, size = move_file_to_array(cache_path, track=False)
+            if ok:
+                moved_paths.append(cache_path)
             with _flush_lock:
                 if ok:
                     _flush_state["done"] += 1
@@ -752,10 +788,42 @@ def flush_cache_to_array(only=None, label="Flush"):
     except Exception as e:
         log(f"[{label}] Error: {e}", error=True)
     finally:
+        # One write for the whole run, and in finally so an interrupted move
+        # still records what it managed to shift.
+        TrackedFiles.remove_many(moved_paths)
         with _flush_lock:
             _flush_state["active"] = False
             _flush_state["finished"] = int(time.time())
         write_status()
+
+def drain_move_requests():
+    """Pick up what the web UI asked to move and start it when nothing is
+    running.
+
+    The UI cannot talk to this process, so it appends one path per line to a
+    request file. The paths go into a queue rather than being acted on the
+    moment they arrive: several rows can be clicked in a row, and a move already
+    in progress would otherwise make those requests vanish without a trace.
+    """
+    if os.path.exists(FLUSH_REQUEST):
+        try:
+            requested = [ln.strip() for ln in
+                         Path(FLUSH_REQUEST).read_text().splitlines() if ln.strip()]
+        except OSError:
+            requested = []
+        try:
+            os.remove(FLUSH_REQUEST)
+        except OSError:
+            pass
+        for path in requested:
+            if path not in move_queue:
+                move_queue.append(path)
+
+    with _flush_lock:
+        busy = _flush_state["active"]
+    if move_queue and not busy:
+        if start_flush(only=list(move_queue), label="Move"):
+            move_queue.clear()
 
 def start_flush(only=None, label="Flush"):
     """Run a flush in the background so the main loop keeps tracking streams -
@@ -1272,23 +1340,7 @@ def run_daemon():
 
     while True:
         try:
-            # The web UI cannot talk to this process directly, so it drops a
-            # marker file: an op line, optionally followed by one path per line
-            # for the per-file buttons. Read it, then remove it before acting -
-            # if the flush fails, the user gets an error rather than a request
-            # that retriggers on every pass.
-            if os.path.exists(FLUSH_REQUEST):
-                try:
-                    request = [ln.strip() for ln in Path(FLUSH_REQUEST).read_text().splitlines()]
-                except OSError:
-                    request = []
-                try:
-                    os.remove(FLUSH_REQUEST)
-                except OSError:
-                    pass
-                paths = ([ln for ln in request[1:] if ln]
-                         if request and request[0].lower() == "move" else None)
-                start_flush(only=paths, label="Move" if paths else "Flush")
+            drain_move_requests()
 
             streams = get_active_streams()
             active_paths = set()

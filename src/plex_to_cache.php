@@ -466,7 +466,9 @@ if (isset($_GET['action']) && $_GET['action'] === 'uncache') {
 
     $running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($ptc_pid_file), 0);
     if ($running) {
-        if (@file_put_contents($ptc_request_file, "move\n" . $path . "\n") === false) {
+        // Append: clicking several rows in a row must not have each request
+        // overwrite the one before it.
+        if (@file_put_contents($ptc_request_file, $path . "\n", FILE_APPEND | LOCK_EX) === false) {
             echo json_encode(['success' => false, 'message' => 'Cannot write the request file']);
             exit;
         }

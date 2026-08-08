@@ -179,6 +179,7 @@ class FlushCacheToArray(unittest.TestCase):
 
         with mock.patch.object(ptc.TrackedFiles, 'load', return_value=tracked), \
              mock.patch.object(ptc, 'move_file_to_array', side_effect=fake_move), \
+             mock.patch.object(ptc.TrackedFiles, 'remove_many'), \
              mock.patch.object(ptc, 'write_status'):
             ptc.flush_cache_to_array()
         return moved
@@ -226,6 +227,7 @@ class FlushCacheToArray(unittest.TestCase):
         with mock.patch.object(ptc.TrackedFiles, 'load', return_value=tracked), \
              mock.patch.object(ptc, 'move_file_to_array',
                                side_effect=lambda p, track=True: (moved.append(p), (True, False, 0))[1]), \
+             mock.patch.object(ptc.TrackedFiles, 'remove_many'), \
              mock.patch.object(ptc, 'write_status'):
             ptc.flush_cache_to_array(only=only)
         return moved
@@ -327,6 +329,7 @@ class FlushBeyondTheTrackedList(unittest.TestCase):
         with mock.patch.object(ptc.TrackedFiles, 'load', return_value={}), \
              mock.patch.object(ptc, 'move_file_to_array',
                                side_effect=lambda p, track=True: (moved.append(p), (True, False, 0))[1]), \
+             mock.patch.object(ptc.TrackedFiles, 'remove_many'), \
              mock.patch.object(ptc, 'write_status'):
             ptc.flush_cache_to_array(only=[os.path.join(self.media, "Serie")])
 
@@ -341,10 +344,60 @@ class FlushBeyondTheTrackedList(unittest.TestCase):
         with mock.patch.object(ptc.TrackedFiles, 'load', return_value={}), \
              mock.patch.object(ptc, 'move_file_to_array',
                                side_effect=lambda p, track=True: (moved.append(p), (True, False, 0))[1]), \
+             mock.patch.object(ptc.TrackedFiles, 'remove_many'), \
              mock.patch.object(ptc, 'write_status'):
             ptc.flush_cache_to_array()
 
         self.assertEqual(moved, [], "a bare flush must not sweep up untracked media")
+
+    def test_a_stream_starting_mid_move_is_still_spared(self):
+        """The protection has to be read per file. A move can run for minutes,
+        and a snapshot taken at the start cannot know about a stream that
+        begins halfway through."""
+        first  = self._make(os.path.join(self.media, "Serie", "a.mkv"))
+        second = self._make(os.path.join(self.media, "Serie", "b.mkv"))
+        moved = []
+
+        def fake_move(path, track=True):
+            moved.append(path)
+            # Playback of the other file starts while this one is being moved.
+            ptc.active_cache_paths = {second}
+            return True, False, 0
+
+        with mock.patch.object(ptc.TrackedFiles, 'load', return_value={}), \
+             mock.patch.object(ptc, 'move_file_to_array', side_effect=fake_move), \
+             mock.patch.object(ptc.TrackedFiles, 'remove_many'), \
+             mock.patch.object(ptc, 'write_status'):
+            ptc.flush_cache_to_array(only=[os.path.join(self.media, "Serie")])
+
+        self.assertEqual(moved, [first])
+        self.assertNotIn(second, moved)
+        self.assertEqual(ptc._flush_state["skipped"], 1)
+
+    def test_a_selection_outside_the_mapped_folders_finds_nothing(self):
+        """The daemon enforces containment itself rather than trusting the
+        path it was handed."""
+        outside = self._make(os.path.join(self.cache, "downloads", "linux.mkv"))
+        moved = []
+        with mock.patch.object(ptc.TrackedFiles, 'load', return_value={}), \
+             mock.patch.object(ptc, 'move_file_to_array',
+                               side_effect=lambda p, track=True: (moved.append(p), (True, False, 0))[1]), \
+             mock.patch.object(ptc.TrackedFiles, 'remove_many'), \
+             mock.patch.object(ptc, 'write_status'):
+            ptc.flush_cache_to_array(only=[os.path.join(self.cache, "downloads")])
+        self.assertEqual(moved, [])
+        self.assertTrue(os.path.exists(outside))
+
+    def test_moving_one_file_does_not_walk_the_whole_library(self):
+        big = os.path.join(self.media, "Riesig")
+        os.makedirs(big)
+        for i in range(50):
+            self._make(os.path.join(big, f"f{i}.mkv"))
+        wanted = self._make(os.path.join(self.media, "Klein", "one.mkv"))
+
+        found = ptc._cache_media_files(0, roots=[wanted])
+        self.assertEqual(list(found), [wanted],
+                         "a single file must not pull in the rest of the tree")
 
     def test_untracked_file_is_not_deleted_when_the_name_exists_on_the_array(self):
         """move_file_to_array drops the cache copy when the destination exists.
@@ -356,12 +409,105 @@ class FlushBeyondTheTrackedList(unittest.TestCase):
         with mock.patch.object(ptc.TrackedFiles, 'load', return_value={}), \
              mock.patch.object(ptc, 'move_file_to_array',
                                side_effect=lambda p, track=True: (moved.append(p), (True, False, 0))[1]), \
+             mock.patch.object(ptc.TrackedFiles, 'remove_many'), \
              mock.patch.object(ptc, 'write_status'):
             ptc.flush_cache_to_array(only=[self.media])
 
         self.assertEqual(moved, [], "the untracked file must not be moved")
         self.assertEqual(ptc._flush_state["conflicts"], 1)
         self.assertTrue(os.path.exists(cache_file))
+
+
+class TrackedListWrites(unittest.TestCase):
+    """The list lives on the USB flash drive, so a move must not rewrite it
+    once per file."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._real = ptc.TRACKED_FILES
+        ptc.TRACKED_FILES = os.path.join(self.tmp, "tracked.list")
+
+    def tearDown(self):
+        ptc.TRACKED_FILES = self._real
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_removing_many_entries_writes_once(self):
+        paths = {f"/mnt/cache/Media/e{i}.mkv": float(i) for i in range(51)}
+        ptc.TrackedFiles.save(paths)
+
+        writes = []
+        real_save = ptc.TrackedFiles.save
+        try:
+            ptc.TrackedFiles.save = lambda t: (writes.append(1), real_save(t))[1]
+            ptc.TrackedFiles.remove_many(list(paths))
+        finally:
+            ptc.TrackedFiles.save = real_save
+
+        self.assertEqual(len(writes), 1, "one write for the whole batch")
+        self.assertEqual(ptc.TrackedFiles.load(), {})
+
+    def test_removing_nothing_writes_nothing(self):
+        ptc.TrackedFiles.save({"/mnt/cache/Media/a.mkv": 1.0})
+        writes = []
+        real_save = ptc.TrackedFiles.save
+        try:
+            ptc.TrackedFiles.save = lambda t: (writes.append(1), real_save(t))[1]
+            ptc.TrackedFiles.remove_many([])
+            ptc.TrackedFiles.remove_many(["/mnt/cache/Media/not-tracked.mkv"])
+        finally:
+            ptc.TrackedFiles.save = real_save
+        self.assertEqual(writes, [])
+
+
+class MoveRequestQueue(unittest.TestCase):
+    """Requests from the web UI must not be lost - not when several arrive at
+    once, and not when one arrives while a move is already running."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._real_request = ptc.FLUSH_REQUEST
+        self._real_start = ptc.start_flush
+        ptc.FLUSH_REQUEST = os.path.join(self.tmp, "request")
+        ptc.move_queue.clear()
+        ptc._flush_state["active"] = False
+        self.started = []
+        ptc.start_flush = lambda only=None, label="Flush": (
+            self.started.append(list(only or [])), True)[1]
+
+    def tearDown(self):
+        ptc.FLUSH_REQUEST = self._real_request
+        ptc.start_flush = self._real_start
+        ptc.move_queue.clear()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _request(self, path):
+        with open(ptc.FLUSH_REQUEST, "a") as fh:
+            fh.write(path + "\n")
+
+    def test_several_requests_are_collected(self):
+        self._request("/mnt/cache/Media/A")
+        self._request("/mnt/cache/Media/B")
+        ptc.drain_move_requests()
+        self.assertEqual(self.started, [["/mnt/cache/Media/A", "/mnt/cache/Media/B"]])
+        self.assertEqual(ptc.move_queue, [])
+
+    def test_a_request_during_a_running_move_waits_instead_of_vanishing(self):
+        ptc._flush_state["active"] = True
+        self._request("/mnt/cache/Media/C")
+        ptc.drain_move_requests()
+        self.assertEqual(self.started, [], "nothing may start while one is running")
+        self.assertEqual(ptc.move_queue, ["/mnt/cache/Media/C"])
+
+        ptc._flush_state["active"] = False
+        ptc.drain_move_requests()
+        self.assertEqual(self.started, [["/mnt/cache/Media/C"]])
+        self.assertEqual(ptc.move_queue, [])
+
+    def test_the_same_path_twice_is_only_queued_once(self):
+        self._request("/mnt/cache/Media/A")
+        self._request("/mnt/cache/Media/A")
+        ptc.drain_move_requests()
+        self.assertEqual(self.started, [["/mnt/cache/Media/A"]])
 
 
 if __name__ == "__main__":
