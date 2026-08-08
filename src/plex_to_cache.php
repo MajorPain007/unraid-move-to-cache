@@ -301,7 +301,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'browse') {
     }
     $tracked = ptc_tracked();
 
-    $want = (string)($_GET['path'] ?? '');
+    $want = (string)($_REQUEST['path'] ?? '');
     $dirs = [];
     $files = [];
     $here = '';
@@ -423,7 +423,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'uncache') {
     // A file or a whole folder - a season, a series, a mapped root. The daemon
     // filters against its own candidate list either way, so this check is here
     // to give a useful message rather than to be the guard.
-    $path = ptc_safe_path($_GET['path'] ?? '');
+    $path = ptc_safe_path($_REQUEST['path'] ?? '');
     if ($path === '') {
         echo json_encode(['success' => false, 'message' => 'Path is outside the mapped media folders']);
         exit;
@@ -945,8 +945,13 @@ function ptcRow(body, name, size, right, title, onOpen, onMove, moveTitle, disab
 }
 
 function browseCache(path) {
-    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=browse'
-              + '&path=' + encodeURIComponent(path || ''), function(d) {
+    // POST rather than a GET carrying the path in the query string: content
+    // blockers match on URLs, and a request they drop arrives here as status 0
+    // with an empty body - indistinguishable from a server that died. The same
+    // thing bit the snapshot browser in the other plugin.
+    $.post('/plugins/plex_to_cache/plex_to_cache.php?action=browse',
+           {path: path || '', csrf_token: ptcToken}, null, 'json')
+     .done(function(d) {
         var body = $('#ptc-cached-table tbody').empty();
         if (!d || !d.success) {
             $('#ptc-browse-path').text(d && d.message ? d.message : 'Could not read the folder.');
@@ -996,7 +1001,8 @@ function browseCache(path) {
 
     // The totals line comes from the tracked list and is independent of where
     // the browser currently is.
-    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=cached', function(d) {
+    $.post('/plugins/plex_to_cache/plex_to_cache.php?action=cached',
+           {csrf_token: ptcToken}, null, 'json').done(function(d) {
         if (!d || !d.success) return;
         $('#ptc-cached-summary').text(d.files.length
             ? 'Cached by plugin: ' + d.files.length + ' files  ·  ' + ptcBytes(d.total_bytes)
@@ -1009,9 +1015,8 @@ function uncacheFile(path, btn, label) {
         && !confirm('Move everything under ' + label + ' back to the array?')) return;
     btn.disabled = true;
     btn.textContent = '...';
-    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=uncache'
-              + '&path=' + encodeURIComponent(path)
-              + '&csrf_token=' + encodeURIComponent(ptcToken), function(data) {
+    $.post('/plugins/plex_to_cache/plex_to_cache.php?action=uncache',
+           {path: path, csrf_token: ptcToken}, null, 'json').done(function(data) {
         $('#ptc-status').text(data.message || '');
         if (!data.success) { btn.disabled = false; btn.textContent = 'To Array'; }
         setTimeout(refreshCached, 4000);
@@ -1036,8 +1041,8 @@ function flushCache(btn) {
                  + 'Nothing else on the cache pool is touched.')) return;
     btn.disabled = true;
     ptcFlushRequested = Date.now();
-    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=flush'
-              + '&csrf_token=' + encodeURIComponent(ptcToken), function(data) {
+    $.post('/plugins/plex_to_cache/plex_to_cache.php?action=flush',
+           {csrf_token: ptcToken}, null, 'json').done(function(data) {
         $('#ptc-status').text(data.message || '');
         if (!data.success) { ptcFlushRequested = 0; btn.disabled = false; }
         setTimeout(refreshLog, 2000);

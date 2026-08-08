@@ -1,3 +1,13 @@
+### 2026.08.08.04
+
+- The browser's requests are POSTs now. Called directly the endpoint answered
+  fine, but from the page the request never reached the server at all - status 0
+  with an empty body, and nothing in any server log. That is what a content
+  blocker in the browser looks like, and the same thing once broke the snapshot
+  browser in the other plugin. The file list, the per-file move and the flush
+  button moved with it; the flush also stops putting its CSRF token in a URL,
+  where it ends up in logs.
+
 ### 2026.08.08.03
 
 - The browser reported "HTTP ?" - an empty response with no status code, which
