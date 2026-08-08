@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.08.08.02">
+<!ENTITY version   "2026.08.08.03">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,6 +13,16 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
+### 2026.08.08.03
+
+- The browser reported "HTTP ?" - an empty response with no status code, which
+  means PHP died before answering. A try/catch cannot see that, so the endpoint
+  now reports through a shutdown handler as well and names the actual reason
+  (execution timeout, memory, and so on).
+- Removed the error handler that turned warnings into exceptions. It was the one
+  construct the failing endpoint had and the working one did not, and it bought
+  little that the try/catch does not already cover.
+
 ### 2026.08.08.02
 
 - The cache browser could sit on "Loading..." forever: when the request failed
@@ -551,12 +561,19 @@ if (isset($_GET['action']) && $_GET['action'] === 'service') {
 // single season can be judged and moved as one.
 if (isset($_GET['action']) && $_GET['action'] === 'browse') {
     header('Content-Type: application/json');
-    // Anything thrown below still has to leave the response valid JSON,
-    // otherwise the browser sees a parse error and can only show "failed".
-    set_error_handler(function ($no, $str, $file, $line) {
-        if (!(error_reporting() & $no)) return false;   // suppressed with @, leave it be
-        throw new ErrorException($str, 0, $no, $file, $line);
+
+    // A fatal - execution timeout, memory, a dying worker - cannot be caught by
+    // try/catch and leaves the client with an empty response and no status,
+    // which is indistinguishable from "still loading". This says what happened.
+    $ptc_answered = false;
+    register_shutdown_function(function () use (&$ptc_answered) {
+        if ($ptc_answered) return;
+        $e = error_get_last();
+        echo json_encode(['success' => false, 'message' => 'PHP stopped before answering: '
+            . ($e ? $e['message'] . ' (' . basename($e['file']) . ':' . $e['line'] . ')'
+                  : 'no output and no error recorded')]);
     });
+
     try {
 
     $roots = ptc_media_roots();
@@ -601,11 +618,13 @@ if (isset($_GET['action']) && $_GET['action'] === 'browse') {
     } else {
         $here = ptc_safe_path($want);
         if ($here === '') {
+            $ptc_answered = true;
             echo json_encode(['success' => false, 'message' => 'Path is outside the mapped media folders']);
             exit;
         }
         $entries = @scandir($here);
         if ($entries === false) {
+            $ptc_answered = true;
             echo json_encode(['success' => false,
                               'message' => 'Cannot read ' . $here . ' (' . (posix_geteuid() === 0 ? 'as root' : 'uid ' . posix_geteuid()) . ')']);
             exit;
@@ -637,12 +656,14 @@ if (isset($_GET['action']) && $_GET['action'] === 'browse') {
     echo json_encode(['success' => true, 'path' => $here, 'parent' => $parent,
                       'dirs' => $dirs, 'files' => $files]);
 
+    $ptc_answered = true;
+
     } catch (Throwable $e) {
         echo json_encode(['success' => false,
                           'message' => get_class($e) . ': ' . $e->getMessage()
                                        . ' (' . basename($e->getFile()) . ':' . $e->getLine() . ')']);
+        $ptc_answered = true;
     }
-    restore_error_handler();
     exit;
 }
 
@@ -3135,7 +3156,7 @@ chmod +x /etc/rc.d/rc.plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache condrestart
-echo "Plex to Cache v2026.08.08.02 installed successfully."
+echo "Plex to Cache v2026.08.08.03 installed successfully."
 ]]>
 </INLINE>
 </FILE>

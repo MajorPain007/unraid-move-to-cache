@@ -1,3 +1,13 @@
+### 2026.08.08.03
+
+- The browser reported "HTTP ?" - an empty response with no status code, which
+  means PHP died before answering. A try/catch cannot see that, so the endpoint
+  now reports through a shutdown handler as well and names the actual reason
+  (execution timeout, memory, and so on).
+- Removed the error handler that turned warnings into exceptions. It was the one
+  construct the failing endpoint had and the working one did not, and it bought
+  little that the try/catch does not already cover.
+
 ### 2026.08.08.02
 
 - The cache browser could sit on "Loading..." forever: when the request failed

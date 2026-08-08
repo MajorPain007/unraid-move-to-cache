@@ -278,12 +278,19 @@ if (isset($_GET['action']) && $_GET['action'] === 'service') {
 // single season can be judged and moved as one.
 if (isset($_GET['action']) && $_GET['action'] === 'browse') {
     header('Content-Type: application/json');
-    // Anything thrown below still has to leave the response valid JSON,
-    // otherwise the browser sees a parse error and can only show "failed".
-    set_error_handler(function ($no, $str, $file, $line) {
-        if (!(error_reporting() & $no)) return false;   // suppressed with @, leave it be
-        throw new ErrorException($str, 0, $no, $file, $line);
+
+    // A fatal - execution timeout, memory, a dying worker - cannot be caught by
+    // try/catch and leaves the client with an empty response and no status,
+    // which is indistinguishable from "still loading". This says what happened.
+    $ptc_answered = false;
+    register_shutdown_function(function () use (&$ptc_answered) {
+        if ($ptc_answered) return;
+        $e = error_get_last();
+        echo json_encode(['success' => false, 'message' => 'PHP stopped before answering: '
+            . ($e ? $e['message'] . ' (' . basename($e['file']) . ':' . $e['line'] . ')'
+                  : 'no output and no error recorded')]);
     });
+
     try {
 
     $roots = ptc_media_roots();
@@ -328,11 +335,13 @@ if (isset($_GET['action']) && $_GET['action'] === 'browse') {
     } else {
         $here = ptc_safe_path($want);
         if ($here === '') {
+            $ptc_answered = true;
             echo json_encode(['success' => false, 'message' => 'Path is outside the mapped media folders']);
             exit;
         }
         $entries = @scandir($here);
         if ($entries === false) {
+            $ptc_answered = true;
             echo json_encode(['success' => false,
                               'message' => 'Cannot read ' . $here . ' (' . (posix_geteuid() === 0 ? 'as root' : 'uid ' . posix_geteuid()) . ')']);
             exit;
@@ -364,12 +373,14 @@ if (isset($_GET['action']) && $_GET['action'] === 'browse') {
     echo json_encode(['success' => true, 'path' => $here, 'parent' => $parent,
                       'dirs' => $dirs, 'files' => $files]);
 
+    $ptc_answered = true;
+
     } catch (Throwable $e) {
         echo json_encode(['success' => false,
                           'message' => get_class($e) . ': ' . $e->getMessage()
                                        . ' (' . basename($e->getFile()) . ':' . $e->getLine() . ')']);
+        $ptc_answered = true;
     }
-    restore_error_handler();
     exit;
 }
 
