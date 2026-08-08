@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.08.08">
+<!ENTITY version   "2026.08.08a">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,6 +13,67 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
+### 2026.08.08a
+- Watched detection is now session-based: a title counts as watched
+  when playback reached >= 90% in the session that just ended, instead
+  of relying on the server's lifetime "played" flag (Plex viewCount /
+  Emby-Jellyfin Played). Fixes rewatches being deleted from cache
+  immediately after starting them. Server flags remain as fallback.
+- Cache eviction (new option, default on): when the cache is full, the
+  oldest plugin-cached files are moved back to the array (LRU) to make
+  room for the currently streamed media. Active streams and queued
+  files are never evicted.
+- Next-season prefetch (new option, default off): near the end of a
+  season the beginning of the next season is pre-cached (first batch
+  if batching is enabled, otherwise the whole season).
+- Startup consistency check: stale entries are removed from the
+  tracked-files list and orphaned plugin copies (cache duplicates of
+  array files inside the mapped media dirs) are re-adopted, so cleanup
+  keeps working after crashes. Only mapped media directories are
+  scanned — appdata/system shares and cache-only files are untouched.
+- Proper log rotation: the daemon now logs through Python's
+  RotatingFileHandler (5 MB, one backup), which also rotates while
+  running. Previously rotation only happened at start and the stdout
+  redirect kept writing to the renamed file.
+- Live status in the web UI: the daemon writes a JSON snapshot
+  (/var/run/plex_to_cache.status.json) with cached files/GB, cache
+  usage, copy queue, current transfer and active streams; the settings
+  page shows it above the log.
+- Manual stop is now persistent: stopping the service (UI or CLI)
+  writes a flag to the flash drive, and the service stays stopped
+  across reboots, plugin updates and settings saves until you start
+  it again. New rc verbs: `boot` (autostart, respects the flag) and
+  `condrestart` (restart only if enabled).
+- Season batching (new option): long seasons are now cached in
+  configurable batches (default 30 episodes) instead of all at once.
+  The next batch starts copying automatically when only a few episodes
+  (default 4, i.e. around episode 26/30) remain in the current batch.
+  A buffer/tolerance (default 10) makes sure seasons that only
+  slightly exceed the batch size (e.g. 36 episodes) are still cached
+  completely in one go.
+- rsync robustness: stderr is now captured and logged (previously
+  discarded, so "exit status 23" gave no clue what went wrong).
+  Transfers are retried up to 3 times and resume via --partial.
+  Exit codes 23/24 are tolerated when the destination file is
+  verifiably complete (size check) — exit 23 is often only a
+  chown/chmod/utime problem on FUSE shares although the data copied
+  fine; permissions are re-applied afterwards anyway.
+- Copies run in a background worker thread: a multi-gigabyte transfer
+  no longer blocks stream detection and cleanup for minutes.
+- Failed copies get a 5-minute cooldown instead of being retried
+  (and logged) every poll interval.
+- Log lines now carry timestamps.
+- Free-space check now also verifies the specific file fits on the
+  cache (with 512 MB headroom), not just the max-usage percentage.
+- Episode detection additionally understands the "1x05" naming style
+  (without matching resolutions like 1920x1080).
+- Hardened config parsing: invalid numeric settings fall back to
+  their defaults instead of 0 (which could busy-loop the daemon);
+  poll interval is clamped to >= 1 s.
+- Clean shutdown: SIGTERM/SIGINT now also terminates a running rsync
+  instead of leaving it orphaned; tracked-files list is written
+  atomically.
+
 ### 2026.08.08
 - Watched detection is now session-based: a title counts as watched
   when playback reached >= 90% in the session that just ended, instead
@@ -444,6 +505,35 @@ if (isset($_GET['action']) && $_GET['action'] === 'service') {
     exit;
 }
 
+// AJAX: Move everything this plugin cached back to the array.
+// With the service running the request goes through a marker file, so the
+// daemon does the work and keeps protecting files that are being streamed.
+// With it stopped there is nobody to ask, so the script runs once directly.
+if (isset($_GET['action']) && $_GET['action'] === 'flush') {
+    ptc_require_csrf();
+    header('Content-Type: application/json');
+
+    $running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($ptc_pid_file), 0);
+    if ($running) {
+        if (@file_put_contents('/var/run/plex_to_cache.flush', '') === false) {
+            echo json_encode(['success' => false, 'message' => 'Cannot write the request file']);
+            exit;
+        }
+        echo json_encode(['success' => true,
+                          'message' => 'Flush requested - the service picks it up within a few seconds.']);
+    } else {
+        $script = '/usr/local/emhttp/plugins/plex_to_cache/plex_to_cache.py';
+        if (!file_exists($script)) {
+            echo json_encode(['success' => false, 'message' => 'plex_to_cache.py not found']);
+            exit;
+        }
+        shell_exec('nohup python3 ' . escapeshellarg($script) . ' --flush >> /var/log/plex_to_cache.log 2>&1 &');
+        echo json_encode(['success' => true,
+                          'message' => 'Service is stopped - running the flush directly. Watch the log.']);
+    }
+    exit;
+}
+
 // POST: Save settings
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     ptc_require_csrf(false);
@@ -685,6 +775,8 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
                 <input type="submit" value="Save & Apply">
                 <button type="button" class="service-btn" onclick="serviceControl('start')">Start</button>
                 <button type="button" class="service-btn" onclick="serviceControl('stop')">Stop</button>
+                <button type="button" class="service-btn" id="flush-btn" onclick="flushCache(this)"
+                        title="Move every file this plugin cached back to the array. Files being streamed right now are left alone.">Empty Cache</button>
                 <span class="status-dot <?= $is_running ? 'running' : 'stopped' ?>" id="status-dot" title="<?= $is_running ? 'Running' : 'Stopped' ?>"></span>
             </div>
 
@@ -793,8 +885,41 @@ function refreshStatus() {
         parts.push('Queue: ' + d.queue_length);
         if (d.copying) parts.push('Copying: ' + d.copying);
         if (d.active_streams && d.active_streams.length) parts.push('Streams: ' + d.active_streams.length);
+
+        var f = d.flush;
+        if (f && f.active) {
+            parts.push('Emptying cache: ' + f.done + '/' + f.total
+                       + ' (' + (f.bytes / 1073741824).toFixed(1) + ' GB)'
+                       + (f.skipped ? ', ' + f.skipped + ' in use' : ''));
+        }
+        // Keep the button disabled across the gap between requesting a flush
+        // and the service picking the request up, or the next poll would
+        // re-enable it and invite a second click.
+        $('#flush-btn').prop('disabled',
+            !!(f && f.active) || (Date.now() - ptcFlushRequested < 15000));
+
         $('#ptc-status').text(parts.join('  ·  '));
     }).fail(function() { $('#ptc-status').text(''); });
+}
+
+var ptcFlushRequested = 0;
+
+function flushCache(btn) {
+    if (!confirm('Move every file this plugin cached back to the array?\n\n'
+                 + 'Files being streamed right now are left on the cache. '
+                 + 'Nothing else on the cache pool is touched.')) return;
+    btn.disabled = true;
+    ptcFlushRequested = Date.now();
+    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=flush'
+              + '&csrf_token=' + encodeURIComponent(ptcToken), function(data) {
+        $('#ptc-status').text(data.message || '');
+        if (!data.success) { ptcFlushRequested = 0; btn.disabled = false; }
+        setTimeout(refreshLog, 2000);
+    }).fail(function() {
+        $('#ptc-status').text('Flush request failed.');
+        ptcFlushRequested = 0;
+        btn.disabled = false;
+    });
 }
 
 // Unraid exposes csrf_token as a global on its own pages; fall back to the
@@ -963,6 +1088,7 @@ COPY_FAIL_COOLDOWN   = 300        # seconds before re-trying a file that failed 
 METADATA_CACHE_LIMIT = 500        # max entries kept in the Plex ratingKey→path cache
 
 STATUS_FILE          = "/var/run/plex_to_cache.status.json"  # snapshot for the web UI
+FLUSH_REQUEST        = "/var/run/plex_to_cache.flush"        # web UI asks for a full flush
 STATUS_INTERVAL      = 30         # seconds between status snapshots
 EVICT_MAX_FILES      = 25         # max files moved back per eviction pass
 WATCHED_MIN_PROGRESS = 0.90       # session progress at which media counts as watched
@@ -1005,6 +1131,11 @@ _current_copy   = None             # basename of the file being copied right now
 _current_rsync  = None             # running rsync Popen (for clean shutdown)
 _rsync_lock     = threading.Lock()
 _shutting_down  = threading.Event()
+
+# Manual flush state, shown in the web UI while it runs
+_flush_lock  = threading.Lock()
+_flush_state = {"active": False, "total": 0, "done": 0, "bytes": 0,
+                "skipped": 0, "failed": 0, "finished": 0}
 
 # SSL context: Plex / Emby / Jellyfin typically use self-signed certs on the
 # local network, so we intentionally skip verification. This is equivalent
@@ -1514,6 +1645,91 @@ def evict_oldest_cached(needed_size):
 
     return cache_has_room_for(needed_size)
 
+def flush_cache_to_array():
+    """Move every file this plugin cached back to the array.
+
+    Same operation as eviction, but unconditional and not bounded by
+    EVICT_MAX_FILES. Two kinds of file are deliberately left on the cache:
+    those belonging to an active stream, and those queued for copying - moving
+    either would pull the file out from under a running playback. They are
+    counted as skipped so the UI can say so rather than silently doing less
+    than "all".
+
+    Only tracked files are touched. Anything else on the cache pool - a fresh
+    download waiting for the mover, appdata, files the user put there on
+    purpose - is none of this plugin's business.
+    """
+    with _flush_lock:
+        if _flush_state["active"]:
+            log("Flush already running", warn=True)
+            return
+        _flush_state.update(active=True, total=0, done=0, bytes=0,
+                            skipped=0, failed=0, finished=0)
+
+    try:
+        with _pending_lock:
+            pending = {array_to_cache(p) for p in _pending_copies}
+        protected = set(active_cache_paths) | pending
+
+        tracked = sorted(TrackedFiles.load().items(), key=lambda kv: kv[1])
+        with _flush_lock:
+            _flush_state["total"] = len(tracked)
+
+        log(f"[Flush] Moving {len(tracked)} cached file(s) back to the array")
+        last_write = 0.0
+
+        for cache_path, _ts in tracked:
+            if _shutting_down.is_set():
+                log("[Flush] Aborted: service is shutting down", warn=True)
+                break
+
+            if cache_path in protected:
+                with _flush_lock:
+                    _flush_state["skipped"] += 1
+                log(f"[Flush] Skipping {os.path.basename(cache_path)} (in use)")
+                continue
+
+            ok, _deleted, size = move_file_to_array(cache_path)
+            with _flush_lock:
+                if ok:
+                    _flush_state["done"] += 1
+                    _flush_state["bytes"] += size
+                else:
+                    _flush_state["failed"] += 1
+
+            # The move loop can run for a long time; refresh the snapshot the
+            # UI polls rather than leaving it stale until the next interval.
+            if time.time() - last_write >= 5:
+                write_status()
+                last_write = time.time()
+
+        with _flush_lock:
+            done, moved, skipped, failed = (_flush_state["done"], _flush_state["bytes"],
+                                            _flush_state["skipped"], _flush_state["failed"])
+        summary = f"[Flush] Done: {done} file(s), {moved / 1073741824:.1f} GB moved"
+        if skipped:
+            summary += f", {skipped} skipped (in use)"
+        if failed:
+            summary += f", {failed} failed"
+        log(summary, error=bool(failed))
+
+    except Exception as e:
+        log(f"Flush error: {e}", error=True)
+    finally:
+        with _flush_lock:
+            _flush_state["active"] = False
+            _flush_state["finished"] = int(time.time())
+        write_status()
+
+def start_flush():
+    """Run a flush in the background so the main loop keeps tracking streams -
+    it is what keeps the in-use protection current while the flush runs."""
+    with _flush_lock:
+        if _flush_state["active"]:
+            return False
+    threading.Thread(target=flush_cache_to_array, name="flush", daemon=True).start()
+    return True
+
 def copy_file_to_cache(array_path):
     """Copy file from array to cache. Runs inside the copy worker thread."""
     if is_excluded(array_path) or not is_media_file(os.path.basename(array_path)):
@@ -1957,6 +2173,9 @@ def write_status():
     with _pending_lock:
         queue_length = len(_pending_copies)
 
+    with _flush_lock:
+        flush = dict(_flush_state)
+
     status = {
         "updated":         int(time.time()),
         "cached_files":    cached_files,
@@ -1965,6 +2184,7 @@ def write_status():
         "queue_length":    queue_length,
         "copying":         _current_copy,
         "active_streams":  sorted(os.path.basename(p) for p in stream_timers),
+        "flush":           flush,
     }
 
     try:
@@ -2015,6 +2235,16 @@ def run_daemon():
 
     while True:
         try:
+            # The web UI cannot talk to this process directly, so it drops a
+            # marker file. Remove it first: if the flush then fails, the user
+            # gets an error instead of a request that retriggers forever.
+            if os.path.exists(FLUSH_REQUEST):
+                try:
+                    os.remove(FLUSH_REQUEST)
+                except OSError:
+                    pass
+                start_flush()
+
             streams = get_active_streams()
             active_paths = set()
 
@@ -2155,7 +2385,31 @@ def _shutdown_cleanup():
 # =============================================================================
 
 if __name__ == "__main__":
-    run_daemon()
+    if "--flush" in sys.argv:
+        # One-shot flush for when the service is stopped. The daemon holds
+        # LOCK_FILE for its whole life, so this refuses to run next to it -
+        # the web UI routes the request through FLUSH_REQUEST in that case.
+        setup_logging()
+        load_config()
+        _flush_lock_fd = open(LOCK_FILE, 'w')
+        try:
+            fcntl.lockf(_flush_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except IOError:
+            log("Service is running - ask it to flush instead of running --flush", error=True)
+            sys.exit(1)
+
+        # Nothing is streaming as far as this process knows, so ask the media
+        # servers directly rather than moving a file somebody is watching.
+        try:
+            active_cache_paths = {
+                array_to_cache(translate_docker_path(p)) for p in get_active_streams()
+            }
+        except Exception as e:
+            log(f"Cannot determine active streams: {e} - flushing everything", warn=True)
+
+        flush_cache_to_array()
+    else:
+        run_daemon()
 ]]>
 </INLINE>
 </FILE>
@@ -2356,7 +2610,7 @@ chmod +x /etc/rc.d/rc.plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache condrestart
-echo "Plex to Cache v2026.08.08 installed successfully."
+echo "Plex to Cache v2026.08.08a installed successfully."
 ]]>
 </INLINE>
 </FILE>

@@ -53,6 +53,7 @@ COPY_FAIL_COOLDOWN   = 300        # seconds before re-trying a file that failed 
 METADATA_CACHE_LIMIT = 500        # max entries kept in the Plex ratingKey→path cache
 
 STATUS_FILE          = "/var/run/plex_to_cache.status.json"  # snapshot for the web UI
+FLUSH_REQUEST        = "/var/run/plex_to_cache.flush"        # web UI asks for a full flush
 STATUS_INTERVAL      = 30         # seconds between status snapshots
 EVICT_MAX_FILES      = 25         # max files moved back per eviction pass
 WATCHED_MIN_PROGRESS = 0.90       # session progress at which media counts as watched
@@ -95,6 +96,11 @@ _current_copy   = None             # basename of the file being copied right now
 _current_rsync  = None             # running rsync Popen (for clean shutdown)
 _rsync_lock     = threading.Lock()
 _shutting_down  = threading.Event()
+
+# Manual flush state, shown in the web UI while it runs
+_flush_lock  = threading.Lock()
+_flush_state = {"active": False, "total": 0, "done": 0, "bytes": 0,
+                "skipped": 0, "failed": 0, "finished": 0}
 
 # SSL context: Plex / Emby / Jellyfin typically use self-signed certs on the
 # local network, so we intentionally skip verification. This is equivalent
@@ -604,6 +610,91 @@ def evict_oldest_cached(needed_size):
 
     return cache_has_room_for(needed_size)
 
+def flush_cache_to_array():
+    """Move every file this plugin cached back to the array.
+
+    Same operation as eviction, but unconditional and not bounded by
+    EVICT_MAX_FILES. Two kinds of file are deliberately left on the cache:
+    those belonging to an active stream, and those queued for copying - moving
+    either would pull the file out from under a running playback. They are
+    counted as skipped so the UI can say so rather than silently doing less
+    than "all".
+
+    Only tracked files are touched. Anything else on the cache pool - a fresh
+    download waiting for the mover, appdata, files the user put there on
+    purpose - is none of this plugin's business.
+    """
+    with _flush_lock:
+        if _flush_state["active"]:
+            log("Flush already running", warn=True)
+            return
+        _flush_state.update(active=True, total=0, done=0, bytes=0,
+                            skipped=0, failed=0, finished=0)
+
+    try:
+        with _pending_lock:
+            pending = {array_to_cache(p) for p in _pending_copies}
+        protected = set(active_cache_paths) | pending
+
+        tracked = sorted(TrackedFiles.load().items(), key=lambda kv: kv[1])
+        with _flush_lock:
+            _flush_state["total"] = len(tracked)
+
+        log(f"[Flush] Moving {len(tracked)} cached file(s) back to the array")
+        last_write = 0.0
+
+        for cache_path, _ts in tracked:
+            if _shutting_down.is_set():
+                log("[Flush] Aborted: service is shutting down", warn=True)
+                break
+
+            if cache_path in protected:
+                with _flush_lock:
+                    _flush_state["skipped"] += 1
+                log(f"[Flush] Skipping {os.path.basename(cache_path)} (in use)")
+                continue
+
+            ok, _deleted, size = move_file_to_array(cache_path)
+            with _flush_lock:
+                if ok:
+                    _flush_state["done"] += 1
+                    _flush_state["bytes"] += size
+                else:
+                    _flush_state["failed"] += 1
+
+            # The move loop can run for a long time; refresh the snapshot the
+            # UI polls rather than leaving it stale until the next interval.
+            if time.time() - last_write >= 5:
+                write_status()
+                last_write = time.time()
+
+        with _flush_lock:
+            done, moved, skipped, failed = (_flush_state["done"], _flush_state["bytes"],
+                                            _flush_state["skipped"], _flush_state["failed"])
+        summary = f"[Flush] Done: {done} file(s), {moved / 1073741824:.1f} GB moved"
+        if skipped:
+            summary += f", {skipped} skipped (in use)"
+        if failed:
+            summary += f", {failed} failed"
+        log(summary, error=bool(failed))
+
+    except Exception as e:
+        log(f"Flush error: {e}", error=True)
+    finally:
+        with _flush_lock:
+            _flush_state["active"] = False
+            _flush_state["finished"] = int(time.time())
+        write_status()
+
+def start_flush():
+    """Run a flush in the background so the main loop keeps tracking streams -
+    it is what keeps the in-use protection current while the flush runs."""
+    with _flush_lock:
+        if _flush_state["active"]:
+            return False
+    threading.Thread(target=flush_cache_to_array, name="flush", daemon=True).start()
+    return True
+
 def copy_file_to_cache(array_path):
     """Copy file from array to cache. Runs inside the copy worker thread."""
     if is_excluded(array_path) or not is_media_file(os.path.basename(array_path)):
@@ -1047,6 +1138,9 @@ def write_status():
     with _pending_lock:
         queue_length = len(_pending_copies)
 
+    with _flush_lock:
+        flush = dict(_flush_state)
+
     status = {
         "updated":         int(time.time()),
         "cached_files":    cached_files,
@@ -1055,6 +1149,7 @@ def write_status():
         "queue_length":    queue_length,
         "copying":         _current_copy,
         "active_streams":  sorted(os.path.basename(p) for p in stream_timers),
+        "flush":           flush,
     }
 
     try:
@@ -1105,6 +1200,16 @@ def run_daemon():
 
     while True:
         try:
+            # The web UI cannot talk to this process directly, so it drops a
+            # marker file. Remove it first: if the flush then fails, the user
+            # gets an error instead of a request that retriggers forever.
+            if os.path.exists(FLUSH_REQUEST):
+                try:
+                    os.remove(FLUSH_REQUEST)
+                except OSError:
+                    pass
+                start_flush()
+
             streams = get_active_streams()
             active_paths = set()
 
@@ -1245,4 +1350,28 @@ def _shutdown_cleanup():
 # =============================================================================
 
 if __name__ == "__main__":
-    run_daemon()
+    if "--flush" in sys.argv:
+        # One-shot flush for when the service is stopped. The daemon holds
+        # LOCK_FILE for its whole life, so this refuses to run next to it -
+        # the web UI routes the request through FLUSH_REQUEST in that case.
+        setup_logging()
+        load_config()
+        _flush_lock_fd = open(LOCK_FILE, 'w')
+        try:
+            fcntl.lockf(_flush_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except IOError:
+            log("Service is running - ask it to flush instead of running --flush", error=True)
+            sys.exit(1)
+
+        # Nothing is streaming as far as this process knows, so ask the media
+        # servers directly rather than moving a file somebody is watching.
+        try:
+            active_cache_paths = {
+                array_to_cache(translate_docker_path(p)) for p in get_active_streams()
+            }
+        except Exception as e:
+            log(f"Cannot determine active streams: {e} - flushing everything", warn=True)
+
+        flush_cache_to_array()
+    else:
+        run_daemon()

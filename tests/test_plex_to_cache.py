@@ -10,6 +10,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import plex_to_cache as ptc  # noqa: E402
@@ -154,6 +155,68 @@ class RsyncCommand(unittest.TestCase):
         source = Path(ptc.__file__).read_text()
         self.assertNotIn('"--inplace"', source)
         self.assertIn('--partial-dir', source)
+
+
+class FlushCacheToArray(unittest.TestCase):
+    """The manual flush must never pull a file out from under a playback."""
+
+    def setUp(self):
+        configure(ARRAY_ROOT="/mnt/user", CACHE_ROOT="/mnt/cache")
+        ptc._flush_state.update(active=False, total=0, done=0, bytes=0,
+                                skipped=0, failed=0, finished=0)
+        ptc.active_cache_paths = set()
+        ptc._pending_copies = set()
+
+    def _run_flush(self, tracked):
+        moved = []
+
+        def fake_move(path, track=True):
+            moved.append(path)
+            return True, False, 1024
+
+        with mock.patch.object(ptc.TrackedFiles, 'load', return_value=tracked), \
+             mock.patch.object(ptc, 'move_file_to_array', side_effect=fake_move), \
+             mock.patch.object(ptc, 'write_status'):
+            ptc.flush_cache_to_array()
+        return moved
+
+    def test_streaming_file_is_left_on_cache(self):
+        playing = "/mnt/cache/Media/playing.mkv"
+        idle = "/mnt/cache/Media/idle.mkv"
+        ptc.active_cache_paths = {playing}
+
+        moved = self._run_flush({playing: 1.0, idle: 2.0})
+
+        self.assertEqual(moved, [idle], "an active stream must not be moved")
+        self.assertEqual(ptc._flush_state["done"], 1)
+        self.assertEqual(ptc._flush_state["skipped"], 1)
+
+    def test_queued_file_is_left_on_cache(self):
+        """A file still on its way to the cache would otherwise be moved back
+        mid-transfer."""
+        queued_source = "/mnt/user/Media/queued.mkv"
+        ptc._pending_copies = {queued_source}
+        queued_cache = ptc.array_to_cache(queued_source)
+        other = "/mnt/cache/Media/other.mkv"
+
+        moved = self._run_flush({queued_cache: 1.0, other: 2.0})
+
+        self.assertEqual(moved, [other])
+        self.assertEqual(ptc._flush_state["skipped"], 1)
+
+    def test_everything_else_is_moved_and_counted(self):
+        tracked = {"/mnt/cache/Media/a.mkv": 1.0, "/mnt/cache/Media/b.mkv": 2.0}
+        moved = self._run_flush(tracked)
+        self.assertEqual(sorted(moved), sorted(tracked))
+        self.assertEqual(ptc._flush_state["done"], 2)
+        self.assertEqual(ptc._flush_state["bytes"], 2048)
+        self.assertEqual(ptc._flush_state["skipped"], 0)
+        self.assertFalse(ptc._flush_state["active"], "state must be cleared when done")
+
+    def test_a_second_flush_does_not_start_while_one_runs(self):
+        ptc._flush_state["active"] = True
+        moved = self._run_flush({"/mnt/cache/Media/a.mkv": 1.0})
+        self.assertEqual(moved, [], "the running flush owns the tracked list")
 
 
 if __name__ == "__main__":

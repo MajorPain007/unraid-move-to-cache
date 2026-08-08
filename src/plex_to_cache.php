@@ -176,6 +176,35 @@ if (isset($_GET['action']) && $_GET['action'] === 'service') {
     exit;
 }
 
+// AJAX: Move everything this plugin cached back to the array.
+// With the service running the request goes through a marker file, so the
+// daemon does the work and keeps protecting files that are being streamed.
+// With it stopped there is nobody to ask, so the script runs once directly.
+if (isset($_GET['action']) && $_GET['action'] === 'flush') {
+    ptc_require_csrf();
+    header('Content-Type: application/json');
+
+    $running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($ptc_pid_file), 0);
+    if ($running) {
+        if (@file_put_contents('/var/run/plex_to_cache.flush', '') === false) {
+            echo json_encode(['success' => false, 'message' => 'Cannot write the request file']);
+            exit;
+        }
+        echo json_encode(['success' => true,
+                          'message' => 'Flush requested - the service picks it up within a few seconds.']);
+    } else {
+        $script = '/usr/local/emhttp/plugins/plex_to_cache/plex_to_cache.py';
+        if (!file_exists($script)) {
+            echo json_encode(['success' => false, 'message' => 'plex_to_cache.py not found']);
+            exit;
+        }
+        shell_exec('nohup python3 ' . escapeshellarg($script) . ' --flush >> /var/log/plex_to_cache.log 2>&1 &');
+        echo json_encode(['success' => true,
+                          'message' => 'Service is stopped - running the flush directly. Watch the log.']);
+    }
+    exit;
+}
+
 // POST: Save settings
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     ptc_require_csrf(false);
@@ -417,6 +446,8 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
                 <input type="submit" value="Save & Apply">
                 <button type="button" class="service-btn" onclick="serviceControl('start')">Start</button>
                 <button type="button" class="service-btn" onclick="serviceControl('stop')">Stop</button>
+                <button type="button" class="service-btn" id="flush-btn" onclick="flushCache(this)"
+                        title="Move every file this plugin cached back to the array. Files being streamed right now are left alone.">Empty Cache</button>
                 <span class="status-dot <?= $is_running ? 'running' : 'stopped' ?>" id="status-dot" title="<?= $is_running ? 'Running' : 'Stopped' ?>"></span>
             </div>
 
@@ -525,8 +556,41 @@ function refreshStatus() {
         parts.push('Queue: ' + d.queue_length);
         if (d.copying) parts.push('Copying: ' + d.copying);
         if (d.active_streams && d.active_streams.length) parts.push('Streams: ' + d.active_streams.length);
+
+        var f = d.flush;
+        if (f && f.active) {
+            parts.push('Emptying cache: ' + f.done + '/' + f.total
+                       + ' (' + (f.bytes / 1073741824).toFixed(1) + ' GB)'
+                       + (f.skipped ? ', ' + f.skipped + ' in use' : ''));
+        }
+        // Keep the button disabled across the gap between requesting a flush
+        // and the service picking the request up, or the next poll would
+        // re-enable it and invite a second click.
+        $('#flush-btn').prop('disabled',
+            !!(f && f.active) || (Date.now() - ptcFlushRequested < 15000));
+
         $('#ptc-status').text(parts.join('  ·  '));
     }).fail(function() { $('#ptc-status').text(''); });
+}
+
+var ptcFlushRequested = 0;
+
+function flushCache(btn) {
+    if (!confirm('Move every file this plugin cached back to the array?\n\n'
+                 + 'Files being streamed right now are left on the cache. '
+                 + 'Nothing else on the cache pool is touched.')) return;
+    btn.disabled = true;
+    ptcFlushRequested = Date.now();
+    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=flush'
+              + '&csrf_token=' + encodeURIComponent(ptcToken), function(data) {
+        $('#ptc-status').text(data.message || '');
+        if (!data.success) { ptcFlushRequested = 0; btn.disabled = false; }
+        setTimeout(refreshLog, 2000);
+    }).fail(function() {
+        $('#ptc-status').text('Flush request failed.');
+        ptcFlushRequested = 0;
+        btn.disabled = false;
+    });
 }
 
 // Unraid exposes csrf_token as a global on its own pages; fall back to the
