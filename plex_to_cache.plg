@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.08.08.08">
+<!ENTITY version   "2026.08.08.09">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,6 +13,15 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
+### 2026.08.08.09
+
+- One level up is the familiar "../" entry at the top of the list again, not a
+  button beside it. It stays pinned under the column headers, so it is still
+  reachable from anywhere in a long folder.
+- The strip behind the To Array button had a fixed dark colour of its own, which
+  showed as a black block against the grey rows. The pinned cell inherits the
+  row colour now, striping and hover included.
+
 ### 2026.08.08.08
 
 - Fixes 2026.08.08.07, whose manifest was not valid XML: a bare ampersand in the
@@ -896,21 +905,39 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
 }
 #ptc-cached-table td:first-child,
 #ptc-cached-table th:first-child { white-space: nowrap; }
+/* Rows carry their own background so the pinned cell can inherit it. Without
+   an explicit colour it would have to hardcode one, and that is what left a
+   black block behind the button while the rest of the row was grey. */
+#ptc-cached-table thead th        { background: #15181c; }
+#ptc-cached-table tbody tr        { background: #17191d; }
+#ptc-cached-table tbody tr:nth-child(even) { background: #1b1e23; }
+#ptc-cached-table tbody tr.ptc-up-row { background: #15181c; }
+/* Last, so hovering still highlights - equal specificity, later wins. */
+#ptc-cached-table tbody tr:hover  { background: #223142; }
+
 #ptc-cached-table thead th {
     position: sticky;
     top: 0;
-    background: var(--bg-dark);
+    z-index: 3;
+}
+/* ../ stays put under the header, so it is reachable from anywhere in a long
+   folder. The header has a fixed height, or this offset would be a guess. */
+#ptc-cached-table thead th { height: 26px; box-sizing: border-box; }
+#ptc-cached-table tbody tr.ptc-up-row td {
+    position: sticky;
+    top: 26px;
     z-index: 2;
 }
-#ptc-cached-table thead th:last-child { z-index: 3; }
 #ptc-cached-table td:last-child,
 #ptc-cached-table th:last-child {
     position: sticky;
     right: 0;
-    background: var(--bg-dark);
-    box-shadow: -6px 0 6px -4px rgba(0, 0, 0, .7);
+    background: inherit;
+    box-shadow: -6px 0 6px -4px rgba(0, 0, 0, .55);
     z-index: 1;
 }
+#ptc-cached-table tbody tr.ptc-up-row td:last-child { z-index: 2; }
+#ptc-cached-table thead th:last-child { z-index: 4; }
 /* A full-width message row is both the first and the last cell, so it would
    otherwise stick to the edge and refuse to wrap. */
 #ptc-cached-table td[colspan] {
@@ -920,10 +947,6 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
     box-shadow: none;
     background: none;
 }
-#ptc-cached-table tbody tr:hover td { background: #182430; }
-/* The pinned cell paints its own background, so it needs the hover colour too
-   or the row highlight stops at its edge. */
-#ptc-cached-table tbody tr:hover td:last-child { background: #182430; }
 #ptc-cached-table a { color: var(--primary-blue); text-decoration: none; }
 #ptc-cached-table a:hover { text-decoration: underline; }
 #ptc-cached-table .ptc-ico { width: 14px; display: inline-block; text-align: center;
@@ -1205,11 +1228,7 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
                 <button type="button" onclick="refreshCached();" style="padding: 4px 10px; font-size: 12px; cursor: pointer;">Refresh</button>
             </div>
             <div id="ptc-cached-summary" style="color:#888; font-size:12px; margin-top:6px;"></div>
-            <div style="display:flex; align-items:center; gap:8px; margin:4px 0;">
-                <button type="button" id="ptc-up" class="btn-test" style="display:none; white-space:nowrap;"
-                        title="One folder up">&#8593; Up</button>
-                <span id="ptc-crumbs" style="color:#8b98a5; font-size:12px; word-break:break-all;"></span>
-            </div>
+            <div id="ptc-crumbs" style="color:#8b98a5; font-size:12px; margin:4px 0; word-break:break-all;"></div>
             <div id="ptc-cached-wrap" style="max-height:260px; overflow:auto; margin:4px 0 18px;">
                 <table id="ptc-cached-table" style="width:100%; font-size:12px; border-collapse:collapse;">
                     <colgroup><col><col class="ptc-c-size"><col class="ptc-c-note"><col class="ptc-c-act"></colgroup>
@@ -1288,7 +1307,7 @@ var ptcBrowsePath = '';   // '' = the list of mapped media folders
 function refreshCached() { browseCache(ptcBrowsePath); }
 
 function ptcRow(body, o) {
-    var tr = $('<tr>').css('border-top', '1px solid #222');
+    var tr = $('<tr>').css('border-top', '1px solid #222').addClass(o.cls || '');
     var cell = $('<td>').css({padding: '5px 6px'}).attr('title', o.title || '');
     $('<i>').addClass('ptc-ico ' + (o.icon || '')).addClass(o.folder ? 'folder' : '').appendTo(cell);
     if (o.open) {
@@ -1352,12 +1371,10 @@ function browseCache(path) {
         ptcBrowsePath = d.path || '';
         ptcCrumbs(ptcBrowsePath, d.roots || []);
 
-        // Deliberately not a row in the table: a row scrolls away, and this has
-        // to stay reachable wherever you are in a long folder.
         if (d.parent !== null && d.parent !== undefined) {
-            $('#ptc-up').show().off('click').on('click', function() { browseCache(d.parent); });
-        } else {
-            $('#ptc-up').hide();
+            ptcRow(body, {name: '../', cls: 'ptc-up-row', icon: 'fa fa-level-up',
+                          title: 'One folder up',
+                          open: function() { browseCache(d.parent); }});
         }
 
         d.dirs.forEach(function(dir) {
@@ -1392,7 +1409,6 @@ function browseCache(path) {
         var detail = 'HTTP ' + (xhr.status || '?');
         if (xhr.responseText) detail += ': ' + xhr.responseText.substring(0, 300);
         $('#ptc-crumbs').text('Could not read the folder.');
-        $('#ptc-up').hide();
         $('#ptc-cached-table tbody').empty().append(
             $('<tr>').append($('<td colspan="4">').css({padding: '6px', color: '#e0654a',
                                                         whiteSpace: 'pre-wrap'}).text(detail)));
@@ -3258,7 +3274,7 @@ chmod +x /etc/rc.d/rc.plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache condrestart
-echo "Plex to Cache v2026.08.08.08 installed successfully."
+echo "Plex to Cache v2026.08.08.09 installed successfully."
 ]]>
 </INLINE>
 </FILE>

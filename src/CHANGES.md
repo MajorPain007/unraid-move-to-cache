@@ -1,3 +1,12 @@
+### 2026.08.08.09
+
+- One level up is the familiar "../" entry at the top of the list again, not a
+  button beside it. It stays pinned under the column headers, so it is still
+  reachable from anywhere in a long folder.
+- The strip behind the To Array button had a fixed dark colour of its own, which
+  showed as a black block against the grey rows. The pinned cell inherits the
+  row colour now, striping and hover included.
+
 ### 2026.08.08.08
 
 - Fixes 2026.08.08.07, whose manifest was not valid XML: a bare ampersand in the
