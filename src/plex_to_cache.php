@@ -146,18 +146,26 @@ function ptc_csrf_token() {
 function ptc_require_csrf($as_json = true) {
     $expected = ptc_csrf_token();
     if ($expected === '') return;                       // nothing to check against
-    $got = $_POST['csrf_token'] ?? $_GET['csrf_token'] ?? '';
-    if (!hash_equals($expected, (string)$got)) {
-        http_response_code(403);
-        if ($as_json) {
-            header('Content-Type: application/json');
-            echo json_encode(['success' => false, 'message' => 'Invalid or missing CSRF token']);
-        } else {
-            header('Content-Type: text/plain');
-            echo 'Invalid or missing CSRF token';
-        }
-        exit;
+    $got = (string)($_POST['csrf_token'] ?? $_GET['csrf_token'] ?? $_REQUEST['csrf_token'] ?? '');
+    if (hash_equals($expected, $got)) return;
+
+    // Say which of the two it is. A token that never arrived points at the
+    // request, one that arrived stale points at the page: Unraid mints a new
+    // token when it boots, and a tab left open since before that still carries
+    // the old one.
+    $why = $got === ''
+        ? 'No CSRF token was sent with this request.'
+        : 'This page is holding an out-of-date CSRF token. Reload it - Unraid '
+          . 'issues a new one when the server restarts.';
+    http_response_code(403);
+    if ($as_json) {
+        header('Content-Type: application/json');
+        echo json_encode(['success' => false, 'message' => $why]);
+    } else {
+        header('Content-Type: text/plain');
+        echo $why;
     }
+    exit;
 }
 
 // AJAX: Get log

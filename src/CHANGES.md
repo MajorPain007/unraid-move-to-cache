@@ -1,3 +1,11 @@
+### 2026.08.08.16
+
+- "Invalid or missing CSRF token" now says which of the two it is. A token that
+  never arrived is a problem with the request; one that arrived stale is a
+  problem with the page, and the message says to reload it. Unraid issues a new
+  token when the server restarts, so a tab left open across a reboot carries the
+  old one.
+
 ### 2026.08.08.15
 
 - A folder can be moved whether or not this plugin put its contents on the

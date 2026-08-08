@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.08.08.15">
+<!ENTITY version   "2026.08.08.16">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,6 +13,14 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
+### 2026.08.08.16
+
+- "Invalid or missing CSRF token" now says which of the two it is. A token that
+  never arrived is a problem with the request; one that arrived stale is a
+  problem with the page, and the message says to reload it. Unraid issues a new
+  token when the server restarts, so a tab left open across a reboot carries the
+  old one.
+
 ### 2026.08.08.15
 
 - A folder can be moved whether or not this plugin put its contents on the
@@ -549,18 +557,26 @@ function ptc_csrf_token() {
 function ptc_require_csrf($as_json = true) {
     $expected = ptc_csrf_token();
     if ($expected === '') return;                       // nothing to check against
-    $got = $_POST['csrf_token'] ?? $_GET['csrf_token'] ?? '';
-    if (!hash_equals($expected, (string)$got)) {
-        http_response_code(403);
-        if ($as_json) {
-            header('Content-Type: application/json');
-            echo json_encode(['success' => false, 'message' => 'Invalid or missing CSRF token']);
-        } else {
-            header('Content-Type: text/plain');
-            echo 'Invalid or missing CSRF token';
-        }
-        exit;
+    $got = (string)($_POST['csrf_token'] ?? $_GET['csrf_token'] ?? $_REQUEST['csrf_token'] ?? '');
+    if (hash_equals($expected, $got)) return;
+
+    // Say which of the two it is. A token that never arrived points at the
+    // request, one that arrived stale points at the page: Unraid mints a new
+    // token when it boots, and a tab left open since before that still carries
+    // the old one.
+    $why = $got === ''
+        ? 'No CSRF token was sent with this request.'
+        : 'This page is holding an out-of-date CSRF token. Reload it - Unraid '
+          . 'issues a new one when the server restarts.';
+    http_response_code(403);
+    if ($as_json) {
+        header('Content-Type: application/json');
+        echo json_encode(['success' => false, 'message' => $why]);
+    } else {
+        header('Content-Type: text/plain');
+        echo $why;
     }
+    exit;
 }
 
 // AJAX: Get log
@@ -3374,7 +3390,7 @@ chmod +x /etc/rc.d/rc.plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache condrestart
-echo "Plex to Cache v2026.08.08.15 installed successfully."
+echo "Plex to Cache v2026.08.08.16 installed successfully."
 ]]>
 </INLINE>
 </FILE>
