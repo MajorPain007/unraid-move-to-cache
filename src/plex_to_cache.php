@@ -577,7 +577,7 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
             </div>
             <div class="form-pair"><label data-tooltip="Empty the cache once a day at a fixed time. If the server was off or the service stopped at that time, it runs at the next opportunity instead of skipping the day.">Daily:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_FLUSH_SCHEDULE" value="True" <?= $ptc_cfg['ENABLE_FLUSH_SCHEDULE'] == 'True' ? 'checked' : '' ?> onchange="updateFlushUI()"></div></div>
             <div id="flush-schedule-options" class="cleanup-options" style="display: <?= $ptc_cfg['ENABLE_FLUSH_SCHEDULE'] == 'True' ? 'block' : 'none' ?>;">
-                <div class="form-pair"><label data-tooltip="Time of day, 24-hour HH:MM.">At:</label><div class="form-input-wrapper"><input type="text" name="FLUSH_SCHEDULE_TIME" value="<?= htmlspecialchars($ptc_cfg['FLUSH_SCHEDULE_TIME']) ?>" placeholder="04:00" pattern="[0-2][0-9]:[0-5][0-9]" class="ptc-input input-small"></div></div>
+                <div class="form-pair"><label data-tooltip="Time of day, 24-hour HH:MM.">At:</label><div class="form-input-wrapper"><input type="text" name="FLUSH_SCHEDULE_TIME" value="<?= htmlspecialchars($ptc_cfg['FLUSH_SCHEDULE_TIME']) ?>" placeholder="04:00" pattern="([01][0-9]|2[0-3]):[0-5][0-9]" class="ptc-input input-small"></div></div>
             </div>
 
             <div class="section-header"><i class="fa fa-list-ol"></i> Season Batching</div>
