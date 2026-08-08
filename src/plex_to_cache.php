@@ -139,7 +139,7 @@ function ptc_csrf_token() {
 function ptc_require_csrf($as_json = true) {
     $expected = ptc_csrf_token();
     if ($expected === '') return;                       // nothing to check against
-    $got = isset($_REQUEST['csrf_token']) ? $_REQUEST['csrf_token'] : '';
+    $got = $_POST['csrf_token'] ?? $_GET['csrf_token'] ?? '';
     if (!hash_equals($expected, (string)$got)) {
         http_response_code(403);
         if ($as_json) {
@@ -301,7 +301,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'browse') {
     }
     $tracked = ptc_tracked();
 
-    $want = (string)($_REQUEST['path'] ?? '');
+    $want = (string)($_POST['path'] ?? $_GET['path'] ?? '');
     $dirs = [];
     $files = [];
     $here = '';
@@ -360,8 +360,10 @@ if (isset($_GET['action']) && $_GET['action'] === 'browse') {
         }
     }
 
-    usort($dirs,  function ($a, $b) { return $b['size'] - $a['size']; });
-    usort($files, function ($a, $b) { return $b['size'] - $a['size']; });
+    // By name, naturally: a plain string compare puts episode 10 ahead of 2.
+    $by_name = function ($a, $b) { return strnatcasecmp($a['name'], $b['name']); };
+    usort($dirs,  $by_name);
+    usort($files, $by_name);
 
     // Where "up" goes: '' means back to the list of mapped folders.
     $parent = null;
@@ -423,7 +425,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'uncache') {
     // A file or a whole folder - a season, a series, a mapped root. The daemon
     // filters against its own candidate list either way, so this check is here
     // to give a useful message rather than to be the guard.
-    $path = ptc_safe_path($_REQUEST['path'] ?? '');
+    $path = ptc_safe_path($_POST['path'] ?? $_GET['path'] ?? '');
     if ($path === '') {
         echo json_encode(['success' => false, 'message' => 'Path is outside the mapped media folders']);
         exit;
@@ -568,7 +570,19 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
     display: flex;
     flex-direction: column;
     min-height: 650px;
+    /* Without this a grid item refuses to shrink below its content's
+       min-content width, so one long file name in the list widens the whole
+       page and puts a scrollbar under it. */
+    min-width: 0;
 }
+
+/* Fixed layout, so the columns keep the widths below instead of being sized by
+   the longest file name in the list. */
+#ptc-cached-table { table-layout: fixed; }
+#ptc-cached-table td, #ptc-cached-table th { overflow-wrap: anywhere; }
+#ptc-cached-table col.ptc-c-size { width: 74px; }
+#ptc-cached-table col.ptc-c-note { width: 92px; }
+#ptc-cached-table col.ptc-c-act  { width: 78px; }
 
 #ptc-col-log {
     display: flex;
@@ -839,10 +853,11 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
             <div id="ptc-browse-path" style="color:#888; font-size:12px; margin:4px 0; word-break:break-all;"></div>
             <div id="ptc-cached-wrap" style="max-height:260px; overflow:auto; margin:4px 0 18px;">
                 <table id="ptc-cached-table" style="width:100%; font-size:12px; border-collapse:collapse;">
+                    <colgroup><col><col class="ptc-c-size"><col class="ptc-c-note"><col class="ptc-c-act"></colgroup>
                     <thead><tr>
                         <th style="text-align:left; padding:4px 6px;">Name</th>
-                        <th style="text-align:right; padding:4px 6px; white-space:nowrap;">Size</th>
-                        <th style="text-align:right; padding:4px 6px; white-space:nowrap;">On cache</th>
+                        <th style="text-align:right; padding:4px 6px;">Size</th>
+                        <th style="text-align:right; padding:4px 6px;">On cache</th>
                         <th style="padding:4px 6px;"></th>
                     </tr></thead>
                     <tbody><tr><td colspan="4" style="padding:6px; color:#888;">Loading...</td></tr></tbody>
@@ -928,10 +943,8 @@ function ptcRow(body, name, size, right, title, onOpen, onMove, moveTitle, disab
         cell.text(name);
     }
     cell.appendTo(tr);
-    $('<td>').css({padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap'})
-             .text(size).appendTo(tr);
-    $('<td>').css({padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap', color: '#888'})
-             .text(right).appendTo(tr);
+    $('<td>').css({padding: '4px 6px', textAlign: 'right'}).text(size).appendTo(tr);
+    $('<td>').css({padding: '4px 6px', textAlign: 'right', color: '#888'}).text(right).appendTo(tr);
     var last = $('<td>').css({padding: '4px 6px', textAlign: 'right'}).appendTo(tr);
     if (onMove) {
         $('<button type="button" class="btn-test">')
@@ -995,8 +1008,7 @@ function browseCache(path) {
         $('#ptc-browse-path').text('Could not read the folder.');
         $('#ptc-cached-table tbody').empty().append(
             $('<tr>').append($('<td colspan="4">').css({padding: '6px', color: '#e0654a',
-                                                        whiteSpace: 'pre-wrap',
-                                                        wordBreak: 'break-all'}).text(detail)));
+                                                        whiteSpace: 'pre-wrap'}).text(detail)));
     });
 
     // The totals line comes from the tracked list and is independent of where
@@ -1011,8 +1023,9 @@ function browseCache(path) {
 }
 
 function uncacheFile(path, btn, label) {
-    if (label && label.slice(-1) === '/'
-        && !confirm('Move everything under ' + label + ' back to the array?')) return;
+    // No confirm() here: it renders as the browser's own "JavaScript from
+    // <origin>" prompt, and this is not a destructive action - the file moves
+    // to the array and gets cached again next time it is played.
     btn.disabled = true;
     btn.textContent = '...';
     $.post('/plugins/plex_to_cache/plex_to_cache.php?action=uncache',

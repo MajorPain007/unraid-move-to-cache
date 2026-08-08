@@ -1,3 +1,18 @@
+### 2026.08.08.05
+
+- The page no longer scrolls sideways. Grid items default to min-width:auto and
+  refuse to shrink below their content, so one long file name in the list widened
+  the whole layout. The columns may shrink now, and the list has a fixed table
+  layout, so a name wraps instead of pushing the page open.
+- "To Array" no longer asks for confirmation. It is not a destructive action -
+  the file goes to the array and gets cached again the next time it is played -
+  and the browser's own "JavaScript from ..." prompt on every click was worse
+  than the risk. Emptying the whole cache still asks.
+- Folders and episodes are sorted by name, naturally, so episode 2 comes before
+  episode 10.
+- Request parameters are read from POST and GET directly instead of $_REQUEST,
+  which depends on the request_order php.ini setting.
+
 ### 2026.08.08.04
 
 - The browser's requests are POSTs now. Called directly the endpoint answered
