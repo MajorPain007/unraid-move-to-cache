@@ -278,6 +278,13 @@ if (isset($_GET['action']) && $_GET['action'] === 'service') {
 // single season can be judged and moved as one.
 if (isset($_GET['action']) && $_GET['action'] === 'browse') {
     header('Content-Type: application/json');
+    // Anything thrown below still has to leave the response valid JSON,
+    // otherwise the browser sees a parse error and can only show "failed".
+    set_error_handler(function ($no, $str, $file, $line) {
+        if (!(error_reporting() & $no)) return false;   // suppressed with @, leave it be
+        throw new ErrorException($str, 0, $no, $file, $line);
+    });
+    try {
 
     $roots = ptc_media_roots();
     $streaming = [];
@@ -292,14 +299,31 @@ if (isset($_GET['action']) && $_GET['action'] === 'browse') {
     $files = [];
     $here = '';
 
+    // Per-folder totals come from the tracked list, not from walking the tree.
+    // Walking it for every row meant a recursive scan per line, which is fine
+    // on a handful of files and not fine on a real library over FUSE.
+    $summarise = function ($dir) use ($tracked, $streaming) {
+        $prefix = rtrim($dir, '/') . '/';
+        $files = 0; $bytes = 0; $busy = 0;
+        foreach ($tracked as $path => $ts) {
+            if (strpos($path, $prefix) !== 0) continue;
+            $size = @filesize($path);
+            if ($size === false) continue;
+            $files++;
+            $bytes += $size;
+            if (in_array(basename($path), $streaming, true)) $busy++;
+        }
+        return ['files' => $files, 'size' => $bytes, 'busy' => $busy];
+    };
+
     if ($want === '') {
         // Top level: one entry per mapped folder.
         foreach ($roots as $root) {
             if (!is_dir($root)) continue;
-            $under = ptc_media_under($root);
-            $dirs[] = ['path' => $root, 'name' => $root,
-                       'files' => count($under), 'size' => array_sum($under),
-                       'cached' => count(array_intersect_key($under, $tracked))];
+            $label = (strpos($root, rtrim($ptc_cfg['CACHE_ROOT'], '/') . '/') === 0)
+                   ? substr($root, strlen(rtrim($ptc_cfg['CACHE_ROOT'], '/')) + 1)
+                   : $root;
+            $dirs[] = ['path' => $root, 'name' => $label] + $summarise($root);
         }
     } else {
         $here = ptc_safe_path($want);
@@ -317,10 +341,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'browse') {
             if ($entry === '.' || $entry === '..') continue;
             $full = $here . '/' . $entry;
             if (is_dir($full)) {
-                $under = ptc_media_under($full);
-                $dirs[] = ['path' => $full, 'name' => $entry,
-                           'files' => count($under), 'size' => array_sum($under),
-                           'cached' => count(array_intersect_key($under, $tracked))];
+                $dirs[] = ['path' => $full, 'name' => $entry] + $summarise($full);
             } elseif (is_file($full) && ptc_is_media($entry)) {
                 $files[] = ['path' => $full, 'name' => $entry,
                             'size' => (int)@filesize($full),
@@ -342,6 +363,13 @@ if (isset($_GET['action']) && $_GET['action'] === 'browse') {
 
     echo json_encode(['success' => true, 'path' => $here, 'parent' => $parent,
                       'dirs' => $dirs, 'files' => $files]);
+
+    } catch (Throwable $e) {
+        echo json_encode(['success' => false,
+                          'message' => get_class($e) . ': ' . $e->getMessage()
+                                       . ' (' . basename($e->getFile()) . ':' . $e->getLine() . ')']);
+    }
+    restore_error_handler();
     exit;
 }
 
@@ -921,12 +949,13 @@ function browseCache(path) {
         }
 
         d.dirs.forEach(function(dir) {
-            ptcRow(body, dir.name + '/', ptcBytes(dir.size),
-                   dir.cached + ' of ' + dir.files,
-                   dir.path,
+            var note = dir.files ? dir.files + ' file' + (dir.files === 1 ? '' : 's') : '-';
+            if (dir.busy) note += ', ' + dir.busy + ' streaming';
+            ptcRow(body, dir.name + '/', dir.size ? ptcBytes(dir.size) : '',
+                   note, dir.path,
                    function() { browseCache(dir.path); },
                    function(btn) { uncacheFile(dir.path, btn, dir.name + '/'); },
-                   'Move every media file in this folder back to the array');
+                   'Move this folder back to the array. Anything being streamed stays.');
         });
 
         d.files.forEach(function(f) {
@@ -942,8 +971,16 @@ function browseCache(path) {
         if (!d.dirs.length && !d.files.length) {
             body.append('<tr><td colspan="4" style="padding:6px; color:#888;">Empty</td></tr>');
         }
-    }).fail(function() {
+    }).fail(function(xhr) {
+        // Say what went wrong in the table itself. Leaving "Loading..." sitting
+        // there says nothing and looks like the request is still running.
+        var detail = 'HTTP ' + (xhr.status || '?');
+        if (xhr.responseText) detail += ': ' + xhr.responseText.substring(0, 300);
         $('#ptc-browse-path').text('Could not read the folder.');
+        $('#ptc-cached-table tbody').empty().append(
+            $('<tr>').append($('<td colspan="4">').css({padding: '6px', color: '#e0654a',
+                                                        whiteSpace: 'pre-wrap',
+                                                        wordBreak: 'break-all'}).text(detail)));
     });
 
     // The totals line comes from the tracked list and is independent of where

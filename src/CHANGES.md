@@ -1,3 +1,16 @@
+### 2026.08.08.02
+
+- The cache browser could sit on "Loading..." forever: when the request failed
+  the error went into the path line while the table kept its placeholder. The
+  table now shows the actual status and response, so a failure says why.
+- The browse endpoint always answers with JSON, including when something throws.
+- Folder totals come from the tracked list instead of walking the tree for every
+  row. The old way did one recursive scan per line, which is fine on a handful
+  of files and not on a real library over FUSE.
+- A folder shows how many of its cached files are being streamed. Those stay on
+  the cache when the folder is moved - that was already true, it just was not
+  visible.
+
 ### 2026.08.08.01
 
 - Cache browser: walk the mapped media folders in the web UI, see how much of

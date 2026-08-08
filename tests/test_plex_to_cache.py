@@ -246,6 +246,21 @@ class FlushCacheToArray(unittest.TestCase):
         moved = self._run_flush_only(tracked, ["/mnt/cache/Media/Show"])
         self.assertEqual(len(moved), 3, "the series folder covers both seasons")
 
+    def test_moving_a_folder_still_spares_what_is_playing(self):
+        """Selecting a season in the browser must not yank the episode someone
+        is watching right now."""
+        playing = "/mnt/cache/Media/Show/S01/e2.mkv"
+        ptc.active_cache_paths = {playing}
+        tracked = {
+            "/mnt/cache/Media/Show/S01/e1.mkv": 1.0,
+            playing: 2.0,
+            "/mnt/cache/Media/Show/S01/e3.mkv": 3.0,
+        }
+        moved = self._run_flush_only(tracked, ["/mnt/cache/Media/Show/S01"])
+        self.assertNotIn(playing, moved)
+        self.assertEqual(len(moved), 2)
+        self.assertEqual(ptc._flush_state["skipped"], 1)
+
     def test_a_sibling_folder_with_a_shared_prefix_is_not_swept_in(self):
         tracked = {
             "/mnt/cache/Media/Show/e1.mkv":  1.0,
