@@ -27,27 +27,10 @@ jobs:
       - name: Tests
         run: python -m unittest discover -s tests -v
 
+      # Resolves every import against the interpreter running it, so on 3.9 it
+      # also catches modules that only became stdlib in a later version.
       - name: Standard library only
-        run: |
-          # The daemon must import nothing that needs pip: Unraid's root fs is
-          # tmpfs, so site-packages is gone after every reboot.
-          python - <<'PY'
-          import ast, sys, pathlib
-          allowed = set(sys.stdlib_module_names)
-          bad = []
-          for node in ast.walk(ast.parse(pathlib.Path('src/plex_to_cache.py').read_text())):
-              if isinstance(node, ast.Import):
-                  names = [a.name.split('.')[0] for a in node.names]
-              elif isinstance(node, ast.ImportFrom) and node.level == 0:
-                  names = [(node.module or '').split('.')[0]]
-              else:
-                  continue
-              bad += [n for n in names if n and n not in allowed]
-          if bad:
-              print('::error::non-stdlib imports:', ', '.join(sorted(set(bad))))
-              sys.exit(1)
-          print('all imports are stdlib')
-          PY
+        run: python tests/check_stdlib_only.py src/plex_to_cache.py
 
   php:
     runs-on: ubuntu-latest
