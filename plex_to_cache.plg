@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.08.08.06">
+<!ENTITY version   "2026.08.08.07">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,6 +13,22 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
+### 2026.08.08.07
+
+- The Empty Cache button is gone. Picking the media folder in the browser does
+  the same thing, and the settings section that governs it is now called Move
+  Back to Array.
+- "Save & Apply" was being clipped: the control bar was a flex row that could
+  not wrap, and the submit button shrank past its own label before anything else
+  gave way. It wraps now and keeps its width.
+- The list has a frame that runs to the edge behind the To Array button, instead
+  of stopping short of it.
+- "Up" moved out of the table and next to the path, so it stays put however far
+  you scroll. The column headers stay put too.
+- The path is clickable now: each segment jumps to that level.
+- Folders and files carry an icon, rows highlight under the pointer, and a
+  button that cannot be used looks like it.
+
 ### 2026.08.08.06
 
 - The "To Array" button stays put. A long name now keeps to one line and the
@@ -687,7 +703,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'browse') {
     }
 
     echo json_encode(['success' => true, 'path' => $here, 'parent' => $parent,
-                      'dirs' => $dirs, 'files' => $files]);
+                      'roots' => $roots, 'dirs' => $dirs, 'files' => $files]);
 
     $ptc_answered = true;
 
@@ -786,35 +802,6 @@ if (isset($_GET['action']) && $_GET['action'] === 'uncache') {
     exit;
 }
 
-// AJAX: Move everything this plugin cached back to the array.
-// With the service running the request goes through a marker file, so the
-// daemon does the work and keeps protecting files that are being streamed.
-// With it stopped there is nobody to ask, so the script runs once directly.
-if (isset($_GET['action']) && $_GET['action'] === 'flush') {
-    ptc_require_csrf();
-    header('Content-Type: application/json');
-
-    $running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($ptc_pid_file), 0);
-    if ($running) {
-        if (@file_put_contents($ptc_request_file, "flush\n") === false) {
-            echo json_encode(['success' => false, 'message' => 'Cannot write the request file']);
-            exit;
-        }
-        echo json_encode(['success' => true,
-                          'message' => 'Flush requested - the service picks it up within a few seconds.']);
-    } else {
-        if (!file_exists($ptc_daemon_script)) {
-            echo json_encode(['success' => false, 'message' => 'plex_to_cache.py not found']);
-            exit;
-        }
-        shell_exec('nohup python3 ' . escapeshellarg($ptc_daemon_script)
-                   . ' --flush >> /var/log/plex_to_cache.log 2>&1 &');
-        echo json_encode(['success' => true,
-                          'message' => 'Service is stopped - running the flush directly. Watch the log.']);
-    }
-    exit;
-}
-
 // POST: Save settings
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     ptc_require_csrf(false);
@@ -894,9 +881,21 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
    not, because .ptc-col may shrink. The action column sticks to the right edge
    so the button never has to be scrolled to. It needs an opaque background, or
    the name slides underneath it. */
-#ptc-cached-wrap { overflow: auto; }
+#ptc-cached-wrap {
+    overflow: auto;
+    border: 1px solid #333;
+    border-radius: 8px;
+    background: var(--bg-dark);
+}
 #ptc-cached-table td:first-child,
 #ptc-cached-table th:first-child { white-space: nowrap; }
+#ptc-cached-table thead th {
+    position: sticky;
+    top: 0;
+    background: var(--bg-dark);
+    z-index: 2;
+}
+#ptc-cached-table thead th:last-child { z-index: 3; }
 #ptc-cached-table td:last-child,
 #ptc-cached-table th:last-child {
     position: sticky;
@@ -914,6 +913,18 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
     box-shadow: none;
     background: none;
 }
+#ptc-cached-table tbody tr:hover td { background: #182430; }
+/* The pinned cell paints its own background, so it needs the hover colour too
+   or the row highlight stops at its edge. */
+#ptc-cached-table tbody tr:hover td:last-child { background: #182430; }
+#ptc-cached-table a { color: var(--primary-blue); text-decoration: none; }
+#ptc-cached-table a:hover { text-decoration: underline; }
+#ptc-cached-table .ptc-ico { width: 14px; display: inline-block; text-align: center;
+                             margin-right: 6px; color: #7a8894; }
+#ptc-cached-table .ptc-ico.folder { color: var(--primary-blue); }
+.btn-test:disabled { opacity: .45; cursor: default; border-color: #333; }
+#ptc-crumbs a { color: var(--primary-blue); text-decoration: none; }
+#ptc-crumbs a:hover { text-decoration: underline; }
 #ptc-cached-table col.ptc-c-size { width: 74px; }
 #ptc-cached-table col.ptc-c-note { width: 92px; }
 #ptc-cached-table col.ptc-c-act  { width: 78px; }
@@ -961,6 +972,9 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
 /* Top control bar with Save and Service buttons */
 .top-control-bar {
     display: flex;
+    /* Without wrapping, flex:1 on the submit shrinks it past its own label
+       before anything else gives way, and "Save & Apply" gets clipped. */
+    flex-wrap: wrap;
     gap: 10px;
     margin-bottom: 15px;
     align-items: stretch;
@@ -977,8 +991,10 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
 }
 
 .top-control-bar input[type="submit"] {
-    flex: 1;
+    flex: 1 1 auto;
+    min-width: 150px;
 }
+.top-control-bar button { white-space: nowrap; }
 
 .top-control-bar .service-btn {
     background: #222;
@@ -1088,8 +1104,6 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
                 <input type="submit" value="Save & Apply">
                 <button type="button" class="service-btn" onclick="serviceControl('start')">Start</button>
                 <button type="button" class="service-btn" onclick="serviceControl('stop')">Stop</button>
-                <button type="button" class="service-btn" id="flush-btn" onclick="flushCache(this)"
-                        title="Move every file this plugin cached back to the array. Files being streamed right now are left alone.">Empty Cache</button>
                 <span class="status-dot <?= $is_running ? 'running' : 'stopped' ?>" id="status-dot" title="<?= $is_running ? 'Running' : 'Stopped' ?>"></span>
             </div>
 
@@ -1125,8 +1139,8 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
             <div class="form-pair"><label data-tooltip="Maximum cache usage percentage before stopping copies.">Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= htmlspecialchars($ptc_cfg['CACHE_MAX_USAGE']) ?>" class="ptc-input input-small"><span class="unit-label">%</span></div></div>
             <div class="form-pair"><label data-tooltip="When the cache is full, move the oldest plugin-cached files back to the array to make room for the currently streamed media (LRU). Active streams and queued files are never evicted.">Eviction:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_CACHE_EVICTION" value="True" <?= $ptc_cfg['ENABLE_CACHE_EVICTION'] == 'True' ? 'checked' : '' ?>></div></div>
 
-            <div class="section-header"><i class="fa fa-download"></i> Empty Cache</div>
-            <div class="form-pair"><label data-tooltip="What the Empty Cache button and the schedule move back. 'Cached by plugin' touches only files this plugin copied to the cache. 'All media in mapped folders' also moves files it never touched. Only the folders from your docker mappings are walked - a separate downloads share on the same pool is not touched.">Scope:</label><div class="form-input-wrapper"><select name="FLUSH_SCOPE" class="ptc-input" onchange="updateFlushUI()">
+            <div class="section-header"><i class="fa fa-download"></i> Move Back to Array</div>
+            <div class="form-pair"><label data-tooltip="What the To Array buttons and the daily schedule move back. 'Cached by plugin' touches only files this plugin copied to the cache. 'All media in mapped folders' also moves files it never touched. Only the folders from your docker mappings are walked - a separate downloads share on the same pool is not touched.">Scope:</label><div class="form-input-wrapper"><select name="FLUSH_SCOPE" class="ptc-input" onchange="updateFlushUI()">
                 <option value="tracked" <?= $ptc_cfg['FLUSH_SCOPE'] != 'all' ? 'selected' : '' ?>>Cached by plugin</option>
                 <option value="all" <?= $ptc_cfg['FLUSH_SCOPE'] == 'all' ? 'selected' : '' ?>>All media in mapped folders</option>
             </select></div></div>
@@ -1184,7 +1198,11 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
                 <button type="button" onclick="refreshCached();" style="padding: 4px 10px; font-size: 12px; cursor: pointer;">Refresh</button>
             </div>
             <div id="ptc-cached-summary" style="color:#888; font-size:12px; margin-top:6px;"></div>
-            <div id="ptc-browse-path" style="color:#888; font-size:12px; margin:4px 0; word-break:break-all;"></div>
+            <div style="display:flex; align-items:center; gap:8px; margin:4px 0;">
+                <button type="button" id="ptc-up" class="btn-test" style="display:none; white-space:nowrap;"
+                        title="One folder up">&#8593; Up</button>
+                <span id="ptc-crumbs" style="color:#8b98a5; font-size:12px; word-break:break-all;"></span>
+            </div>
             <div id="ptc-cached-wrap" style="max-height:260px; overflow:auto; margin:4px 0 18px;">
                 <table id="ptc-cached-table" style="width:100%; font-size:12px; border-collapse:collapse;">
                     <colgroup><col><col class="ptc-c-size"><col class="ptc-c-note"><col class="ptc-c-act"></colgroup>
@@ -1247,11 +1265,6 @@ function refreshStatus() {
             ptcLastFlushSeen = f.finished;
             refreshCached();
         }
-        // Keep the button disabled across the gap between requesting a flush
-        // and the service picking the request up, or the next poll would
-        // re-enable it and invite a second click.
-        $('#flush-btn').prop('disabled',
-            !!(f && f.active) || (Date.now() - ptcFlushRequested < 15000));
 
         $('#ptc-status').text(parts.join('  ·  '));
     }).fail(function() { $('#ptc-status').text(''); });
@@ -1267,28 +1280,53 @@ var ptcBrowsePath = '';   // '' = the list of mapped media folders
 
 function refreshCached() { browseCache(ptcBrowsePath); }
 
-function ptcRow(body, name, size, right, title, onOpen, onMove, moveTitle, disabled) {
+function ptcRow(body, o) {
     var tr = $('<tr>').css('border-top', '1px solid #222');
-    var cell = $('<td>').css({padding: '4px 6px'}).attr('title', title || '');
-    if (onOpen) {
-        $('<a href="#">').text(name).css({color: 'var(--primary-blue)', textDecoration: 'none'})
-            .on('click', function(e) { e.preventDefault(); onOpen(); }).appendTo(cell);
+    var cell = $('<td>').css({padding: '5px 6px'}).attr('title', o.title || '');
+    $('<i>').addClass('ptc-ico ' + (o.icon || '')).addClass(o.folder ? 'folder' : '').appendTo(cell);
+    if (o.open) {
+        $('<a href="#">').text(o.name).css('cursor', 'pointer')
+            .on('click', function(e) { e.preventDefault(); o.open(); }).appendTo(cell);
     } else {
-        cell.text(name);
+        $('<span>').text(o.name).appendTo(cell);
     }
     cell.appendTo(tr);
-    $('<td>').css({padding: '4px 6px', textAlign: 'right'}).text(size).appendTo(tr);
-    $('<td>').css({padding: '4px 6px', textAlign: 'right', color: '#888'}).text(right).appendTo(tr);
-    var last = $('<td>').css({padding: '4px 6px', textAlign: 'right'}).appendTo(tr);
-    if (onMove) {
+    $('<td>').css({padding: '5px 6px', textAlign: 'right'}).text(o.size || '').appendTo(tr);
+    $('<td>').css({padding: '5px 6px', textAlign: 'right', color: '#8b98a5'})
+             .text(o.note || '').appendTo(tr);
+    var last = $('<td>').css({padding: '5px 6px', textAlign: 'right'}).appendTo(tr);
+    if (o.move) {
         $('<button type="button" class="btn-test">')
-            .text(disabled ? 'in use' : 'To Array')
-            .prop('disabled', !!disabled)
-            .attr('title', moveTitle || '')
-            .on('click', function() { onMove(this); })
+            .text(o.disabled ? 'in use' : 'To Array')
+            .prop('disabled', !!o.disabled)
+            .attr('title', o.moveTitle || '')
+            .on('click', function() { o.move(this); })
             .appendTo(last);
     }
     body.append(tr);
+}
+
+// Clickable path segments, so a deep folder is one click from any level above.
+function ptcCrumbs(path, roots) {
+    var box = $('#ptc-crumbs').empty();
+    if (!path) { box.text('Mapped media folders'); return; }
+    var root = '';
+    for (var i = 0; i < roots.length; i++) {
+        if (path === roots[i] || path.indexOf(roots[i] + '/') === 0) { root = roots[i]; break; }
+    }
+    $('<a href="#">').text(root ? root.split('/').pop() : path)
+        .on('click', function(e) { e.preventDefault(); browseCache(root); }).appendTo(box);
+    if (!root) return;
+    var rest = path.slice(root.length).replace(/^\//, '');
+    if (!rest) return;
+    var walked = root;
+    rest.split('/').forEach(function(part) {
+        walked += '/' + part;
+        var target = walked;
+        box.append(document.createTextNode(' / '));
+        $('<a href="#">').text(part)
+            .on('click', function(e) { e.preventDefault(); browseCache(target); }).appendTo(box);
+    });
 }
 
 function browseCache(path) {
@@ -1301,34 +1339,41 @@ function browseCache(path) {
      .done(function(d) {
         var body = $('#ptc-cached-table tbody').empty();
         if (!d || !d.success) {
-            $('#ptc-browse-path').text(d && d.message ? d.message : 'Could not read the folder.');
+            $('#ptc-crumbs').text(d && d.message ? d.message : 'Could not read the folder.');
             return;
         }
         ptcBrowsePath = d.path || '';
-        $('#ptc-browse-path').text(ptcBrowsePath || 'Mapped media folders');
+        ptcCrumbs(ptcBrowsePath, d.roots || []);
 
+        // Deliberately not a row in the table: a row scrolls away, and this has
+        // to stay reachable wherever you are in a long folder.
         if (d.parent !== null && d.parent !== undefined) {
-            ptcRow(body, '.. (up one level)', '', '', '', function() { browseCache(d.parent); });
+            $('#ptc-up').show().off('click').on('click', function() { browseCache(d.parent); });
+        } else {
+            $('#ptc-up').hide();
         }
 
         d.dirs.forEach(function(dir) {
             var note = dir.files ? dir.files + ' file' + (dir.files === 1 ? '' : 's') : '-';
             if (dir.busy) note += ', ' + dir.busy + ' streaming';
-            ptcRow(body, dir.name + '/', dir.size ? ptcBytes(dir.size) : '',
-                   note, dir.path,
-                   function() { browseCache(dir.path); },
-                   function(btn) { uncacheFile(dir.path, btn, dir.name + '/'); },
-                   'Move this folder back to the array. Anything being streamed stays.');
+            ptcRow(body, {
+                name: dir.name, icon: 'fa fa-folder', folder: true, title: dir.path,
+                size: dir.size ? ptcBytes(dir.size) : '', note: note,
+                open: function() { browseCache(dir.path); },
+                move: function(btn) { uncacheFile(dir.path, btn); },
+                moveTitle: 'Move this folder back to the array. Anything being streamed stays.'
+            });
         });
 
         d.files.forEach(function(f) {
-            ptcRow(body, f.name, ptcBytes(f.size),
-                   f.tracked ? 'cached' : 'not by plugin',
-                   f.path, null,
-                   function(btn) { uncacheFile(f.path, btn, f.name); },
-                   f.in_use ? 'Being streamed - it stays on the cache'
-                            : 'Move this file back to the array',
-                   f.in_use);
+            ptcRow(body, {
+                name: f.name, icon: 'fa fa-film', title: f.path,
+                size: ptcBytes(f.size), note: f.tracked ? 'cached' : 'not by plugin',
+                move: function(btn) { uncacheFile(f.path, btn); },
+                moveTitle: f.in_use ? 'Being streamed - it stays on the cache'
+                                    : 'Move this file back to the array',
+                disabled: f.in_use
+            });
         });
 
         if (!d.dirs.length && !d.files.length) {
@@ -1339,7 +1384,8 @@ function browseCache(path) {
         // there says nothing and looks like the request is still running.
         var detail = 'HTTP ' + (xhr.status || '?');
         if (xhr.responseText) detail += ': ' + xhr.responseText.substring(0, 300);
-        $('#ptc-browse-path').text('Could not read the folder.');
+        $('#ptc-crumbs').text('Could not read the folder.');
+        $('#ptc-up').hide();
         $('#ptc-cached-table tbody').empty().append(
             $('<tr>').append($('<td colspan="4">').css({padding: '6px', color: '#e0654a',
                                                         whiteSpace: 'pre-wrap'}).text(detail)));
@@ -1356,7 +1402,7 @@ function browseCache(path) {
     });
 }
 
-function uncacheFile(path, btn, label) {
+function uncacheFile(path, btn) {
     // No confirm() here: it renders as the browser's own "JavaScript from
     // <origin>" prompt, and this is not a destructive action - the file moves
     // to the array and gets cached again next time it is played.
@@ -1378,26 +1424,6 @@ function updateFlushUI() {
     var scope = $('select[name="FLUSH_SCOPE"]').val();
     $('#flush-scope-note').toggle(scope === 'all');
     $('#flush-schedule-options').toggle($('input[name="ENABLE_FLUSH_SCHEDULE"]').is(':checked'));
-}
-
-var ptcFlushRequested = 0;
-
-function flushCache(btn) {
-    if (!confirm('Move every file this plugin cached back to the array?\n\n'
-                 + 'Files being streamed right now are left on the cache. '
-                 + 'Nothing else on the cache pool is touched.')) return;
-    btn.disabled = true;
-    ptcFlushRequested = Date.now();
-    $.post('/plugins/plex_to_cache/plex_to_cache.php?action=flush',
-           {csrf_token: ptcToken}, null, 'json').done(function(data) {
-        $('#ptc-status').text(data.message || '');
-        if (!data.success) { ptcFlushRequested = 0; btn.disabled = false; }
-        setTimeout(refreshLog, 2000);
-    }).fail(function() {
-        $('#ptc-status').text('Flush request failed.');
-        ptcFlushRequested = 0;
-        btn.disabled = false;
-    });
 }
 
 // Unraid exposes csrf_token as a global on its own pages; fall back to the
@@ -3225,7 +3251,7 @@ chmod +x /etc/rc.d/rc.plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache condrestart
-echo "Plex to Cache v2026.08.08.06 installed successfully."
+echo "Plex to Cache v2026.08.08.07 installed successfully."
 ]]>
 </INLINE>
 </FILE>

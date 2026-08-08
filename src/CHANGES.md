@@ -1,3 +1,19 @@
+### 2026.08.08.07
+
+- The Empty Cache button is gone. Picking the media folder in the browser does
+  the same thing, and the settings section that governs it is now called Move
+  Back to Array.
+- "Save & Apply" was being clipped: the control bar was a flex row that could
+  not wrap, and the submit button shrank past its own label before anything else
+  gave way. It wraps now and keeps its width.
+- The list has a frame that runs to the edge behind the To Array button, instead
+  of stopping short of it.
+- "Up" moved out of the table and next to the path, so it stays put however far
+  you scroll. The column headers stay put too.
+- The path is clickable now: each segment jumps to that level.
+- Folders and files carry an icon, rows highlight under the pointer, and a
+  button that cannot be used looks like it.
+
 ### 2026.08.08.06
 
 - The "To Array" button stays put. A long name now keeps to one line and the
