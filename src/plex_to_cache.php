@@ -576,10 +576,30 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
     min-width: 0;
 }
 
-/* Fixed layout, so the columns keep the widths below instead of being sized by
-   the longest file name in the list. */
-#ptc-cached-table { table-layout: fixed; }
-#ptc-cached-table td, #ptc-cached-table th { overflow-wrap: anywhere; }
+/* A long name stays on one line and this box scrolls sideways; the page does
+   not, because .ptc-col may shrink. The action column sticks to the right edge
+   so the button never has to be scrolled to. It needs an opaque background, or
+   the name slides underneath it. */
+#ptc-cached-wrap { overflow: auto; }
+#ptc-cached-table td:first-child,
+#ptc-cached-table th:first-child { white-space: nowrap; }
+#ptc-cached-table td:last-child,
+#ptc-cached-table th:last-child {
+    position: sticky;
+    right: 0;
+    background: var(--bg-dark);
+    box-shadow: -6px 0 6px -4px rgba(0, 0, 0, .7);
+    z-index: 1;
+}
+/* A full-width message row is both the first and the last cell, so it would
+   otherwise stick to the edge and refuse to wrap. */
+#ptc-cached-table td[colspan] {
+    position: static;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    box-shadow: none;
+    background: none;
+}
 #ptc-cached-table col.ptc-c-size { width: 74px; }
 #ptc-cached-table col.ptc-c-note { width: 92px; }
 #ptc-cached-table col.ptc-c-act  { width: 78px; }
@@ -935,7 +955,7 @@ function refreshCached() { browseCache(ptcBrowsePath); }
 
 function ptcRow(body, name, size, right, title, onOpen, onMove, moveTitle, disabled) {
     var tr = $('<tr>').css('border-top', '1px solid #222');
-    var cell = $('<td>').css({padding: '4px 6px', wordBreak: 'break-all'}).attr('title', title || '');
+    var cell = $('<td>').css({padding: '4px 6px'}).attr('title', title || '');
     if (onOpen) {
         $('<a href="#">').text(name).css({color: 'var(--primary-blue)', textDecoration: 'none'})
             .on('click', function(e) { e.preventDefault(); onOpen(); }).appendTo(cell);

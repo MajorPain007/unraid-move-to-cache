@@ -1,3 +1,9 @@
+### 2026.08.08.06
+
+- The "To Array" button stays put. A long name now keeps to one line and the
+  list scrolls sideways, with the button column stuck to the right edge, so it
+  is always where you left it and never has to be scrolled to.
+
 ### 2026.08.08.05
 
 - The page no longer scrolls sideways. Grid items default to min-width:auto and
