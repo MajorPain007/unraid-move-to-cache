@@ -42,6 +42,7 @@ from pathlib import Path
 
 CONFIG_FILE   = "/boot/config/plugins/plex_to_cache/settings.cfg"
 TRACKED_FILES = "/boot/config/plugins/plex_to_cache/cached_files.list"
+FLUSH_LAST    = "/boot/config/plugins/plex_to_cache/flush_last.txt"  # date of the last scheduled flush
 LOCK_FILE     = "/tmp/media_cache_cleaner.lock"
 LOG_FILE      = "/var/log/plex_to_cache.log"
 LOG_MAX_BYTES = 5 * 1024 * 1024   # rotate when the log reaches 5 MB
@@ -77,6 +78,15 @@ DEFAULT_CONFIG = {
     "ENABLE_CACHE_EVICTION": "True",
     # Near the end of a season, pre-cache the beginning of the next season.
     "ENABLE_NEXT_SEASON_PREFETCH": "False",
+    # Move everything back to the array once a day at a fixed time.
+    "ENABLE_FLUSH_SCHEDULE": "False",
+    "FLUSH_SCHEDULE_TIME": "04:00",
+    # "tracked" = only what this plugin copied to the cache.
+    # "all"     = every media file in the mapped folders, whether this plugin
+    #             put it there or not. Still only the mapped folders - a
+    #             separate downloads share on the same pool is not touched.
+    "FLUSH_SCOPE": "tracked",
+    "FLUSH_MIN_AGE": "30",   # minutes; a file touched more recently is left alone
 }
 
 # Runtime state
@@ -100,7 +110,7 @@ _shutting_down  = threading.Event()
 # Manual flush state, shown in the web UI while it runs
 _flush_lock  = threading.Lock()
 _flush_state = {"active": False, "total": 0, "done": 0, "bytes": 0,
-                "skipped": 0, "failed": 0, "finished": 0}
+                "skipped": 0, "conflicts": 0, "failed": 0, "finished": 0}
 
 # SSL context: Plex / Emby / Jellyfin typically use self-signed certs on the
 # local network, so we intentionally skip verification. This is equivalent
@@ -610,15 +620,53 @@ def evict_oldest_cached(needed_size):
 
     return cache_has_room_for(needed_size)
 
-def flush_cache_to_array():
-    """Move every file this plugin cached back to the array.
+def _cache_media_files(min_age_seconds):
+    """Every media file sitting in the mapped cache folders, whether this
+    plugin put it there or not.
+
+    Used by the "all" flush scope. Only the folders from the docker mappings
+    are walked, so a media file that landed there without this plugin is
+    included, while a separate downloads share, appdata, system and every
+    other share on the same pool are left alone.
+
+    Files modified within min_age_seconds are left alone: something still
+    being written into the media folder - an import in progress, say - would
+    otherwise be moved out from under the process writing it.
+    """
+    found = {}
+    cache_root = cfg("CACHE_ROOT")
+    now = time.time()
+
+    for cache_dir in sorted(_protected_cache_dirs()):
+        if cache_dir == cache_root or not os.path.isdir(cache_dir):
+            continue
+        for root, _dirs, files in os.walk(cache_dir):
+            for name in files:
+                path = os.path.join(root, name)
+                if not is_media_file(name) or is_excluded(path):
+                    continue
+                try:
+                    st = os.stat(path)
+                except OSError:
+                    continue
+                if now - st.st_mtime < min_age_seconds:
+                    continue
+                found[path] = st.st_mtime
+    return found
+
+def flush_cache_to_array(only=None, label="Flush"):
+    """Move files this plugin cached back to the array.
 
     Same operation as eviction, but unconditional and not bounded by
-    EVICT_MAX_FILES. Two kinds of file are deliberately left on the cache:
-    those belonging to an active stream, and those queued for copying - moving
-    either would pull the file out from under a running playback. They are
-    counted as skipped so the UI can say so rather than silently doing less
-    than "all".
+    EVICT_MAX_FILES. With `only` set to a collection of cache paths, just those
+    are moved - that is the per-file button in the UI. The restriction is
+    applied by filtering the tracked list, so a path that is not tracked simply
+    never matches and an untrusted request cannot reach an arbitrary file.
+
+    Two kinds of file are deliberately left on the cache: those belonging to an
+    active stream, and those queued for copying - moving either would pull the
+    file out from under a running playback. They are counted as skipped so the
+    UI can say so rather than silently doing less than "all".
 
     Only tracked files are touched. Anything else on the cache pool - a fresh
     download waiting for the mover, appdata, files the user put there on
@@ -626,32 +674,53 @@ def flush_cache_to_array():
     """
     with _flush_lock:
         if _flush_state["active"]:
-            log("Flush already running", warn=True)
+            log(f"[{label}] Another flush is already running", warn=True)
             return
         _flush_state.update(active=True, total=0, done=0, bytes=0,
-                            skipped=0, failed=0, finished=0)
+                            skipped=0, conflicts=0, failed=0, finished=0)
 
     try:
         with _pending_lock:
             pending = {array_to_cache(p) for p in _pending_copies}
         protected = set(active_cache_paths) | pending
 
-        tracked = sorted(TrackedFiles.load().items(), key=lambda kv: kv[1])
-        with _flush_lock:
-            _flush_state["total"] = len(tracked)
+        tracked_map = TrackedFiles.load()
+        candidates = dict(tracked_map)
+        if cfg("FLUSH_SCOPE").lower() == "all":
+            extra = _cache_media_files(cfg("FLUSH_MIN_AGE", as_int=True) * 60)
+            for path, ts in extra.items():
+                candidates.setdefault(path, ts)
 
-        log(f"[Flush] Moving {len(tracked)} cached file(s) back to the array")
+        entries = sorted(candidates.items(), key=lambda kv: kv[1])
+        if only is not None:
+            wanted = set(only)
+            entries = [item for item in entries if item[0] in wanted]
+        with _flush_lock:
+            _flush_state["total"] = len(entries)
+
+        log(f"[{label}] Moving {len(entries)} cached file(s) back to the array")
         last_write = 0.0
 
-        for cache_path, _ts in tracked:
+        for cache_path, _ts in entries:
             if _shutting_down.is_set():
-                log("[Flush] Aborted: service is shutting down", warn=True)
+                log(f"[{label}] Aborted: service is shutting down", warn=True)
                 break
 
             if cache_path in protected:
                 with _flush_lock:
                     _flush_state["skipped"] += 1
-                log(f"[Flush] Skipping {os.path.basename(cache_path)} (in use)")
+                log(f"[{label}] Skipping {os.path.basename(cache_path)} (in use)")
+                continue
+
+            # A tracked file is a copy of the array original by construction, so
+            # move_file_to_array may drop the cache side when both exist. An
+            # untracked file is not: a same-named file on the array is a
+            # different file, and deleting the cache copy would lose it.
+            if cache_path not in tracked_map and os.path.exists(cache_to_array(cache_path)):
+                with _flush_lock:
+                    _flush_state["conflicts"] += 1
+                log(f"[{label}] Skipping {os.path.basename(cache_path)}: a different file "
+                    f"of that name is already on the array", warn=True)
                 continue
 
             ok, _deleted, size = move_file_to_array(cache_path)
@@ -669,31 +738,73 @@ def flush_cache_to_array():
                 last_write = time.time()
 
         with _flush_lock:
-            done, moved, skipped, failed = (_flush_state["done"], _flush_state["bytes"],
-                                            _flush_state["skipped"], _flush_state["failed"])
-        summary = f"[Flush] Done: {done} file(s), {moved / 1073741824:.1f} GB moved"
+            done, moved     = _flush_state["done"], _flush_state["bytes"]
+            skipped, failed = _flush_state["skipped"], _flush_state["failed"]
+            conflicts       = _flush_state["conflicts"]
+        summary = f"[{label}] Done: {done} file(s), {moved / 1073741824:.1f} GB moved"
         if skipped:
             summary += f", {skipped} skipped (in use)"
+        if conflicts:
+            summary += f", {conflicts} skipped (name clash on the array)"
         if failed:
             summary += f", {failed} failed"
         log(summary, error=bool(failed))
 
     except Exception as e:
-        log(f"Flush error: {e}", error=True)
+        log(f"[{label}] Error: {e}", error=True)
     finally:
         with _flush_lock:
             _flush_state["active"] = False
             _flush_state["finished"] = int(time.time())
         write_status()
 
-def start_flush():
+def start_flush(only=None, label="Flush"):
     """Run a flush in the background so the main loop keeps tracking streams -
     it is what keeps the in-use protection current while the flush runs."""
     with _flush_lock:
         if _flush_state["active"]:
             return False
-    threading.Thread(target=flush_cache_to_array, name="flush", daemon=True).start()
+    threading.Thread(target=flush_cache_to_array, name="flush", daemon=True,
+                     kwargs={"only": only, "label": label}).start()
     return True
+
+def scheduled_flush_due():
+    """True when a daily flush is configured and today's has not run yet.
+
+    Due-based rather than clock-based: if the server was off or the service
+    stopped at the configured time, the flush runs at the next check instead of
+    being skipped for the day.
+    """
+    if not cfg("ENABLE_FLUSH_SCHEDULE", as_bool=True):
+        return False
+
+    raw = cfg("FLUSH_SCHEDULE_TIME").strip()
+    try:
+        hh, mm = (int(part) for part in raw.split(":", 1))
+    except (ValueError, TypeError):
+        log(f"Flush schedule: {raw!r} is not a HH:MM time - schedule ignored", error=True)
+        return False
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        log(f"Flush schedule: {raw!r} is out of range - schedule ignored", error=True)
+        return False
+
+    now = time.localtime()
+    if (now.tm_hour, now.tm_min) < (hh, mm):
+        return False
+
+    try:
+        last = Path(FLUSH_LAST).read_text().strip()
+    except OSError:
+        last = ""
+    return last != time.strftime("%Y-%m-%d", now)
+
+def mark_scheduled_flush_done():
+    """Record today's date before starting, so a failing flush is not retried
+    on every pass through the loop."""
+    try:
+        Path(FLUSH_LAST).write_text(time.strftime("%Y-%m-%d") + "\n")
+    except OSError as e:
+        log(f"Cannot record the scheduled flush date: {e}", warn=True)
 
 def copy_file_to_cache(array_path):
     """Copy file from array to cache. Runs inside the copy worker thread."""
@@ -1201,14 +1312,27 @@ def run_daemon():
     while True:
         try:
             # The web UI cannot talk to this process directly, so it drops a
-            # marker file. Remove it first: if the flush then fails, the user
-            # gets an error instead of a request that retriggers forever.
+            # marker file: an op line, optionally followed by one path per line
+            # for the per-file buttons. Read it, then remove it before acting -
+            # if the flush fails, the user gets an error rather than a request
+            # that retriggers on every pass.
             if os.path.exists(FLUSH_REQUEST):
+                try:
+                    request = [ln.strip() for ln in Path(FLUSH_REQUEST).read_text().splitlines()]
+                except OSError:
+                    request = []
                 try:
                     os.remove(FLUSH_REQUEST)
                 except OSError:
                     pass
-                start_flush()
+                paths = ([ln for ln in request[1:] if ln]
+                         if request and request[0].lower() == "move" else None)
+                start_flush(only=paths, label="Move" if paths else "Flush")
+
+            if scheduled_flush_due():
+                mark_scheduled_flush_done()
+                log(f"[Schedule] Daily flush at {cfg('FLUSH_SCHEDULE_TIME')} is due")
+                start_flush(label="Schedule")
 
             streams = get_active_streams()
             active_paths = set()
@@ -1372,6 +1496,7 @@ if __name__ == "__main__":
         except Exception as e:
             log(f"Cannot determine active streams: {e} - flushing everything", warn=True)
 
-        flush_cache_to_array()
+        paths = [a for a in sys.argv[1:] if a != "--flush"]
+        flush_cache_to_array(only=paths or None, label="Move" if paths else "Flush")
     else:
         run_daemon()

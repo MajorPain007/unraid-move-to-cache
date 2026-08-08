@@ -15,8 +15,28 @@ $ptc_cfg = [
     "ARRAY_ROOT" => "/mnt/user", "CACHE_ROOT" => "/mnt/cache", "DOCKER_MAPPINGS" => "",
     "ENABLE_EPISODE_BATCHING" => "False", "EPISODE_BATCH_SIZE" => "30",
     "EPISODE_BATCH_TOLERANCE" => "10", "EPISODE_BATCH_PREFETCH" => "4",
-    "ENABLE_CACHE_EVICTION" => "True", "ENABLE_NEXT_SEASON_PREFETCH" => "False"
+    "ENABLE_CACHE_EVICTION" => "True", "ENABLE_NEXT_SEASON_PREFETCH" => "False",
+    "ENABLE_FLUSH_SCHEDULE" => "False", "FLUSH_SCHEDULE_TIME" => "04:00",
+    "FLUSH_SCOPE" => "tracked", "FLUSH_MIN_AGE" => "30"
 ];
+
+$ptc_tracked_file  = "/boot/config/plugins/$ptc_plugin/cached_files.list";
+$ptc_status_file   = "/var/run/plex_to_cache.status.json";
+$ptc_request_file  = "/var/run/plex_to_cache.flush";
+$ptc_daemon_script = "/usr/local/emhttp/plugins/$ptc_plugin/plex_to_cache.py";
+
+/** The tracked list as path => timestamp. */
+function ptc_tracked() {
+    global $ptc_tracked_file;
+    $out = [];
+    if (!is_readable($ptc_tracked_file)) return $out;
+    foreach (file($ptc_tracked_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+        $pos = strrpos($line, '|');
+        if ($pos === false) { $out[$line] = 0; continue; }
+        $out[substr($line, 0, $pos)] = (float)substr($line, $pos + 1);
+    }
+    return $out;
+}
 
 if (file_exists($ptc_cfg_file)) {
     $ptc_loaded = parse_ini_file($ptc_cfg_file);
@@ -176,6 +196,69 @@ if (isset($_GET['action']) && $_GET['action'] === 'service') {
     exit;
 }
 
+// AJAX: What is on the cache right now, biggest first.
+if (isset($_GET['action']) && $_GET['action'] === 'cached') {
+    header('Content-Type: application/json');
+
+    $streaming = [];
+    if (is_readable($ptc_status_file)) {
+        $st = json_decode(@file_get_contents($ptc_status_file), true);
+        if (is_array($st) && !empty($st['active_streams'])) $streaming = $st['active_streams'];
+    }
+
+    $files = [];
+    $total = 0;
+    foreach (ptc_tracked() as $path => $ts) {
+        $size = @filesize($path);
+        if ($size === false) continue;   // gone since the list was written
+        $total += $size;
+        $files[] = [
+            'path'   => $path,
+            'name'   => basename($path),
+            'dir'    => dirname($path),
+            'size'   => $size,
+            'age'    => $ts > 0 ? time() - (int)$ts : null,
+            'in_use' => in_array(basename($path), $streaming, true),
+        ];
+    }
+    usort($files, function ($a, $b) { return $b['size'] - $a['size']; });
+
+    echo json_encode(['success' => true, 'files' => $files, 'total_bytes' => $total]);
+    exit;
+}
+
+// AJAX: Move one file back to the array.
+if (isset($_GET['action']) && $_GET['action'] === 'uncache') {
+    ptc_require_csrf();
+    header('Content-Type: application/json');
+
+    $path = $_GET['path'] ?? '';
+    // Only ever a file the plugin itself put on the cache. The daemon filters
+    // the same way, so this is a better error message rather than the guard.
+    if (!array_key_exists($path, ptc_tracked())) {
+        echo json_encode(['success' => false, 'message' => 'Not a file this plugin cached']);
+        exit;
+    }
+
+    $running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($ptc_pid_file), 0);
+    if ($running) {
+        if (@file_put_contents($ptc_request_file, "move\n" . $path . "\n") === false) {
+            echo json_encode(['success' => false, 'message' => 'Cannot write the request file']);
+            exit;
+        }
+        echo json_encode(['success' => true, 'message' => 'Queued: ' . basename($path)]);
+    } else {
+        if (!file_exists($ptc_daemon_script)) {
+            echo json_encode(['success' => false, 'message' => 'plex_to_cache.py not found']);
+            exit;
+        }
+        shell_exec('nohup python3 ' . escapeshellarg($ptc_daemon_script) . ' --flush '
+                   . escapeshellarg($path) . ' >> /var/log/plex_to_cache.log 2>&1 &');
+        echo json_encode(['success' => true, 'message' => 'Moving ' . basename($path)]);
+    }
+    exit;
+}
+
 // AJAX: Move everything this plugin cached back to the array.
 // With the service running the request goes through a marker file, so the
 // daemon does the work and keeps protecting files that are being streamed.
@@ -186,19 +269,19 @@ if (isset($_GET['action']) && $_GET['action'] === 'flush') {
 
     $running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($ptc_pid_file), 0);
     if ($running) {
-        if (@file_put_contents('/var/run/plex_to_cache.flush', '') === false) {
+        if (@file_put_contents($ptc_request_file, "flush\n") === false) {
             echo json_encode(['success' => false, 'message' => 'Cannot write the request file']);
             exit;
         }
         echo json_encode(['success' => true,
                           'message' => 'Flush requested - the service picks it up within a few seconds.']);
     } else {
-        $script = '/usr/local/emhttp/plugins/plex_to_cache/plex_to_cache.py';
-        if (!file_exists($script)) {
+        if (!file_exists($ptc_daemon_script)) {
             echo json_encode(['success' => false, 'message' => 'plex_to_cache.py not found']);
             exit;
         }
-        shell_exec('nohup python3 ' . escapeshellarg($script) . ' --flush >> /var/log/plex_to_cache.log 2>&1 &');
+        shell_exec('nohup python3 ' . escapeshellarg($ptc_daemon_script)
+                   . ' --flush >> /var/log/plex_to_cache.log 2>&1 &');
         echo json_encode(['success' => true,
                           'message' => 'Service is stopped - running the flush directly. Watch the log.']);
     }
@@ -483,6 +566,20 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
             <div class="form-pair"><label data-tooltip="Maximum cache usage percentage before stopping copies.">Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= htmlspecialchars($ptc_cfg['CACHE_MAX_USAGE']) ?>" class="ptc-input input-small"><span class="unit-label">%</span></div></div>
             <div class="form-pair"><label data-tooltip="When the cache is full, move the oldest plugin-cached files back to the array to make room for the currently streamed media (LRU). Active streams and queued files are never evicted.">Eviction:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_CACHE_EVICTION" value="True" <?= $ptc_cfg['ENABLE_CACHE_EVICTION'] == 'True' ? 'checked' : '' ?>></div></div>
 
+            <div class="section-header"><i class="fa fa-download"></i> Empty Cache</div>
+            <div class="form-pair"><label data-tooltip="What the Empty Cache button and the schedule move back. 'Cached by plugin' touches only files this plugin copied to the cache. 'All media in mapped folders' also moves files it never touched. Only the folders from your docker mappings are walked - a separate downloads share on the same pool is not touched.">Scope:</label><div class="form-input-wrapper"><select name="FLUSH_SCOPE" class="ptc-input" onchange="updateFlushUI()">
+                <option value="tracked" <?= $ptc_cfg['FLUSH_SCOPE'] != 'all' ? 'selected' : '' ?>>Cached by plugin</option>
+                <option value="all" <?= $ptc_cfg['FLUSH_SCOPE'] == 'all' ? 'selected' : '' ?>>All media in mapped folders</option>
+            </select></div></div>
+            <div id="flush-scope-note" class="cleanup-options" style="display: <?= $ptc_cfg['FLUSH_SCOPE'] == 'all' ? 'block' : 'none' ?>;">
+                <div class="radio-desc" style="margin-bottom:8px;">Also moves files this plugin never copied. A file whose name already exists on the array is skipped rather than overwritten, and anything modified recently is left alone so a file still being written is not moved out from under the process writing it.</div>
+                <div class="form-pair"><label data-tooltip="Leave files alone that were modified within this many minutes. Guards against moving a file that is still being written.">Min. Age:</label><div class="form-input-wrapper"><input type="number" min="0" name="FLUSH_MIN_AGE" value="<?= htmlspecialchars($ptc_cfg['FLUSH_MIN_AGE']) ?>" class="ptc-input input-small"><span class="unit-label">min</span></div></div>
+            </div>
+            <div class="form-pair"><label data-tooltip="Empty the cache once a day at a fixed time. If the server was off or the service stopped at that time, it runs at the next opportunity instead of skipping the day.">Daily:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_FLUSH_SCHEDULE" value="True" <?= $ptc_cfg['ENABLE_FLUSH_SCHEDULE'] == 'True' ? 'checked' : '' ?> onchange="updateFlushUI()"></div></div>
+            <div id="flush-schedule-options" class="cleanup-options" style="display: <?= $ptc_cfg['ENABLE_FLUSH_SCHEDULE'] == 'True' ? 'block' : 'none' ?>;">
+                <div class="form-pair"><label data-tooltip="Time of day, 24-hour HH:MM.">At:</label><div class="form-input-wrapper"><input type="text" name="FLUSH_SCHEDULE_TIME" value="<?= htmlspecialchars($ptc_cfg['FLUSH_SCHEDULE_TIME']) ?>" placeholder="04:00" pattern="[0-2][0-9]:[0-5][0-9]" class="ptc-input input-small"></div></div>
+            </div>
+
             <div class="section-header"><i class="fa fa-list-ol"></i> Season Batching</div>
             <div class="form-pair"><label data-tooltip="For long seasons, only cache one batch of episodes at a time instead of the whole season. The next batch starts copying automatically shortly before the current one runs out.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_EPISODE_BATCHING" value="True" <?= $ptc_cfg['ENABLE_EPISODE_BATCHING'] == 'True' ? 'checked' : '' ?> onchange="updateBatchingUI()"></div></div>
             <div id="batching-options" class="cleanup-options" style="display: <?= $ptc_cfg['ENABLE_EPISODE_BATCHING'] == 'True' ? 'block' : 'none' ?>;">
@@ -524,6 +621,23 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
 
         <div class="ptc-col" id="ptc-col-log">
             <div style="display:flex; justify-content:space-between; align-items:center;">
+                <h3 style="margin:0; color:var(--primary-blue); font-size: 18px;"><i class="fa fa-hdd-o"></i> On Cache</h3>
+                <button type="button" onclick="refreshCached();" style="padding: 4px 10px; font-size: 12px; cursor: pointer;">Refresh</button>
+            </div>
+            <div id="ptc-cached-summary" style="color:#888; font-size:12px; margin-top:6px;"></div>
+            <div id="ptc-cached-wrap" style="max-height:240px; overflow:auto; margin:6px 0 18px;">
+                <table id="ptc-cached-table" style="width:100%; font-size:12px; border-collapse:collapse;">
+                    <thead><tr>
+                        <th style="text-align:left; padding:4px 6px;">File</th>
+                        <th style="text-align:right; padding:4px 6px; white-space:nowrap;">Size</th>
+                        <th style="text-align:right; padding:4px 6px; white-space:nowrap;">Cached</th>
+                        <th style="padding:4px 6px;"></th>
+                    </tr></thead>
+                    <tbody><tr><td colspan="4" style="padding:6px; color:#888;">Loading...</td></tr></tbody>
+                </table>
+            </div>
+
+            <div style="display:flex; justify-content:space-between; align-items:center;">
                 <h3 style="margin:0; color:var(--primary-blue); font-size: 18px;"><i class="fa fa-terminal"></i> Live Log Output</h3>
                 <div style="display:flex; align-items:center; gap:8px;">
                     <label style="color:#888; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:4px;">
@@ -547,6 +661,8 @@ function refreshLog() {
     });
 }
 
+var ptcLastFlushSeen = 0;
+
 function refreshStatus() {
     $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=status', function(d) {
         if (!d || !d.updated) { $('#ptc-status').text(''); return; }
@@ -561,7 +677,14 @@ function refreshStatus() {
         if (f && f.active) {
             parts.push('Emptying cache: ' + f.done + '/' + f.total
                        + ' (' + (f.bytes / 1073741824).toFixed(1) + ' GB)'
-                       + (f.skipped ? ', ' + f.skipped + ' in use' : ''));
+                       + (f.skipped ? ', ' + f.skipped + ' in use' : '')
+                       + (f.conflicts ? ', ' + f.conflicts + ' name clashes' : ''));
+        }
+        // Refresh the file list once when a flush finishes, so it does not sit
+        // there showing files that are no longer on the cache.
+        if (f && f.finished && f.finished !== ptcLastFlushSeen) {
+            ptcLastFlushSeen = f.finished;
+            refreshCached();
         }
         // Keep the button disabled across the gap between requesting a flush
         // and the service picking the request up, or the next poll would
@@ -571,6 +694,75 @@ function refreshStatus() {
 
         $('#ptc-status').text(parts.join('  ·  '));
     }).fail(function() { $('#ptc-status').text(''); });
+}
+
+function ptcBytes(n) {
+    if (n >= 1073741824) return (n / 1073741824).toFixed(1) + ' GB';
+    if (n >= 1048576)    return (n / 1048576).toFixed(0) + ' MB';
+    return (n / 1024).toFixed(0) + ' KB';
+}
+
+function ptcAge(sec) {
+    if (sec === null || sec === undefined) return '';
+    if (sec < 3600)  return Math.round(sec / 60) + ' min ago';
+    if (sec < 86400) return Math.round(sec / 3600) + ' h ago';
+    return Math.round(sec / 86400) + ' d ago';
+}
+
+function refreshCached() {
+    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=cached', function(d) {
+        var body = $('#ptc-cached-table tbody').empty();
+        if (!d || !d.success || !d.files.length) {
+            $('#ptc-cached-summary').text('Nothing cached by the plugin right now.');
+            body.append('<tr><td colspan="4" style="padding:6px; color:#888;">Empty</td></tr>');
+            return;
+        }
+        $('#ptc-cached-summary').text(d.files.length + ' files  ·  ' + ptcBytes(d.total_bytes));
+        d.files.forEach(function(f) {
+            var tr = $('<tr>').css('border-top', '1px solid #222');
+            $('<td>').css({padding: '4px 6px', wordBreak: 'break-all'})
+                     .attr('title', f.dir)
+                     .text(f.name + (f.in_use ? '  (streaming)' : '')).appendTo(tr);
+            $('<td>').css({padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap'})
+                     .text(ptcBytes(f.size)).appendTo(tr);
+            $('<td>').css({padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap', color: '#888'})
+                     .text(ptcAge(f.age)).appendTo(tr);
+            var cell = $('<td>').css({padding: '4px 6px', textAlign: 'right'}).appendTo(tr);
+            $('<button type="button" class="btn-test">')
+                .text(f.in_use ? 'in use' : 'To Array')
+                .prop('disabled', f.in_use)
+                .attr('title', f.in_use
+                      ? 'This file is being streamed - it stays on the cache'
+                      : 'Move this file back to the array')
+                .on('click', function() { uncacheFile(f.path, this); })
+                .appendTo(cell);
+            body.append(tr);
+        });
+    }).fail(function() {
+        $('#ptc-cached-summary').text('Could not read the cached-files list.');
+    });
+}
+
+function uncacheFile(path, btn) {
+    btn.disabled = true;
+    btn.textContent = '...';
+    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=uncache'
+              + '&path=' + encodeURIComponent(path)
+              + '&csrf_token=' + encodeURIComponent(ptcToken), function(data) {
+        $('#ptc-status').text(data.message || '');
+        if (!data.success) { btn.disabled = false; btn.textContent = 'To Array'; }
+        setTimeout(refreshCached, 4000);
+    }).fail(function() {
+        $('#ptc-status').text('Request failed.');
+        btn.disabled = false;
+        btn.textContent = 'To Array';
+    });
+}
+
+function updateFlushUI() {
+    var scope = $('select[name="FLUSH_SCOPE"]').val();
+    $('#flush-scope-note').toggle(scope === 'all');
+    $('#flush-schedule-options').toggle($('input[name="ENABLE_FLUSH_SCHEDULE"]').is(':checked'));
 }
 
 var ptcFlushRequested = 0;
@@ -691,8 +883,15 @@ $(function() {
     if (document.getElementById('mapping_table').rows.length <= 1) { addMappingRow(); }
     refreshLog();
     refreshStatus();
+    refreshCached();
+    updateFlushUI();
     setInterval(function() {
         if ($('#auto_refresh').is(':checked')) { refreshLog(); refreshStatus(); }
     }, 3000);
+    // The file list changes far less often than the log, and reading it walks
+    // the tracked list on flash - once a minute is plenty.
+    setInterval(function() {
+        if ($('#auto_refresh').is(':checked')) { refreshCached(); }
+    }, 60000);
 });
 </script>

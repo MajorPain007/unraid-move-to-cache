@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.08.08a">
+<!ENTITY version   "2026.08.08b">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,6 +13,67 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
+### 2026.08.08b
+- Watched detection is now session-based: a title counts as watched
+  when playback reached >= 90% in the session that just ended, instead
+  of relying on the server's lifetime "played" flag (Plex viewCount /
+  Emby-Jellyfin Played). Fixes rewatches being deleted from cache
+  immediately after starting them. Server flags remain as fallback.
+- Cache eviction (new option, default on): when the cache is full, the
+  oldest plugin-cached files are moved back to the array (LRU) to make
+  room for the currently streamed media. Active streams and queued
+  files are never evicted.
+- Next-season prefetch (new option, default off): near the end of a
+  season the beginning of the next season is pre-cached (first batch
+  if batching is enabled, otherwise the whole season).
+- Startup consistency check: stale entries are removed from the
+  tracked-files list and orphaned plugin copies (cache duplicates of
+  array files inside the mapped media dirs) are re-adopted, so cleanup
+  keeps working after crashes. Only mapped media directories are
+  scanned — appdata/system shares and cache-only files are untouched.
+- Proper log rotation: the daemon now logs through Python's
+  RotatingFileHandler (5 MB, one backup), which also rotates while
+  running. Previously rotation only happened at start and the stdout
+  redirect kept writing to the renamed file.
+- Live status in the web UI: the daemon writes a JSON snapshot
+  (/var/run/plex_to_cache.status.json) with cached files/GB, cache
+  usage, copy queue, current transfer and active streams; the settings
+  page shows it above the log.
+- Manual stop is now persistent: stopping the service (UI or CLI)
+  writes a flag to the flash drive, and the service stays stopped
+  across reboots, plugin updates and settings saves until you start
+  it again. New rc verbs: `boot` (autostart, respects the flag) and
+  `condrestart` (restart only if enabled).
+- Season batching (new option): long seasons are now cached in
+  configurable batches (default 30 episodes) instead of all at once.
+  The next batch starts copying automatically when only a few episodes
+  (default 4, i.e. around episode 26/30) remain in the current batch.
+  A buffer/tolerance (default 10) makes sure seasons that only
+  slightly exceed the batch size (e.g. 36 episodes) are still cached
+  completely in one go.
+- rsync robustness: stderr is now captured and logged (previously
+  discarded, so "exit status 23" gave no clue what went wrong).
+  Transfers are retried up to 3 times and resume via --partial.
+  Exit codes 23/24 are tolerated when the destination file is
+  verifiably complete (size check) — exit 23 is often only a
+  chown/chmod/utime problem on FUSE shares although the data copied
+  fine; permissions are re-applied afterwards anyway.
+- Copies run in a background worker thread: a multi-gigabyte transfer
+  no longer blocks stream detection and cleanup for minutes.
+- Failed copies get a 5-minute cooldown instead of being retried
+  (and logged) every poll interval.
+- Log lines now carry timestamps.
+- Free-space check now also verifies the specific file fits on the
+  cache (with 512 MB headroom), not just the max-usage percentage.
+- Episode detection additionally understands the "1x05" naming style
+  (without matching resolutions like 1920x1080).
+- Hardened config parsing: invalid numeric settings fall back to
+  their defaults instead of 0 (which could busy-loop the daemon);
+  poll interval is clamped to >= 1 s.
+- Clean shutdown: SIGTERM/SIGINT now also terminates a running rsync
+  instead of leaving it orphaned; tracked-files list is written
+  atomically.
+
 ### 2026.08.08a
 - Watched detection is now session-based: a title counts as watched
   when playback reached >= 90% in the session that just ended, instead
@@ -344,8 +405,28 @@ $ptc_cfg = [
     "ARRAY_ROOT" => "/mnt/user", "CACHE_ROOT" => "/mnt/cache", "DOCKER_MAPPINGS" => "",
     "ENABLE_EPISODE_BATCHING" => "False", "EPISODE_BATCH_SIZE" => "30",
     "EPISODE_BATCH_TOLERANCE" => "10", "EPISODE_BATCH_PREFETCH" => "4",
-    "ENABLE_CACHE_EVICTION" => "True", "ENABLE_NEXT_SEASON_PREFETCH" => "False"
+    "ENABLE_CACHE_EVICTION" => "True", "ENABLE_NEXT_SEASON_PREFETCH" => "False",
+    "ENABLE_FLUSH_SCHEDULE" => "False", "FLUSH_SCHEDULE_TIME" => "04:00",
+    "FLUSH_SCOPE" => "tracked", "FLUSH_MIN_AGE" => "30"
 ];
+
+$ptc_tracked_file  = "/boot/config/plugins/$ptc_plugin/cached_files.list";
+$ptc_status_file   = "/var/run/plex_to_cache.status.json";
+$ptc_request_file  = "/var/run/plex_to_cache.flush";
+$ptc_daemon_script = "/usr/local/emhttp/plugins/$ptc_plugin/plex_to_cache.py";
+
+/** The tracked list as path => timestamp. */
+function ptc_tracked() {
+    global $ptc_tracked_file;
+    $out = [];
+    if (!is_readable($ptc_tracked_file)) return $out;
+    foreach (file($ptc_tracked_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+        $pos = strrpos($line, '|');
+        if ($pos === false) { $out[$line] = 0; continue; }
+        $out[substr($line, 0, $pos)] = (float)substr($line, $pos + 1);
+    }
+    return $out;
+}
 
 if (file_exists($ptc_cfg_file)) {
     $ptc_loaded = parse_ini_file($ptc_cfg_file);
@@ -505,6 +586,69 @@ if (isset($_GET['action']) && $_GET['action'] === 'service') {
     exit;
 }
 
+// AJAX: What is on the cache right now, biggest first.
+if (isset($_GET['action']) && $_GET['action'] === 'cached') {
+    header('Content-Type: application/json');
+
+    $streaming = [];
+    if (is_readable($ptc_status_file)) {
+        $st = json_decode(@file_get_contents($ptc_status_file), true);
+        if (is_array($st) && !empty($st['active_streams'])) $streaming = $st['active_streams'];
+    }
+
+    $files = [];
+    $total = 0;
+    foreach (ptc_tracked() as $path => $ts) {
+        $size = @filesize($path);
+        if ($size === false) continue;   // gone since the list was written
+        $total += $size;
+        $files[] = [
+            'path'   => $path,
+            'name'   => basename($path),
+            'dir'    => dirname($path),
+            'size'   => $size,
+            'age'    => $ts > 0 ? time() - (int)$ts : null,
+            'in_use' => in_array(basename($path), $streaming, true),
+        ];
+    }
+    usort($files, function ($a, $b) { return $b['size'] - $a['size']; });
+
+    echo json_encode(['success' => true, 'files' => $files, 'total_bytes' => $total]);
+    exit;
+}
+
+// AJAX: Move one file back to the array.
+if (isset($_GET['action']) && $_GET['action'] === 'uncache') {
+    ptc_require_csrf();
+    header('Content-Type: application/json');
+
+    $path = $_GET['path'] ?? '';
+    // Only ever a file the plugin itself put on the cache. The daemon filters
+    // the same way, so this is a better error message rather than the guard.
+    if (!array_key_exists($path, ptc_tracked())) {
+        echo json_encode(['success' => false, 'message' => 'Not a file this plugin cached']);
+        exit;
+    }
+
+    $running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($ptc_pid_file), 0);
+    if ($running) {
+        if (@file_put_contents($ptc_request_file, "move\n" . $path . "\n") === false) {
+            echo json_encode(['success' => false, 'message' => 'Cannot write the request file']);
+            exit;
+        }
+        echo json_encode(['success' => true, 'message' => 'Queued: ' . basename($path)]);
+    } else {
+        if (!file_exists($ptc_daemon_script)) {
+            echo json_encode(['success' => false, 'message' => 'plex_to_cache.py not found']);
+            exit;
+        }
+        shell_exec('nohup python3 ' . escapeshellarg($ptc_daemon_script) . ' --flush '
+                   . escapeshellarg($path) . ' >> /var/log/plex_to_cache.log 2>&1 &');
+        echo json_encode(['success' => true, 'message' => 'Moving ' . basename($path)]);
+    }
+    exit;
+}
+
 // AJAX: Move everything this plugin cached back to the array.
 // With the service running the request goes through a marker file, so the
 // daemon does the work and keeps protecting files that are being streamed.
@@ -515,19 +659,19 @@ if (isset($_GET['action']) && $_GET['action'] === 'flush') {
 
     $running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($ptc_pid_file), 0);
     if ($running) {
-        if (@file_put_contents('/var/run/plex_to_cache.flush', '') === false) {
+        if (@file_put_contents($ptc_request_file, "flush\n") === false) {
             echo json_encode(['success' => false, 'message' => 'Cannot write the request file']);
             exit;
         }
         echo json_encode(['success' => true,
                           'message' => 'Flush requested - the service picks it up within a few seconds.']);
     } else {
-        $script = '/usr/local/emhttp/plugins/plex_to_cache/plex_to_cache.py';
-        if (!file_exists($script)) {
+        if (!file_exists($ptc_daemon_script)) {
             echo json_encode(['success' => false, 'message' => 'plex_to_cache.py not found']);
             exit;
         }
-        shell_exec('nohup python3 ' . escapeshellarg($script) . ' --flush >> /var/log/plex_to_cache.log 2>&1 &');
+        shell_exec('nohup python3 ' . escapeshellarg($ptc_daemon_script)
+                   . ' --flush >> /var/log/plex_to_cache.log 2>&1 &');
         echo json_encode(['success' => true,
                           'message' => 'Service is stopped - running the flush directly. Watch the log.']);
     }
@@ -812,6 +956,20 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
             <div class="form-pair"><label data-tooltip="Maximum cache usage percentage before stopping copies.">Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= htmlspecialchars($ptc_cfg['CACHE_MAX_USAGE']) ?>" class="ptc-input input-small"><span class="unit-label">%</span></div></div>
             <div class="form-pair"><label data-tooltip="When the cache is full, move the oldest plugin-cached files back to the array to make room for the currently streamed media (LRU). Active streams and queued files are never evicted.">Eviction:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_CACHE_EVICTION" value="True" <?= $ptc_cfg['ENABLE_CACHE_EVICTION'] == 'True' ? 'checked' : '' ?>></div></div>
 
+            <div class="section-header"><i class="fa fa-download"></i> Empty Cache</div>
+            <div class="form-pair"><label data-tooltip="What the Empty Cache button and the schedule move back. 'Cached by plugin' touches only files this plugin copied to the cache. 'All media in mapped folders' also moves files it never touched. Only the folders from your docker mappings are walked - a separate downloads share on the same pool is not touched.">Scope:</label><div class="form-input-wrapper"><select name="FLUSH_SCOPE" class="ptc-input" onchange="updateFlushUI()">
+                <option value="tracked" <?= $ptc_cfg['FLUSH_SCOPE'] != 'all' ? 'selected' : '' ?>>Cached by plugin</option>
+                <option value="all" <?= $ptc_cfg['FLUSH_SCOPE'] == 'all' ? 'selected' : '' ?>>All media in mapped folders</option>
+            </select></div></div>
+            <div id="flush-scope-note" class="cleanup-options" style="display: <?= $ptc_cfg['FLUSH_SCOPE'] == 'all' ? 'block' : 'none' ?>;">
+                <div class="radio-desc" style="margin-bottom:8px;">Also moves files this plugin never copied. A file whose name already exists on the array is skipped rather than overwritten, and anything modified recently is left alone so a file still being written is not moved out from under the process writing it.</div>
+                <div class="form-pair"><label data-tooltip="Leave files alone that were modified within this many minutes. Guards against moving a file that is still being written.">Min. Age:</label><div class="form-input-wrapper"><input type="number" min="0" name="FLUSH_MIN_AGE" value="<?= htmlspecialchars($ptc_cfg['FLUSH_MIN_AGE']) ?>" class="ptc-input input-small"><span class="unit-label">min</span></div></div>
+            </div>
+            <div class="form-pair"><label data-tooltip="Empty the cache once a day at a fixed time. If the server was off or the service stopped at that time, it runs at the next opportunity instead of skipping the day.">Daily:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_FLUSH_SCHEDULE" value="True" <?= $ptc_cfg['ENABLE_FLUSH_SCHEDULE'] == 'True' ? 'checked' : '' ?> onchange="updateFlushUI()"></div></div>
+            <div id="flush-schedule-options" class="cleanup-options" style="display: <?= $ptc_cfg['ENABLE_FLUSH_SCHEDULE'] == 'True' ? 'block' : 'none' ?>;">
+                <div class="form-pair"><label data-tooltip="Time of day, 24-hour HH:MM.">At:</label><div class="form-input-wrapper"><input type="text" name="FLUSH_SCHEDULE_TIME" value="<?= htmlspecialchars($ptc_cfg['FLUSH_SCHEDULE_TIME']) ?>" placeholder="04:00" pattern="[0-2][0-9]:[0-5][0-9]" class="ptc-input input-small"></div></div>
+            </div>
+
             <div class="section-header"><i class="fa fa-list-ol"></i> Season Batching</div>
             <div class="form-pair"><label data-tooltip="For long seasons, only cache one batch of episodes at a time instead of the whole season. The next batch starts copying automatically shortly before the current one runs out.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_EPISODE_BATCHING" value="True" <?= $ptc_cfg['ENABLE_EPISODE_BATCHING'] == 'True' ? 'checked' : '' ?> onchange="updateBatchingUI()"></div></div>
             <div id="batching-options" class="cleanup-options" style="display: <?= $ptc_cfg['ENABLE_EPISODE_BATCHING'] == 'True' ? 'block' : 'none' ?>;">
@@ -853,6 +1011,23 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
 
         <div class="ptc-col" id="ptc-col-log">
             <div style="display:flex; justify-content:space-between; align-items:center;">
+                <h3 style="margin:0; color:var(--primary-blue); font-size: 18px;"><i class="fa fa-hdd-o"></i> On Cache</h3>
+                <button type="button" onclick="refreshCached();" style="padding: 4px 10px; font-size: 12px; cursor: pointer;">Refresh</button>
+            </div>
+            <div id="ptc-cached-summary" style="color:#888; font-size:12px; margin-top:6px;"></div>
+            <div id="ptc-cached-wrap" style="max-height:240px; overflow:auto; margin:6px 0 18px;">
+                <table id="ptc-cached-table" style="width:100%; font-size:12px; border-collapse:collapse;">
+                    <thead><tr>
+                        <th style="text-align:left; padding:4px 6px;">File</th>
+                        <th style="text-align:right; padding:4px 6px; white-space:nowrap;">Size</th>
+                        <th style="text-align:right; padding:4px 6px; white-space:nowrap;">Cached</th>
+                        <th style="padding:4px 6px;"></th>
+                    </tr></thead>
+                    <tbody><tr><td colspan="4" style="padding:6px; color:#888;">Loading...</td></tr></tbody>
+                </table>
+            </div>
+
+            <div style="display:flex; justify-content:space-between; align-items:center;">
                 <h3 style="margin:0; color:var(--primary-blue); font-size: 18px;"><i class="fa fa-terminal"></i> Live Log Output</h3>
                 <div style="display:flex; align-items:center; gap:8px;">
                     <label style="color:#888; font-size:12px; cursor:pointer; display:flex; align-items:center; gap:4px;">
@@ -876,6 +1051,8 @@ function refreshLog() {
     });
 }
 
+var ptcLastFlushSeen = 0;
+
 function refreshStatus() {
     $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=status', function(d) {
         if (!d || !d.updated) { $('#ptc-status').text(''); return; }
@@ -890,7 +1067,14 @@ function refreshStatus() {
         if (f && f.active) {
             parts.push('Emptying cache: ' + f.done + '/' + f.total
                        + ' (' + (f.bytes / 1073741824).toFixed(1) + ' GB)'
-                       + (f.skipped ? ', ' + f.skipped + ' in use' : ''));
+                       + (f.skipped ? ', ' + f.skipped + ' in use' : '')
+                       + (f.conflicts ? ', ' + f.conflicts + ' name clashes' : ''));
+        }
+        // Refresh the file list once when a flush finishes, so it does not sit
+        // there showing files that are no longer on the cache.
+        if (f && f.finished && f.finished !== ptcLastFlushSeen) {
+            ptcLastFlushSeen = f.finished;
+            refreshCached();
         }
         // Keep the button disabled across the gap between requesting a flush
         // and the service picking the request up, or the next poll would
@@ -900,6 +1084,75 @@ function refreshStatus() {
 
         $('#ptc-status').text(parts.join('  ·  '));
     }).fail(function() { $('#ptc-status').text(''); });
+}
+
+function ptcBytes(n) {
+    if (n >= 1073741824) return (n / 1073741824).toFixed(1) + ' GB';
+    if (n >= 1048576)    return (n / 1048576).toFixed(0) + ' MB';
+    return (n / 1024).toFixed(0) + ' KB';
+}
+
+function ptcAge(sec) {
+    if (sec === null || sec === undefined) return '';
+    if (sec < 3600)  return Math.round(sec / 60) + ' min ago';
+    if (sec < 86400) return Math.round(sec / 3600) + ' h ago';
+    return Math.round(sec / 86400) + ' d ago';
+}
+
+function refreshCached() {
+    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=cached', function(d) {
+        var body = $('#ptc-cached-table tbody').empty();
+        if (!d || !d.success || !d.files.length) {
+            $('#ptc-cached-summary').text('Nothing cached by the plugin right now.');
+            body.append('<tr><td colspan="4" style="padding:6px; color:#888;">Empty</td></tr>');
+            return;
+        }
+        $('#ptc-cached-summary').text(d.files.length + ' files  ·  ' + ptcBytes(d.total_bytes));
+        d.files.forEach(function(f) {
+            var tr = $('<tr>').css('border-top', '1px solid #222');
+            $('<td>').css({padding: '4px 6px', wordBreak: 'break-all'})
+                     .attr('title', f.dir)
+                     .text(f.name + (f.in_use ? '  (streaming)' : '')).appendTo(tr);
+            $('<td>').css({padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap'})
+                     .text(ptcBytes(f.size)).appendTo(tr);
+            $('<td>').css({padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap', color: '#888'})
+                     .text(ptcAge(f.age)).appendTo(tr);
+            var cell = $('<td>').css({padding: '4px 6px', textAlign: 'right'}).appendTo(tr);
+            $('<button type="button" class="btn-test">')
+                .text(f.in_use ? 'in use' : 'To Array')
+                .prop('disabled', f.in_use)
+                .attr('title', f.in_use
+                      ? 'This file is being streamed - it stays on the cache'
+                      : 'Move this file back to the array')
+                .on('click', function() { uncacheFile(f.path, this); })
+                .appendTo(cell);
+            body.append(tr);
+        });
+    }).fail(function() {
+        $('#ptc-cached-summary').text('Could not read the cached-files list.');
+    });
+}
+
+function uncacheFile(path, btn) {
+    btn.disabled = true;
+    btn.textContent = '...';
+    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=uncache'
+              + '&path=' + encodeURIComponent(path)
+              + '&csrf_token=' + encodeURIComponent(ptcToken), function(data) {
+        $('#ptc-status').text(data.message || '');
+        if (!data.success) { btn.disabled = false; btn.textContent = 'To Array'; }
+        setTimeout(refreshCached, 4000);
+    }).fail(function() {
+        $('#ptc-status').text('Request failed.');
+        btn.disabled = false;
+        btn.textContent = 'To Array';
+    });
+}
+
+function updateFlushUI() {
+    var scope = $('select[name="FLUSH_SCOPE"]').val();
+    $('#flush-scope-note').toggle(scope === 'all');
+    $('#flush-schedule-options').toggle($('input[name="ENABLE_FLUSH_SCHEDULE"]').is(':checked'));
 }
 
 var ptcFlushRequested = 0;
@@ -1020,9 +1273,16 @@ $(function() {
     if (document.getElementById('mapping_table').rows.length <= 1) { addMappingRow(); }
     refreshLog();
     refreshStatus();
+    refreshCached();
+    updateFlushUI();
     setInterval(function() {
         if ($('#auto_refresh').is(':checked')) { refreshLog(); refreshStatus(); }
     }, 3000);
+    // The file list changes far less often than the log, and reading it walks
+    // the tracked list on flash - once a minute is plenty.
+    setInterval(function() {
+        if ($('#auto_refresh').is(':checked')) { refreshCached(); }
+    }, 60000);
 });
 </script>
 ]]>
@@ -1077,6 +1337,7 @@ from pathlib import Path
 
 CONFIG_FILE   = "/boot/config/plugins/plex_to_cache/settings.cfg"
 TRACKED_FILES = "/boot/config/plugins/plex_to_cache/cached_files.list"
+FLUSH_LAST    = "/boot/config/plugins/plex_to_cache/flush_last.txt"  # date of the last scheduled flush
 LOCK_FILE     = "/tmp/media_cache_cleaner.lock"
 LOG_FILE      = "/var/log/plex_to_cache.log"
 LOG_MAX_BYTES = 5 * 1024 * 1024   # rotate when the log reaches 5 MB
@@ -1112,6 +1373,15 @@ DEFAULT_CONFIG = {
     "ENABLE_CACHE_EVICTION": "True",
     # Near the end of a season, pre-cache the beginning of the next season.
     "ENABLE_NEXT_SEASON_PREFETCH": "False",
+    # Move everything back to the array once a day at a fixed time.
+    "ENABLE_FLUSH_SCHEDULE": "False",
+    "FLUSH_SCHEDULE_TIME": "04:00",
+    # "tracked" = only what this plugin copied to the cache.
+    # "all"     = every media file in the mapped folders, whether this plugin
+    #             put it there or not. Still only the mapped folders - a
+    #             separate downloads share on the same pool is not touched.
+    "FLUSH_SCOPE": "tracked",
+    "FLUSH_MIN_AGE": "30",   # minutes; a file touched more recently is left alone
 }
 
 # Runtime state
@@ -1135,7 +1405,7 @@ _shutting_down  = threading.Event()
 # Manual flush state, shown in the web UI while it runs
 _flush_lock  = threading.Lock()
 _flush_state = {"active": False, "total": 0, "done": 0, "bytes": 0,
-                "skipped": 0, "failed": 0, "finished": 0}
+                "skipped": 0, "conflicts": 0, "failed": 0, "finished": 0}
 
 # SSL context: Plex / Emby / Jellyfin typically use self-signed certs on the
 # local network, so we intentionally skip verification. This is equivalent
@@ -1645,15 +1915,53 @@ def evict_oldest_cached(needed_size):
 
     return cache_has_room_for(needed_size)
 
-def flush_cache_to_array():
-    """Move every file this plugin cached back to the array.
+def _cache_media_files(min_age_seconds):
+    """Every media file sitting in the mapped cache folders, whether this
+    plugin put it there or not.
+
+    Used by the "all" flush scope. Only the folders from the docker mappings
+    are walked, so a media file that landed there without this plugin is
+    included, while a separate downloads share, appdata, system and every
+    other share on the same pool are left alone.
+
+    Files modified within min_age_seconds are left alone: something still
+    being written into the media folder - an import in progress, say - would
+    otherwise be moved out from under the process writing it.
+    """
+    found = {}
+    cache_root = cfg("CACHE_ROOT")
+    now = time.time()
+
+    for cache_dir in sorted(_protected_cache_dirs()):
+        if cache_dir == cache_root or not os.path.isdir(cache_dir):
+            continue
+        for root, _dirs, files in os.walk(cache_dir):
+            for name in files:
+                path = os.path.join(root, name)
+                if not is_media_file(name) or is_excluded(path):
+                    continue
+                try:
+                    st = os.stat(path)
+                except OSError:
+                    continue
+                if now - st.st_mtime < min_age_seconds:
+                    continue
+                found[path] = st.st_mtime
+    return found
+
+def flush_cache_to_array(only=None, label="Flush"):
+    """Move files this plugin cached back to the array.
 
     Same operation as eviction, but unconditional and not bounded by
-    EVICT_MAX_FILES. Two kinds of file are deliberately left on the cache:
-    those belonging to an active stream, and those queued for copying - moving
-    either would pull the file out from under a running playback. They are
-    counted as skipped so the UI can say so rather than silently doing less
-    than "all".
+    EVICT_MAX_FILES. With `only` set to a collection of cache paths, just those
+    are moved - that is the per-file button in the UI. The restriction is
+    applied by filtering the tracked list, so a path that is not tracked simply
+    never matches and an untrusted request cannot reach an arbitrary file.
+
+    Two kinds of file are deliberately left on the cache: those belonging to an
+    active stream, and those queued for copying - moving either would pull the
+    file out from under a running playback. They are counted as skipped so the
+    UI can say so rather than silently doing less than "all".
 
     Only tracked files are touched. Anything else on the cache pool - a fresh
     download waiting for the mover, appdata, files the user put there on
@@ -1661,32 +1969,53 @@ def flush_cache_to_array():
     """
     with _flush_lock:
         if _flush_state["active"]:
-            log("Flush already running", warn=True)
+            log(f"[{label}] Another flush is already running", warn=True)
             return
         _flush_state.update(active=True, total=0, done=0, bytes=0,
-                            skipped=0, failed=0, finished=0)
+                            skipped=0, conflicts=0, failed=0, finished=0)
 
     try:
         with _pending_lock:
             pending = {array_to_cache(p) for p in _pending_copies}
         protected = set(active_cache_paths) | pending
 
-        tracked = sorted(TrackedFiles.load().items(), key=lambda kv: kv[1])
-        with _flush_lock:
-            _flush_state["total"] = len(tracked)
+        tracked_map = TrackedFiles.load()
+        candidates = dict(tracked_map)
+        if cfg("FLUSH_SCOPE").lower() == "all":
+            extra = _cache_media_files(cfg("FLUSH_MIN_AGE", as_int=True) * 60)
+            for path, ts in extra.items():
+                candidates.setdefault(path, ts)
 
-        log(f"[Flush] Moving {len(tracked)} cached file(s) back to the array")
+        entries = sorted(candidates.items(), key=lambda kv: kv[1])
+        if only is not None:
+            wanted = set(only)
+            entries = [item for item in entries if item[0] in wanted]
+        with _flush_lock:
+            _flush_state["total"] = len(entries)
+
+        log(f"[{label}] Moving {len(entries)} cached file(s) back to the array")
         last_write = 0.0
 
-        for cache_path, _ts in tracked:
+        for cache_path, _ts in entries:
             if _shutting_down.is_set():
-                log("[Flush] Aborted: service is shutting down", warn=True)
+                log(f"[{label}] Aborted: service is shutting down", warn=True)
                 break
 
             if cache_path in protected:
                 with _flush_lock:
                     _flush_state["skipped"] += 1
-                log(f"[Flush] Skipping {os.path.basename(cache_path)} (in use)")
+                log(f"[{label}] Skipping {os.path.basename(cache_path)} (in use)")
+                continue
+
+            # A tracked file is a copy of the array original by construction, so
+            # move_file_to_array may drop the cache side when both exist. An
+            # untracked file is not: a same-named file on the array is a
+            # different file, and deleting the cache copy would lose it.
+            if cache_path not in tracked_map and os.path.exists(cache_to_array(cache_path)):
+                with _flush_lock:
+                    _flush_state["conflicts"] += 1
+                log(f"[{label}] Skipping {os.path.basename(cache_path)}: a different file "
+                    f"of that name is already on the array", warn=True)
                 continue
 
             ok, _deleted, size = move_file_to_array(cache_path)
@@ -1704,31 +2033,73 @@ def flush_cache_to_array():
                 last_write = time.time()
 
         with _flush_lock:
-            done, moved, skipped, failed = (_flush_state["done"], _flush_state["bytes"],
-                                            _flush_state["skipped"], _flush_state["failed"])
-        summary = f"[Flush] Done: {done} file(s), {moved / 1073741824:.1f} GB moved"
+            done, moved     = _flush_state["done"], _flush_state["bytes"]
+            skipped, failed = _flush_state["skipped"], _flush_state["failed"]
+            conflicts       = _flush_state["conflicts"]
+        summary = f"[{label}] Done: {done} file(s), {moved / 1073741824:.1f} GB moved"
         if skipped:
             summary += f", {skipped} skipped (in use)"
+        if conflicts:
+            summary += f", {conflicts} skipped (name clash on the array)"
         if failed:
             summary += f", {failed} failed"
         log(summary, error=bool(failed))
 
     except Exception as e:
-        log(f"Flush error: {e}", error=True)
+        log(f"[{label}] Error: {e}", error=True)
     finally:
         with _flush_lock:
             _flush_state["active"] = False
             _flush_state["finished"] = int(time.time())
         write_status()
 
-def start_flush():
+def start_flush(only=None, label="Flush"):
     """Run a flush in the background so the main loop keeps tracking streams -
     it is what keeps the in-use protection current while the flush runs."""
     with _flush_lock:
         if _flush_state["active"]:
             return False
-    threading.Thread(target=flush_cache_to_array, name="flush", daemon=True).start()
+    threading.Thread(target=flush_cache_to_array, name="flush", daemon=True,
+                     kwargs={"only": only, "label": label}).start()
     return True
+
+def scheduled_flush_due():
+    """True when a daily flush is configured and today's has not run yet.
+
+    Due-based rather than clock-based: if the server was off or the service
+    stopped at the configured time, the flush runs at the next check instead of
+    being skipped for the day.
+    """
+    if not cfg("ENABLE_FLUSH_SCHEDULE", as_bool=True):
+        return False
+
+    raw = cfg("FLUSH_SCHEDULE_TIME").strip()
+    try:
+        hh, mm = (int(part) for part in raw.split(":", 1))
+    except (ValueError, TypeError):
+        log(f"Flush schedule: {raw!r} is not a HH:MM time - schedule ignored", error=True)
+        return False
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        log(f"Flush schedule: {raw!r} is out of range - schedule ignored", error=True)
+        return False
+
+    now = time.localtime()
+    if (now.tm_hour, now.tm_min) < (hh, mm):
+        return False
+
+    try:
+        last = Path(FLUSH_LAST).read_text().strip()
+    except OSError:
+        last = ""
+    return last != time.strftime("%Y-%m-%d", now)
+
+def mark_scheduled_flush_done():
+    """Record today's date before starting, so a failing flush is not retried
+    on every pass through the loop."""
+    try:
+        Path(FLUSH_LAST).write_text(time.strftime("%Y-%m-%d") + "\n")
+    except OSError as e:
+        log(f"Cannot record the scheduled flush date: {e}", warn=True)
 
 def copy_file_to_cache(array_path):
     """Copy file from array to cache. Runs inside the copy worker thread."""
@@ -2236,14 +2607,27 @@ def run_daemon():
     while True:
         try:
             # The web UI cannot talk to this process directly, so it drops a
-            # marker file. Remove it first: if the flush then fails, the user
-            # gets an error instead of a request that retriggers forever.
+            # marker file: an op line, optionally followed by one path per line
+            # for the per-file buttons. Read it, then remove it before acting -
+            # if the flush fails, the user gets an error rather than a request
+            # that retriggers on every pass.
             if os.path.exists(FLUSH_REQUEST):
+                try:
+                    request = [ln.strip() for ln in Path(FLUSH_REQUEST).read_text().splitlines()]
+                except OSError:
+                    request = []
                 try:
                     os.remove(FLUSH_REQUEST)
                 except OSError:
                     pass
-                start_flush()
+                paths = ([ln for ln in request[1:] if ln]
+                         if request and request[0].lower() == "move" else None)
+                start_flush(only=paths, label="Move" if paths else "Flush")
+
+            if scheduled_flush_due():
+                mark_scheduled_flush_done()
+                log(f"[Schedule] Daily flush at {cfg('FLUSH_SCHEDULE_TIME')} is due")
+                start_flush(label="Schedule")
 
             streams = get_active_streams()
             active_paths = set()
@@ -2407,7 +2791,8 @@ if __name__ == "__main__":
         except Exception as e:
             log(f"Cannot determine active streams: {e} - flushing everything", warn=True)
 
-        flush_cache_to_array()
+        paths = [a for a in sys.argv[1:] if a != "--flush"]
+        flush_cache_to_array(only=paths or None, label="Move" if paths else "Flush")
     else:
         run_daemon()
 ]]>
@@ -2610,7 +2995,7 @@ chmod +x /etc/rc.d/rc.plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache condrestart
-echo "Plex to Cache v2026.08.08a installed successfully."
+echo "Plex to Cache v2026.08.08b installed successfully."
 ]]>
 </INLINE>
 </FILE>

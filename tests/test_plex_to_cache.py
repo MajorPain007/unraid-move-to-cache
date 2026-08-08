@@ -7,7 +7,10 @@ bug that was actually found, so a regression fails loudly instead of quietly
 moving somebody's files to the wrong place.
 """
 import os
+import shutil
 import sys
+import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -217,6 +220,71 @@ class FlushCacheToArray(unittest.TestCase):
         ptc._flush_state["active"] = True
         moved = self._run_flush({"/mnt/cache/Media/a.mkv": 1.0})
         self.assertEqual(moved, [], "the running flush owns the tracked list")
+
+
+class FlushScopeAll(unittest.TestCase):
+    """Scope "all" widens the flush to files the plugin never copied - but only
+    inside the mapped media folders."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.cache = os.path.join(self.tmp, "cache")
+        self.array = os.path.join(self.tmp, "user")
+        self.media = os.path.join(self.cache, "Media")
+        os.makedirs(self.media)
+        os.makedirs(os.path.join(self.cache, "downloads"))
+        configure(ARRAY_ROOT=self.array, CACHE_ROOT=self.cache,
+                  DOCKER_MAPPINGS="/media:" + os.path.join(self.array, "Media"),
+                  FLUSH_SCOPE="all", FLUSH_MIN_AGE="30")
+        ptc._flush_state.update(active=False, total=0, done=0, bytes=0,
+                                skipped=0, conflicts=0, failed=0, finished=0)
+        ptc.active_cache_paths = set()
+        ptc._pending_copies = set()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _make(self, path, age_seconds=7200):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text("x")
+        stamp = time.time() - age_seconds
+        os.utime(path, (stamp, stamp))
+        return path
+
+    def test_only_mapped_folders_are_walked(self):
+        wanted = self._make(os.path.join(self.media, "film.mkv"))
+        self._make(os.path.join(self.cache, "downloads", "linux.mkv"))
+
+        found = ptc._cache_media_files(30 * 60)
+
+        self.assertIn(wanted, found)
+        self.assertEqual(len(found), 1,
+                         "a separate downloads share must stay out of scope")
+
+    def test_recently_written_files_are_left_alone(self):
+        self._make(os.path.join(self.media, "importing.mkv"), age_seconds=60)
+        old = self._make(os.path.join(self.media, "settled.mkv"))
+
+        found = ptc._cache_media_files(30 * 60)
+
+        self.assertEqual(list(found), [old])
+
+    def test_untracked_file_is_not_deleted_when_the_name_exists_on_the_array(self):
+        """move_file_to_array drops the cache copy when the destination exists.
+        That is right for a plugin copy and wrong for anything else."""
+        cache_file = self._make(os.path.join(self.media, "clash.mkv"))
+        self._make(os.path.join(self.array, "Media", "clash.mkv"))
+
+        moved = []
+        with mock.patch.object(ptc.TrackedFiles, 'load', return_value={}), \
+             mock.patch.object(ptc, 'move_file_to_array',
+                               side_effect=lambda p, track=True: (moved.append(p), (True, False, 0))[1]), \
+             mock.patch.object(ptc, 'write_status'):
+            ptc.flush_cache_to_array()
+
+        self.assertEqual(moved, [], "the untracked file must not be moved")
+        self.assertEqual(ptc._flush_state["conflicts"], 1)
+        self.assertTrue(os.path.exists(cache_file))
 
 
 if __name__ == "__main__":
