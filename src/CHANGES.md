@@ -1,3 +1,12 @@
+### 2026.08.08.11
+
+- The top right corner of the list stayed black. The pinned column inherits the
+  row colour, but a header cell inherits from its row, and only the header cells
+  carried a colour - so that one cell inherited transparency. The colour sits on
+  the header row now.
+- Hidden entries such as .Recycle.Bin are no longer listed. They are not media
+  and moving them to the array serves no purpose.
+
 ### 2026.08.08.10
 
 - The list header was darker than the rows below it, so it read as a black band

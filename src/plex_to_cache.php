@@ -347,7 +347,9 @@ if (isset($_GET['action']) && $_GET['action'] === 'browse') {
             exit;
         }
         foreach ($entries as $entry) {
-            if ($entry === '.' || $entry === '..') continue;
+            // Skips . and .. along with .Recycle.Bin and other hidden entries -
+            // none of them are media the plugin has any business moving.
+            if ($entry === '' || $entry[0] === '.') continue;
             $full = $here . '/' . $entry;
             if (is_dir($full)) {
                 $dirs[] = ['path' => $full, 'name' => $entry] + $summarise($full);
@@ -562,6 +564,7 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
 /* Rows carry their own background so the pinned cell can inherit it. Without
    an explicit colour it would have to hardcode one, and that is what left a
    black block behind the button while the rest of the row was grey. */
+#ptc-cached-table thead tr        { background: #262b33; }
 #ptc-cached-table thead th        { background: #262b33; color: #c3ccd4;
                                     border-bottom: 1px solid #333a44; }
 #ptc-cached-table tbody tr        { background: #17191d; }
