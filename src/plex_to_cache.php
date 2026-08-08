@@ -549,18 +549,27 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
     min-width: 0;
 }
 
-/* A long name stays on one line and this box scrolls sideways; the page does
-   not, because .ptc-col may shrink. The action column sticks to the right edge
-   so the button never has to be scrolled to. It needs an opaque background, or
-   the name slides underneath it. */
+/* The table always fits its box: fixed columns, and a long name is truncated
+   with the full path in the row's tooltip. Nothing scrolls sideways, so nothing
+   has to be pinned to the right edge - and a pinned column covers whatever sits
+   beneath it, which is what hid the On cache column. */
 #ptc-cached-wrap {
-    overflow: auto;
+    overflow-x: hidden;
+    overflow-y: auto;
     border: 1px solid #333;
     border-radius: 8px;
     background: var(--bg-dark);
 }
+#ptc-cached-table { table-layout: fixed; }
 #ptc-cached-table td:first-child,
-#ptc-cached-table th:first-child { white-space: nowrap; }
+#ptc-cached-table th:first-child {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+/* Unraid styles bare buttons uppercase and letter-spaced, which makes the label
+   wider than the column reserved for it. */
+#ptc-cached-table .btn-test { text-transform: none; letter-spacing: 0; }
 /* Rows carry their own background so the pinned cell can inherit it. Without
    an explicit colour it would have to hardcode one, and that is what left a
    black block behind the button while the rest of the row was grey. */
@@ -581,19 +590,15 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
        without this the row passing behind it reads as a glitch. */
     box-shadow: 0 4px 6px -3px rgba(0, 0, 0, .65);
 }
-/* ../ is an ordinary first row. Pinning it made rows scroll underneath and cut
-   their buttons in half, and it bought nothing: the path above the box is
-   always visible and jumps to any level in one click. */
 #ptc-cached-table thead th { height: 26px; box-sizing: border-box; }
-#ptc-cached-table td:last-child,
-#ptc-cached-table th:last-child {
+/* ../ stays under the header. It carries the same shadow: without an edge, a
+   row scrolling behind it reads as a fault rather than as a layer. */
+#ptc-cached-table tbody tr.ptc-up-row td {
     position: sticky;
-    right: 0;
-    background: inherit;
-    box-shadow: -6px 0 6px -4px rgba(0, 0, 0, .55);
-    z-index: 1;
+    top: 26px;
+    z-index: 2;
+    box-shadow: 0 4px 6px -3px rgba(0, 0, 0, .65);
 }
-#ptc-cached-table thead th:last-child { z-index: 4; }
 /* A full-width message row is both the first and the last cell, so it would
    otherwise stick to the edge and refuse to wrap. */
 #ptc-cached-table td[colspan] {
@@ -613,7 +618,7 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
 #ptc-crumbs a:hover { text-decoration: underline; }
 #ptc-cached-table col.ptc-c-size { width: 74px; }
 #ptc-cached-table col.ptc-c-note { width: 92px; }
-#ptc-cached-table col.ptc-c-act  { width: 78px; }
+#ptc-cached-table col.ptc-c-act  { width: 96px; }
 
 #ptc-col-log {
     display: flex;
@@ -974,8 +979,9 @@ function ptcRow(body, o) {
     }
     cell.appendTo(tr);
     $('<td>').css({padding: '5px 6px', textAlign: 'right'}).text(o.size || '').appendTo(tr);
-    $('<td>').css({padding: '5px 6px', textAlign: 'right', color: '#98a5b2'})
-             .text(o.note || '').appendTo(tr);
+    $('<td>').css({padding: '5px 6px', textAlign: 'right', color: '#98a5b2',
+                   whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'})
+             .attr('title', o.note || '').text(o.note || '').appendTo(tr);
     var last = $('<td>').css({padding: '5px 6px', textAlign: 'right'}).appendTo(tr);
     if (o.move) {
         $('<button type="button" class="btn-test">')

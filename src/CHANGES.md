@@ -1,3 +1,14 @@
+### 2026.08.08.13
+
+- "On cache" was hidden behind the To Array column. Pinning a column to the
+  right edge means it covers whatever is underneath, and the table was wider
+  than its box. The table now always fits: fixed columns, and a long name is
+  shortened with the full path in the row's tooltip. Nothing scrolls sideways,
+  so nothing needs pinning to the right and nothing gets covered.
+- "../" is pinned under the header again, this time with the same shadow the
+  header has. That edge was what was missing: a row passing behind it now reads
+  as passing behind it.
+
 ### 2026.08.08.12
 
 - The pinned "../" row was covering the buttons of the rows scrolling under it.
