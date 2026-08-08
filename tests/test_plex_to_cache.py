@@ -271,8 +271,8 @@ class FlushCacheToArray(unittest.TestCase):
                          "Show2 must not be dragged along by Show")
 
 
-class FlushScopeAll(unittest.TestCase):
-    """Scope "all" widens the flush to files the plugin never copied - but only
+class FlushBeyondTheTrackedList(unittest.TestCase):
+    """An explicit selection reaches files the plugin never copied - but only
     inside the mapped media folders."""
 
     def setUp(self):
@@ -283,8 +283,7 @@ class FlushScopeAll(unittest.TestCase):
         os.makedirs(self.media)
         os.makedirs(os.path.join(self.cache, "downloads"))
         configure(ARRAY_ROOT=self.array, CACHE_ROOT=self.cache,
-                  DOCKER_MAPPINGS="/media:" + os.path.join(self.array, "Media"),
-                  FLUSH_SCOPE="all", FLUSH_MIN_AGE="30")
+                  DOCKER_MAPPINGS="/media:" + os.path.join(self.array, "Media"))
         ptc._flush_state.update(active=False, total=0, done=0, bytes=0,
                                 skipped=0, conflicts=0, failed=0, finished=0)
         ptc.active_cache_paths = set()
@@ -319,11 +318,9 @@ class FlushScopeAll(unittest.TestCase):
         self.assertEqual(list(found), [old])
 
     def test_an_explicit_selection_covers_untracked_media(self):
-        """Clicking To Array on a folder means move it, whatever FLUSH_SCOPE says
-        about the unattended run."""
+        """Clicking To Array on a folder means move it, tracked or not."""
         configure(ARRAY_ROOT=self.array, CACHE_ROOT=self.cache,
-                  DOCKER_MAPPINGS="/media:" + os.path.join(self.array, "Media"),
-                  FLUSH_SCOPE="tracked", FLUSH_MIN_AGE="30")
+                  DOCKER_MAPPINGS="/media:" + os.path.join(self.array, "Media"))
         untracked = self._make(os.path.join(self.media, "Serie", "e1.mkv"))
 
         moved = []
@@ -335,10 +332,9 @@ class FlushScopeAll(unittest.TestCase):
 
         self.assertEqual(moved, [untracked])
 
-    def test_without_a_selection_scope_tracked_still_means_tracked(self):
+    def test_without_a_selection_only_tracked_files_move(self):
         configure(ARRAY_ROOT=self.array, CACHE_ROOT=self.cache,
-                  DOCKER_MAPPINGS="/media:" + os.path.join(self.array, "Media"),
-                  FLUSH_SCOPE="tracked", FLUSH_MIN_AGE="30")
+                  DOCKER_MAPPINGS="/media:" + os.path.join(self.array, "Media"))
         self._make(os.path.join(self.media, "Serie", "e1.mkv"))
 
         moved = []
@@ -348,7 +344,7 @@ class FlushScopeAll(unittest.TestCase):
              mock.patch.object(ptc, 'write_status'):
             ptc.flush_cache_to_array()
 
-        self.assertEqual(moved, [], "the daily run must not sweep up untracked media")
+        self.assertEqual(moved, [], "a bare flush must not sweep up untracked media")
 
     def test_untracked_file_is_not_deleted_when_the_name_exists_on_the_array(self):
         """move_file_to_array drops the cache copy when the destination exists.
@@ -361,7 +357,7 @@ class FlushScopeAll(unittest.TestCase):
              mock.patch.object(ptc, 'move_file_to_array',
                                side_effect=lambda p, track=True: (moved.append(p), (True, False, 0))[1]), \
              mock.patch.object(ptc, 'write_status'):
-            ptc.flush_cache_to_array()
+            ptc.flush_cache_to_array(only=[self.media])
 
         self.assertEqual(moved, [], "the untracked file must not be moved")
         self.assertEqual(ptc._flush_state["conflicts"], 1)

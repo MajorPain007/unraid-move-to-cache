@@ -42,7 +42,6 @@ from pathlib import Path
 
 CONFIG_FILE   = "/boot/config/plugins/plex_to_cache/settings.cfg"
 TRACKED_FILES = "/boot/config/plugins/plex_to_cache/cached_files.list"
-FLUSH_LAST    = "/boot/config/plugins/plex_to_cache/flush_last.txt"  # date of the last scheduled flush
 LOCK_FILE     = "/tmp/media_cache_cleaner.lock"
 LOG_FILE      = "/var/log/plex_to_cache.log"
 LOG_MAX_BYTES = 5 * 1024 * 1024   # rotate when the log reaches 5 MB
@@ -57,6 +56,7 @@ STATUS_FILE          = "/var/run/plex_to_cache.status.json"  # snapshot for the 
 FLUSH_REQUEST        = "/var/run/plex_to_cache.flush"        # web UI asks for a full flush
 STATUS_INTERVAL      = 30         # seconds between status snapshots
 EVICT_MAX_FILES      = 25         # max files moved back per eviction pass
+MOVE_MIN_AGE         = 30 * 60    # a file written this recently is left where it is
 WATCHED_MIN_PROGRESS = 0.90       # session progress at which media counts as watched
 
 DEFAULT_CONFIG = {
@@ -78,15 +78,6 @@ DEFAULT_CONFIG = {
     "ENABLE_CACHE_EVICTION": "True",
     # Near the end of a season, pre-cache the beginning of the next season.
     "ENABLE_NEXT_SEASON_PREFETCH": "False",
-    # Move everything back to the array once a day at a fixed time.
-    "ENABLE_FLUSH_SCHEDULE": "False",
-    "FLUSH_SCHEDULE_TIME": "04:00",
-    # "tracked" = only what this plugin copied to the cache.
-    # "all"     = every media file in the mapped folders, whether this plugin
-    #             put it there or not. Still only the mapped folders - a
-    #             separate downloads share on the same pool is not touched.
-    "FLUSH_SCOPE": "tracked",
-    "FLUSH_MIN_AGE": "30",   # minutes; a file touched more recently is left alone
 }
 
 # Runtime state
@@ -686,11 +677,11 @@ def flush_cache_to_array(only=None, label="Flush"):
 
         tracked_map = TrackedFiles.load()
         candidates = dict(tracked_map)
-        # An explicit selection from the browser means "move this", so it covers
-        # media the plugin never copied. FLUSH_SCOPE decides that question only
-        # for the unattended run, where nobody is looking at what gets picked.
-        if only is not None or cfg("FLUSH_SCOPE").lower() == "all":
-            extra = _cache_media_files(cfg("FLUSH_MIN_AGE", as_int=True) * 60)
+        # An explicit selection means "move this", so it covers media the plugin
+        # never copied. Without one - the bare --flush - only what this plugin
+        # put on the cache is touched.
+        if only is not None:
+            extra = _cache_media_files(MOVE_MIN_AGE)
             for path, ts in extra.items():
                 candidates.setdefault(path, ts)
 
@@ -775,44 +766,6 @@ def start_flush(only=None, label="Flush"):
     threading.Thread(target=flush_cache_to_array, name="flush", daemon=True,
                      kwargs={"only": only, "label": label}).start()
     return True
-
-def scheduled_flush_due():
-    """True when a daily flush is configured and today's has not run yet.
-
-    Due-based rather than clock-based: if the server was off or the service
-    stopped at the configured time, the flush runs at the next check instead of
-    being skipped for the day.
-    """
-    if not cfg("ENABLE_FLUSH_SCHEDULE", as_bool=True):
-        return False
-
-    raw = cfg("FLUSH_SCHEDULE_TIME").strip()
-    try:
-        hh, mm = (int(part) for part in raw.split(":", 1))
-    except (ValueError, TypeError):
-        log(f"Flush schedule: {raw!r} is not a HH:MM time - schedule ignored", error=True)
-        return False
-    if not (0 <= hh <= 23 and 0 <= mm <= 59):
-        log(f"Flush schedule: {raw!r} is out of range - schedule ignored", error=True)
-        return False
-
-    now = time.localtime()
-    if (now.tm_hour, now.tm_min) < (hh, mm):
-        return False
-
-    try:
-        last = Path(FLUSH_LAST).read_text().strip()
-    except OSError:
-        last = ""
-    return last != time.strftime("%Y-%m-%d", now)
-
-def mark_scheduled_flush_done():
-    """Record today's date before starting, so a failing flush is not retried
-    on every pass through the loop."""
-    try:
-        Path(FLUSH_LAST).write_text(time.strftime("%Y-%m-%d") + "\n")
-    except OSError as e:
-        log(f"Cannot record the scheduled flush date: {e}", warn=True)
 
 def copy_file_to_cache(array_path):
     """Copy file from array to cache. Runs inside the copy worker thread."""
@@ -1336,11 +1289,6 @@ def run_daemon():
                 paths = ([ln for ln in request[1:] if ln]
                          if request and request[0].lower() == "move" else None)
                 start_flush(only=paths, label="Move" if paths else "Flush")
-
-            if scheduled_flush_due():
-                mark_scheduled_flush_done()
-                log(f"[Schedule] Daily flush at {cfg('FLUSH_SCHEDULE_TIME')} is due")
-                start_flush(label="Schedule")
 
             streams = get_active_streams()
             active_paths = set()

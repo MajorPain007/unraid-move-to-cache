@@ -1,3 +1,12 @@
+### 2026.08.08.17
+
+- The "Move Back to Array" section is gone, along with the daily schedule and
+  the Scope setting. Auto Cleanup covers the automatic side and the browser
+  covers the rest, so those switches had nothing left to decide.
+- Moving a file or folder from the browser still reaches media the plugin never
+  cached, and still leaves alone anything being streamed, anything written in
+  the last half hour, and anything whose name already exists on the array.
+
 ### 2026.08.08.16
 
 - "Invalid or missing CSRF token" now says which of the two it is. A token that

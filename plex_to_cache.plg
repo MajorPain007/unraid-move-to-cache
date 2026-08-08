@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.08.08.16">
+<!ENTITY version   "2026.08.08.17">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,6 +13,15 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
+### 2026.08.08.17
+
+- The "Move Back to Array" section is gone, along with the daily schedule and
+  the Scope setting. Auto Cleanup covers the automatic side and the browser
+  covers the rest, so those switches had nothing left to decide.
+- Moving a file or folder from the browser still reaches media the plugin never
+  cached, and still leaves alone anything being streamed, anything written in
+  the last half hour, and anything whose name already exists on the array.
+
 ### 2026.08.08.16
 
 - "Invalid or missing CSRF token" now says which of the two it is. A token that
@@ -426,9 +435,7 @@ $ptc_cfg = [
     "ARRAY_ROOT" => "/mnt/user", "CACHE_ROOT" => "/mnt/cache", "DOCKER_MAPPINGS" => "",
     "ENABLE_EPISODE_BATCHING" => "False", "EPISODE_BATCH_SIZE" => "30",
     "EPISODE_BATCH_TOLERANCE" => "10", "EPISODE_BATCH_PREFETCH" => "4",
-    "ENABLE_CACHE_EVICTION" => "True", "ENABLE_NEXT_SEASON_PREFETCH" => "False",
-    "ENABLE_FLUSH_SCHEDULE" => "False", "FLUSH_SCHEDULE_TIME" => "04:00",
-    "FLUSH_SCOPE" => "tracked", "FLUSH_MIN_AGE" => "30"
+    "ENABLE_CACHE_EVICTION" => "True", "ENABLE_NEXT_SEASON_PREFETCH" => "False"
 ];
 
 $ptc_tracked_file  = "/boot/config/plugins/$ptc_plugin/cached_files.list";
@@ -862,8 +869,8 @@ if (isset($_GET['action']) && $_GET['action'] === 'uncache') {
 
     // Clicking To Array on a specific file or folder is an explicit instruction,
     // so it moves whatever media is in there whether this plugin put it on the
-    // cache or not. FLUSH_SCOPE governs the unattended daily run, where the
-    // difference between "what I cached" and "everything" actually matters.
+    // cache or not - a bare --flush from the command line still touches only
+    // what this plugin put there.
     if (is_dir($path)) {
         $under = ptc_media_under($path, PTC_SCAN_CAP);
         $count = count($under['files']);
@@ -1239,20 +1246,6 @@ table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
             <div class="form-pair"><label data-tooltip="Maximum cache usage percentage before stopping copies.">Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= htmlspecialchars($ptc_cfg['CACHE_MAX_USAGE']) ?>" class="ptc-input input-small"><span class="unit-label">%</span></div></div>
             <div class="form-pair"><label data-tooltip="When the cache is full, move the oldest plugin-cached files back to the array to make room for the currently streamed media (LRU). Active streams and queued files are never evicted.">Eviction:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_CACHE_EVICTION" value="True" <?= $ptc_cfg['ENABLE_CACHE_EVICTION'] == 'True' ? 'checked' : '' ?>></div></div>
 
-            <div class="section-header"><i class="fa fa-download"></i> Move Back to Array</div>
-            <div class="form-pair"><label data-tooltip="What the To Array buttons and the daily schedule move back. 'Cached by plugin' touches only files this plugin copied to the cache. 'All media in mapped folders' also moves files it never touched. Only the folders from your docker mappings are walked - a separate downloads share on the same pool is not touched.">Scope:</label><div class="form-input-wrapper"><select name="FLUSH_SCOPE" class="ptc-input" onchange="updateFlushUI()">
-                <option value="tracked" <?= $ptc_cfg['FLUSH_SCOPE'] != 'all' ? 'selected' : '' ?>>Cached by plugin</option>
-                <option value="all" <?= $ptc_cfg['FLUSH_SCOPE'] == 'all' ? 'selected' : '' ?>>All media in mapped folders</option>
-            </select></div></div>
-            <div id="flush-scope-note" class="cleanup-options" style="display: <?= $ptc_cfg['FLUSH_SCOPE'] == 'all' ? 'block' : 'none' ?>;">
-                <div class="radio-desc" style="margin-bottom:8px;">Also moves files this plugin never copied. A file whose name already exists on the array is skipped rather than overwritten, and anything modified recently is left alone so a file still being written is not moved out from under the process writing it.</div>
-                <div class="form-pair"><label data-tooltip="Leave files alone that were modified within this many minutes. Guards against moving a file that is still being written.">Min. Age:</label><div class="form-input-wrapper"><input type="number" min="0" name="FLUSH_MIN_AGE" value="<?= htmlspecialchars($ptc_cfg['FLUSH_MIN_AGE']) ?>" class="ptc-input input-small"><span class="unit-label">min</span></div></div>
-            </div>
-            <div class="form-pair"><label data-tooltip="Empty the cache once a day at a fixed time. If the server was off or the service stopped at that time, it runs at the next opportunity instead of skipping the day.">Daily:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_FLUSH_SCHEDULE" value="True" <?= $ptc_cfg['ENABLE_FLUSH_SCHEDULE'] == 'True' ? 'checked' : '' ?> onchange="updateFlushUI()"></div></div>
-            <div id="flush-schedule-options" class="cleanup-options" style="display: <?= $ptc_cfg['ENABLE_FLUSH_SCHEDULE'] == 'True' ? 'block' : 'none' ?>;">
-                <div class="form-pair"><label data-tooltip="Time of day, 24-hour HH:MM.">At:</label><div class="form-input-wrapper"><input type="text" name="FLUSH_SCHEDULE_TIME" value="<?= htmlspecialchars($ptc_cfg['FLUSH_SCHEDULE_TIME']) ?>" placeholder="04:00" pattern="([01][0-9]|2[0-3]):[0-5][0-9]" class="ptc-input input-small"></div></div>
-            </div>
-
             <div class="section-header"><i class="fa fa-list-ol"></i> Season Batching</div>
             <div class="form-pair"><label data-tooltip="For long seasons, only cache one batch of episodes at a time instead of the whole season. The next batch starts copying automatically shortly before the current one runs out.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_EPISODE_BATCHING" value="True" <?= $ptc_cfg['ENABLE_EPISODE_BATCHING'] == 'True' ? 'checked' : '' ?> onchange="updateBatchingUI()"></div></div>
             <div id="batching-options" class="cleanup-options" style="display: <?= $ptc_cfg['ENABLE_EPISODE_BATCHING'] == 'True' ? 'block' : 'none' ?>;">
@@ -1556,12 +1549,6 @@ function uncacheFile(path, btn) {
     });
 }
 
-function updateFlushUI() {
-    var scope = $('select[name="FLUSH_SCOPE"]').val();
-    $('#flush-scope-note').toggle(scope === 'all');
-    $('#flush-schedule-options').toggle($('input[name="ENABLE_FLUSH_SCHEDULE"]').is(':checked'));
-}
-
 // Unraid exposes csrf_token as a global on its own pages; fall back to the
 // hidden field in the form so the AJAX calls work either way.
 var ptcToken = (typeof csrf_token !== 'undefined' && csrf_token)
@@ -1661,7 +1648,6 @@ $(function() {
     refreshLog();
     refreshStatus();
     refreshCached();
-    updateFlushUI();
     setInterval(function() {
         if ($('#auto_refresh').is(':checked')) { refreshLog(); refreshStatus(); }
     }, 3000);
@@ -1724,7 +1710,6 @@ from pathlib import Path
 
 CONFIG_FILE   = "/boot/config/plugins/plex_to_cache/settings.cfg"
 TRACKED_FILES = "/boot/config/plugins/plex_to_cache/cached_files.list"
-FLUSH_LAST    = "/boot/config/plugins/plex_to_cache/flush_last.txt"  # date of the last scheduled flush
 LOCK_FILE     = "/tmp/media_cache_cleaner.lock"
 LOG_FILE      = "/var/log/plex_to_cache.log"
 LOG_MAX_BYTES = 5 * 1024 * 1024   # rotate when the log reaches 5 MB
@@ -1739,6 +1724,7 @@ STATUS_FILE          = "/var/run/plex_to_cache.status.json"  # snapshot for the 
 FLUSH_REQUEST        = "/var/run/plex_to_cache.flush"        # web UI asks for a full flush
 STATUS_INTERVAL      = 30         # seconds between status snapshots
 EVICT_MAX_FILES      = 25         # max files moved back per eviction pass
+MOVE_MIN_AGE         = 30 * 60    # a file written this recently is left where it is
 WATCHED_MIN_PROGRESS = 0.90       # session progress at which media counts as watched
 
 DEFAULT_CONFIG = {
@@ -1760,15 +1746,6 @@ DEFAULT_CONFIG = {
     "ENABLE_CACHE_EVICTION": "True",
     # Near the end of a season, pre-cache the beginning of the next season.
     "ENABLE_NEXT_SEASON_PREFETCH": "False",
-    # Move everything back to the array once a day at a fixed time.
-    "ENABLE_FLUSH_SCHEDULE": "False",
-    "FLUSH_SCHEDULE_TIME": "04:00",
-    # "tracked" = only what this plugin copied to the cache.
-    # "all"     = every media file in the mapped folders, whether this plugin
-    #             put it there or not. Still only the mapped folders - a
-    #             separate downloads share on the same pool is not touched.
-    "FLUSH_SCOPE": "tracked",
-    "FLUSH_MIN_AGE": "30",   # minutes; a file touched more recently is left alone
 }
 
 # Runtime state
@@ -2368,11 +2345,11 @@ def flush_cache_to_array(only=None, label="Flush"):
 
         tracked_map = TrackedFiles.load()
         candidates = dict(tracked_map)
-        # An explicit selection from the browser means "move this", so it covers
-        # media the plugin never copied. FLUSH_SCOPE decides that question only
-        # for the unattended run, where nobody is looking at what gets picked.
-        if only is not None or cfg("FLUSH_SCOPE").lower() == "all":
-            extra = _cache_media_files(cfg("FLUSH_MIN_AGE", as_int=True) * 60)
+        # An explicit selection means "move this", so it covers media the plugin
+        # never copied. Without one - the bare --flush - only what this plugin
+        # put on the cache is touched.
+        if only is not None:
+            extra = _cache_media_files(MOVE_MIN_AGE)
             for path, ts in extra.items():
                 candidates.setdefault(path, ts)
 
@@ -2457,44 +2434,6 @@ def start_flush(only=None, label="Flush"):
     threading.Thread(target=flush_cache_to_array, name="flush", daemon=True,
                      kwargs={"only": only, "label": label}).start()
     return True
-
-def scheduled_flush_due():
-    """True when a daily flush is configured and today's has not run yet.
-
-    Due-based rather than clock-based: if the server was off or the service
-    stopped at the configured time, the flush runs at the next check instead of
-    being skipped for the day.
-    """
-    if not cfg("ENABLE_FLUSH_SCHEDULE", as_bool=True):
-        return False
-
-    raw = cfg("FLUSH_SCHEDULE_TIME").strip()
-    try:
-        hh, mm = (int(part) for part in raw.split(":", 1))
-    except (ValueError, TypeError):
-        log(f"Flush schedule: {raw!r} is not a HH:MM time - schedule ignored", error=True)
-        return False
-    if not (0 <= hh <= 23 and 0 <= mm <= 59):
-        log(f"Flush schedule: {raw!r} is out of range - schedule ignored", error=True)
-        return False
-
-    now = time.localtime()
-    if (now.tm_hour, now.tm_min) < (hh, mm):
-        return False
-
-    try:
-        last = Path(FLUSH_LAST).read_text().strip()
-    except OSError:
-        last = ""
-    return last != time.strftime("%Y-%m-%d", now)
-
-def mark_scheduled_flush_done():
-    """Record today's date before starting, so a failing flush is not retried
-    on every pass through the loop."""
-    try:
-        Path(FLUSH_LAST).write_text(time.strftime("%Y-%m-%d") + "\n")
-    except OSError as e:
-        log(f"Cannot record the scheduled flush date: {e}", warn=True)
 
 def copy_file_to_cache(array_path):
     """Copy file from array to cache. Runs inside the copy worker thread."""
@@ -3019,11 +2958,6 @@ def run_daemon():
                          if request and request[0].lower() == "move" else None)
                 start_flush(only=paths, label="Move" if paths else "Flush")
 
-            if scheduled_flush_due():
-                mark_scheduled_flush_done()
-                log(f"[Schedule] Daily flush at {cfg('FLUSH_SCHEDULE_TIME')} is due")
-                start_flush(label="Schedule")
-
             streams = get_active_streams()
             active_paths = set()
 
@@ -3390,7 +3324,7 @@ chmod +x /etc/rc.d/rc.plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache condrestart
-echo "Plex to Cache v2026.08.08.16 installed successfully."
+echo "Plex to Cache v2026.08.08.17 installed successfully."
 ]]>
 </INLINE>
 </FILE>

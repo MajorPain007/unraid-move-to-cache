@@ -15,9 +15,7 @@ $ptc_cfg = [
     "ARRAY_ROOT" => "/mnt/user", "CACHE_ROOT" => "/mnt/cache", "DOCKER_MAPPINGS" => "",
     "ENABLE_EPISODE_BATCHING" => "False", "EPISODE_BATCH_SIZE" => "30",
     "EPISODE_BATCH_TOLERANCE" => "10", "EPISODE_BATCH_PREFETCH" => "4",
-    "ENABLE_CACHE_EVICTION" => "True", "ENABLE_NEXT_SEASON_PREFETCH" => "False",
-    "ENABLE_FLUSH_SCHEDULE" => "False", "FLUSH_SCHEDULE_TIME" => "04:00",
-    "FLUSH_SCOPE" => "tracked", "FLUSH_MIN_AGE" => "30"
+    "ENABLE_CACHE_EVICTION" => "True", "ENABLE_NEXT_SEASON_PREFETCH" => "False"
 ];
 
 $ptc_tracked_file  = "/boot/config/plugins/$ptc_plugin/cached_files.list";
@@ -451,8 +449,8 @@ if (isset($_GET['action']) && $_GET['action'] === 'uncache') {
 
     // Clicking To Array on a specific file or folder is an explicit instruction,
     // so it moves whatever media is in there whether this plugin put it on the
-    // cache or not. FLUSH_SCOPE governs the unattended daily run, where the
-    // difference between "what I cached" and "everything" actually matters.
+    // cache or not - a bare --flush from the command line still touches only
+    // what this plugin put there.
     if (is_dir($path)) {
         $under = ptc_media_under($path, PTC_SCAN_CAP);
         $count = count($under['files']);
@@ -828,20 +826,6 @@ table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
             <div class="form-pair"><label data-tooltip="Maximum cache usage percentage before stopping copies.">Max Cache:</label><div class="form-input-wrapper"><input type="number" name="CACHE_MAX_USAGE" value="<?= htmlspecialchars($ptc_cfg['CACHE_MAX_USAGE']) ?>" class="ptc-input input-small"><span class="unit-label">%</span></div></div>
             <div class="form-pair"><label data-tooltip="When the cache is full, move the oldest plugin-cached files back to the array to make room for the currently streamed media (LRU). Active streams and queued files are never evicted.">Eviction:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_CACHE_EVICTION" value="True" <?= $ptc_cfg['ENABLE_CACHE_EVICTION'] == 'True' ? 'checked' : '' ?>></div></div>
 
-            <div class="section-header"><i class="fa fa-download"></i> Move Back to Array</div>
-            <div class="form-pair"><label data-tooltip="What the To Array buttons and the daily schedule move back. 'Cached by plugin' touches only files this plugin copied to the cache. 'All media in mapped folders' also moves files it never touched. Only the folders from your docker mappings are walked - a separate downloads share on the same pool is not touched.">Scope:</label><div class="form-input-wrapper"><select name="FLUSH_SCOPE" class="ptc-input" onchange="updateFlushUI()">
-                <option value="tracked" <?= $ptc_cfg['FLUSH_SCOPE'] != 'all' ? 'selected' : '' ?>>Cached by plugin</option>
-                <option value="all" <?= $ptc_cfg['FLUSH_SCOPE'] == 'all' ? 'selected' : '' ?>>All media in mapped folders</option>
-            </select></div></div>
-            <div id="flush-scope-note" class="cleanup-options" style="display: <?= $ptc_cfg['FLUSH_SCOPE'] == 'all' ? 'block' : 'none' ?>;">
-                <div class="radio-desc" style="margin-bottom:8px;">Also moves files this plugin never copied. A file whose name already exists on the array is skipped rather than overwritten, and anything modified recently is left alone so a file still being written is not moved out from under the process writing it.</div>
-                <div class="form-pair"><label data-tooltip="Leave files alone that were modified within this many minutes. Guards against moving a file that is still being written.">Min. Age:</label><div class="form-input-wrapper"><input type="number" min="0" name="FLUSH_MIN_AGE" value="<?= htmlspecialchars($ptc_cfg['FLUSH_MIN_AGE']) ?>" class="ptc-input input-small"><span class="unit-label">min</span></div></div>
-            </div>
-            <div class="form-pair"><label data-tooltip="Empty the cache once a day at a fixed time. If the server was off or the service stopped at that time, it runs at the next opportunity instead of skipping the day.">Daily:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_FLUSH_SCHEDULE" value="True" <?= $ptc_cfg['ENABLE_FLUSH_SCHEDULE'] == 'True' ? 'checked' : '' ?> onchange="updateFlushUI()"></div></div>
-            <div id="flush-schedule-options" class="cleanup-options" style="display: <?= $ptc_cfg['ENABLE_FLUSH_SCHEDULE'] == 'True' ? 'block' : 'none' ?>;">
-                <div class="form-pair"><label data-tooltip="Time of day, 24-hour HH:MM.">At:</label><div class="form-input-wrapper"><input type="text" name="FLUSH_SCHEDULE_TIME" value="<?= htmlspecialchars($ptc_cfg['FLUSH_SCHEDULE_TIME']) ?>" placeholder="04:00" pattern="([01][0-9]|2[0-3]):[0-5][0-9]" class="ptc-input input-small"></div></div>
-            </div>
-
             <div class="section-header"><i class="fa fa-list-ol"></i> Season Batching</div>
             <div class="form-pair"><label data-tooltip="For long seasons, only cache one batch of episodes at a time instead of the whole season. The next batch starts copying automatically shortly before the current one runs out.">Enable:</label><div class="form-input-wrapper"><input type="checkbox" name="ENABLE_EPISODE_BATCHING" value="True" <?= $ptc_cfg['ENABLE_EPISODE_BATCHING'] == 'True' ? 'checked' : '' ?> onchange="updateBatchingUI()"></div></div>
             <div id="batching-options" class="cleanup-options" style="display: <?= $ptc_cfg['ENABLE_EPISODE_BATCHING'] == 'True' ? 'block' : 'none' ?>;">
@@ -1145,12 +1129,6 @@ function uncacheFile(path, btn) {
     });
 }
 
-function updateFlushUI() {
-    var scope = $('select[name="FLUSH_SCOPE"]').val();
-    $('#flush-scope-note').toggle(scope === 'all');
-    $('#flush-schedule-options').toggle($('input[name="ENABLE_FLUSH_SCHEDULE"]').is(':checked'));
-}
-
 // Unraid exposes csrf_token as a global on its own pages; fall back to the
 // hidden field in the form so the AJAX calls work either way.
 var ptcToken = (typeof csrf_token !== 'undefined' && csrf_token)
@@ -1250,7 +1228,6 @@ $(function() {
     refreshLog();
     refreshStatus();
     refreshCached();
-    updateFlushUI();
     setInterval(function() {
         if ($('#auto_refresh').is(':checked')) { refreshLog(); refreshStatus(); }
     }, 3000);
