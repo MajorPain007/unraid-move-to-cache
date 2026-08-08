@@ -26,92 +26,28 @@ php_code = read(SRC / "plex_to_cache.php")
 page     = read(SRC / "plex_to_cache.page")
 rc       = read(SRC / "rc.plex_to_cache")
 
-# Determine version
+# Determine version. Format is YYYY.MM.DD.NN - Unraid compares versions to
+# decide whether an update is available, and a stray format makes that ordering
+# unpredictable.
 version_arg = sys.argv[1] if len(sys.argv) > 1 else None
 if version_arg is None and PLG.exists():
     m = re.search(r'<!ENTITY version\s+"([^"]+)"', read(PLG))
-    version_arg = m.group(1) if m else "2026.04.24a"
-version = version_arg or "2026.04.24a"
+    version_arg = m.group(1) if m else None
+if not version_arg:
+    sys.exit("No version given and none found in the .plg - pass one, e.g. 2026.08.08.01")
+version = version_arg
+if not re.fullmatch(r"\d{4}\.\d{2}\.\d{2}\.\d+", version):
+    sys.exit(f"Version {version!r} must look like YYYY.MM.DD.NN")
 
-# CHANGES section — preserved if present in current .plg + new entry prepended
-new_entry = f"""### {version}
-- Watched detection is now session-based: a title counts as watched
-  when playback reached >= 90% in the session that just ended, instead
-  of relying on the server's lifetime "played" flag (Plex viewCount /
-  Emby-Jellyfin Played). Fixes rewatches being deleted from cache
-  immediately after starting them. Server flags remain as fallback.
-- Cache eviction (new option, default on): when the cache is full, the
-  oldest plugin-cached files are moved back to the array (LRU) to make
-  room for the currently streamed media. Active streams and queued
-  files are never evicted.
-- Next-season prefetch (new option, default off): near the end of a
-  season the beginning of the next season is pre-cached (first batch
-  if batching is enabled, otherwise the whole season).
-- Startup consistency check: stale entries are removed from the
-  tracked-files list and orphaned plugin copies (cache duplicates of
-  array files inside the mapped media dirs) are re-adopted, so cleanup
-  keeps working after crashes. Only mapped media directories are
-  scanned — appdata/system shares and cache-only files are untouched.
-- Proper log rotation: the daemon now logs through Python's
-  RotatingFileHandler (5 MB, one backup), which also rotates while
-  running. Previously rotation only happened at start and the stdout
-  redirect kept writing to the renamed file.
-- Live status in the web UI: the daemon writes a JSON snapshot
-  (/var/run/plex_to_cache.status.json) with cached files/GB, cache
-  usage, copy queue, current transfer and active streams; the settings
-  page shows it above the log.
-- Manual stop is now persistent: stopping the service (UI or CLI)
-  writes a flag to the flash drive, and the service stays stopped
-  across reboots, plugin updates and settings saves until you start
-  it again. New rc verbs: `boot` (autostart, respects the flag) and
-  `condrestart` (restart only if enabled).
-- Season batching (new option): long seasons are now cached in
-  configurable batches (default 30 episodes) instead of all at once.
-  The next batch starts copying automatically when only a few episodes
-  (default 4, i.e. around episode 26/30) remain in the current batch.
-  A buffer/tolerance (default 10) makes sure seasons that only
-  slightly exceed the batch size (e.g. 36 episodes) are still cached
-  completely in one go.
-- rsync robustness: stderr is now captured and logged (previously
-  discarded, so "exit status 23" gave no clue what went wrong).
-  Transfers are retried up to 3 times and resume via --partial.
-  Exit codes 23/24 are tolerated when the destination file is
-  verifiably complete (size check) — exit 23 is often only a
-  chown/chmod/utime problem on FUSE shares although the data copied
-  fine; permissions are re-applied afterwards anyway.
-- Copies run in a background worker thread: a multi-gigabyte transfer
-  no longer blocks stream detection and cleanup for minutes.
-- Failed copies get a 5-minute cooldown instead of being retried
-  (and logged) every poll interval.
-- Log lines now carry timestamps.
-- Free-space check now also verifies the specific file fits on the
-  cache (with 512 MB headroom), not just the max-usage percentage.
-- Episode detection additionally understands the "1x05" naming style
-  (without matching resolutions like 1920x1080).
-- Hardened config parsing: invalid numeric settings fall back to
-  their defaults instead of 0 (which could busy-loop the daemon);
-  poll interval is clamped to >= 1 s.
-- Clean shutdown: SIGTERM/SIGINT now also terminates a running rsync
-  instead of leaving it orphaned; tracked-files list is written
-  atomically.
+# CHANGES section - a source file, edited by hand.
+# It used to be a hardcoded string here that every build re-stamped with the
+# current version, so four releases shipped identical notes under different
+# numbers and none of them said what had changed.
+changes_body = read(SRC / "CHANGES.md").strip()
+if not changes_body.startswith(f"### {version}"):
+    print(f"  note: src/CHANGES.md does not start with an entry for {version}")
 
-"""
 
-existing_changes = ""
-if PLG.exists():
-    m = re.search(r"<CHANGES>\s*(.*?)\s*</CHANGES>", read(PLG), re.S)
-    if m:
-        existing_changes = m.group(1).strip() + "\n"
-        # drop any prior entry with the same version so re-running this
-        # script doesn't stack duplicates
-        existing_changes = re.sub(
-            rf"### {re.escape(version)}\n(?:(?!^### ).*\n)*",
-            "",
-            existing_changes,
-            flags=re.M,
-        )
-
-changes_body = new_entry + existing_changes
 
 def cdata(s):
     # Nothing in our src files contains the literal "]]>" string, but belt

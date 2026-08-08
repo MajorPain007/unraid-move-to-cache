@@ -693,8 +693,13 @@ def flush_cache_to_array(only=None, label="Flush"):
 
         entries = sorted(candidates.items(), key=lambda kv: kv[1])
         if only is not None:
+            # An entry in `only` is either a file or a folder - the browser
+            # offers a button on a whole season or series. The trailing
+            # separator keeps /Media/Show2 from matching /Media/Show.
             wanted = set(only)
-            entries = [item for item in entries if item[0] in wanted]
+            prefixes = tuple(p.rstrip(os.sep) + os.sep for p in only)
+            entries = [item for item in entries
+                       if item[0] in wanted or item[0].startswith(prefixes)]
         with _flush_lock:
             _flush_state["total"] = len(entries)
 

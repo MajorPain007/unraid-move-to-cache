@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.08.08b">
+<!ENTITY version   "2026.08.08.01">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,190 +13,48 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
+### 2026.08.08.01
+
+- Cache browser: walk the mapped media folders in the web UI, see how much of
+  each folder sits on the cache, and send a single file, one season or a whole
+  series back to the array. Replaces the flat file list.
+- Version numbers now follow YYYY.MM.DD.NN, matching the other plugin.
+- The changelog is a source file again. build_plg.py had a hardcoded entry that
+  every build re-stamped with the current version, so the last four releases all
+  shipped identical notes under different numbers, none of it describing what
+  had actually changed.
+
 ### 2026.08.08b
-- Watched detection is now session-based: a title counts as watched
-  when playback reached >= 90% in the session that just ended, instead
-  of relying on the server's lifetime "played" flag (Plex viewCount /
-  Emby-Jellyfin Played). Fixes rewatches being deleted from cache
-  immediately after starting them. Server flags remain as fallback.
-- Cache eviction (new option, default on): when the cache is full, the
-  oldest plugin-cached files are moved back to the array (LRU) to make
-  room for the currently streamed media. Active streams and queued
-  files are never evicted.
-- Next-season prefetch (new option, default off): near the end of a
-  season the beginning of the next season is pre-cached (first batch
-  if batching is enabled, otherwise the whole season).
-- Startup consistency check: stale entries are removed from the
-  tracked-files list and orphaned plugin copies (cache duplicates of
-  array files inside the mapped media dirs) are re-adopted, so cleanup
-  keeps working after crashes. Only mapped media directories are
-  scanned — appdata/system shares and cache-only files are untouched.
-- Proper log rotation: the daemon now logs through Python's
-  RotatingFileHandler (5 MB, one backup), which also rotates while
-  running. Previously rotation only happened at start and the stdout
-  redirect kept writing to the renamed file.
-- Live status in the web UI: the daemon writes a JSON snapshot
-  (/var/run/plex_to_cache.status.json) with cached files/GB, cache
-  usage, copy queue, current transfer and active streams; the settings
-  page shows it above the log.
-- Manual stop is now persistent: stopping the service (UI or CLI)
-  writes a flag to the flash drive, and the service stays stopped
-  across reboots, plugin updates and settings saves until you start
-  it again. New rc verbs: `boot` (autostart, respects the flag) and
-  `condrestart` (restart only if enabled).
-- Season batching (new option): long seasons are now cached in
-  configurable batches (default 30 episodes) instead of all at once.
-  The next batch starts copying automatically when only a few episodes
-  (default 4, i.e. around episode 26/30) remain in the current batch.
-  A buffer/tolerance (default 10) makes sure seasons that only
-  slightly exceed the batch size (e.g. 36 episodes) are still cached
-  completely in one go.
-- rsync robustness: stderr is now captured and logged (previously
-  discarded, so "exit status 23" gave no clue what went wrong).
-  Transfers are retried up to 3 times and resume via --partial.
-  Exit codes 23/24 are tolerated when the destination file is
-  verifiably complete (size check) — exit 23 is often only a
-  chown/chmod/utime problem on FUSE shares although the data copied
-  fine; permissions are re-applied afterwards anyway.
-- Copies run in a background worker thread: a multi-gigabyte transfer
-  no longer blocks stream detection and cleanup for minutes.
-- Failed copies get a 5-minute cooldown instead of being retried
-  (and logged) every poll interval.
-- Log lines now carry timestamps.
-- Free-space check now also verifies the specific file fits on the
-  cache (with 512 MB headroom), not just the max-usage percentage.
-- Episode detection additionally understands the "1x05" naming style
-  (without matching resolutions like 1920x1080).
-- Hardened config parsing: invalid numeric settings fall back to
-  their defaults instead of 0 (which could busy-loop the daemon);
-  poll interval is clamped to >= 1 s.
-- Clean shutdown: SIGTERM/SIGINT now also terminates a running rsync
-  instead of leaving it orphaned; tracked-files list is written
-  atomically.
+
+- The web UI lists what is on the cache, biggest first, with a button per file
+  to send it back to the array.
+- Daily schedule for emptying the cache (off by default). Due-based: a run
+  missed because the server was off happens at the next opportunity.
+- New Scope setting. "All media in mapped folders" also moves files this plugin
+  never copied, so media that landed on the cache another way does not stay
+  there. A file whose name already exists on the array is skipped rather than
+  overwritten, and recently written files are left alone.
 
 ### 2026.08.08a
-- Watched detection is now session-based: a title counts as watched
-  when playback reached >= 90% in the session that just ended, instead
-  of relying on the server's lifetime "played" flag (Plex viewCount /
-  Emby-Jellyfin Played). Fixes rewatches being deleted from cache
-  immediately after starting them. Server flags remain as fallback.
-- Cache eviction (new option, default on): when the cache is full, the
-  oldest plugin-cached files are moved back to the array (LRU) to make
-  room for the currently streamed media. Active streams and queued
-  files are never evicted.
-- Next-season prefetch (new option, default off): near the end of a
-  season the beginning of the next season is pre-cached (first batch
-  if batching is enabled, otherwise the whole season).
-- Startup consistency check: stale entries are removed from the
-  tracked-files list and orphaned plugin copies (cache duplicates of
-  array files inside the mapped media dirs) are re-adopted, so cleanup
-  keeps working after crashes. Only mapped media directories are
-  scanned — appdata/system shares and cache-only files are untouched.
-- Proper log rotation: the daemon now logs through Python's
-  RotatingFileHandler (5 MB, one backup), which also rotates while
-  running. Previously rotation only happened at start and the stdout
-  redirect kept writing to the renamed file.
-- Live status in the web UI: the daemon writes a JSON snapshot
-  (/var/run/plex_to_cache.status.json) with cached files/GB, cache
-  usage, copy queue, current transfer and active streams; the settings
-  page shows it above the log.
-- Manual stop is now persistent: stopping the service (UI or CLI)
-  writes a flag to the flash drive, and the service stays stopped
-  across reboots, plugin updates and settings saves until you start
-  it again. New rc verbs: `boot` (autostart, respects the flag) and
-  `condrestart` (restart only if enabled).
-- Season batching (new option): long seasons are now cached in
-  configurable batches (default 30 episodes) instead of all at once.
-  The next batch starts copying automatically when only a few episodes
-  (default 4, i.e. around episode 26/30) remain in the current batch.
-  A buffer/tolerance (default 10) makes sure seasons that only
-  slightly exceed the batch size (e.g. 36 episodes) are still cached
-  completely in one go.
-- rsync robustness: stderr is now captured and logged (previously
-  discarded, so "exit status 23" gave no clue what went wrong).
-  Transfers are retried up to 3 times and resume via --partial.
-  Exit codes 23/24 are tolerated when the destination file is
-  verifiably complete (size check) — exit 23 is often only a
-  chown/chmod/utime problem on FUSE shares although the data copied
-  fine; permissions are re-applied afterwards anyway.
-- Copies run in a background worker thread: a multi-gigabyte transfer
-  no longer blocks stream detection and cleanup for minutes.
-- Failed copies get a 5-minute cooldown instead of being retried
-  (and logged) every poll interval.
-- Log lines now carry timestamps.
-- Free-space check now also verifies the specific file fits on the
-  cache (with 512 MB headroom), not just the max-usage percentage.
-- Episode detection additionally understands the "1x05" naming style
-  (without matching resolutions like 1920x1080).
-- Hardened config parsing: invalid numeric settings fall back to
-  their defaults instead of 0 (which could busy-loop the daemon);
-  poll interval is clamped to >= 1 s.
-- Clean shutdown: SIGTERM/SIGINT now also terminates a running rsync
-  instead of leaving it orphaned; tracked-files list is written
-  atomically.
+
+- Empty Cache button: moves everything this plugin cached back to the array.
+  Files being streamed and files still being copied stay put and are reported
+  as skipped.
 
 ### 2026.08.08
-- Watched detection is now session-based: a title counts as watched
-  when playback reached >= 90% in the session that just ended, instead
-  of relying on the server's lifetime "played" flag (Plex viewCount /
-  Emby-Jellyfin Played). Fixes rewatches being deleted from cache
-  immediately after starting them. Server flags remain as fallback.
-- Cache eviction (new option, default on): when the cache is full, the
-  oldest plugin-cached files are moved back to the array (LRU) to make
-  room for the currently streamed media. Active streams and queued
-  files are never evicted.
-- Next-season prefetch (new option, default off): near the end of a
-  season the beginning of the next season is pre-cached (first batch
-  if batching is enabled, otherwise the whole season).
-- Startup consistency check: stale entries are removed from the
-  tracked-files list and orphaned plugin copies (cache duplicates of
-  array files inside the mapped media dirs) are re-adopted, so cleanup
-  keeps working after crashes. Only mapped media directories are
-  scanned — appdata/system shares and cache-only files are untouched.
-- Proper log rotation: the daemon now logs through Python's
-  RotatingFileHandler (5 MB, one backup), which also rotates while
-  running. Previously rotation only happened at start and the stdout
-  redirect kept writing to the renamed file.
-- Live status in the web UI: the daemon writes a JSON snapshot
-  (/var/run/plex_to_cache.status.json) with cached files/GB, cache
-  usage, copy queue, current transfer and active streams; the settings
-  page shows it above the log.
-- Manual stop is now persistent: stopping the service (UI or CLI)
-  writes a flag to the flash drive, and the service stays stopped
-  across reboots, plugin updates and settings saves until you start
-  it again. New rc verbs: `boot` (autostart, respects the flag) and
-  `condrestart` (restart only if enabled).
-- Season batching (new option): long seasons are now cached in
-  configurable batches (default 30 episodes) instead of all at once.
-  The next batch starts copying automatically when only a few episodes
-  (default 4, i.e. around episode 26/30) remain in the current batch.
-  A buffer/tolerance (default 10) makes sure seasons that only
-  slightly exceed the batch size (e.g. 36 episodes) are still cached
-  completely in one go.
-- rsync robustness: stderr is now captured and logged (previously
-  discarded, so "exit status 23" gave no clue what went wrong).
-  Transfers are retried up to 3 times and resume via --partial.
-  Exit codes 23/24 are tolerated when the destination file is
-  verifiably complete (size check) — exit 23 is often only a
-  chown/chmod/utime problem on FUSE shares although the data copied
-  fine; permissions are re-applied afterwards anyway.
-- Copies run in a background worker thread: a multi-gigabyte transfer
-  no longer blocks stream detection and cleanup for minutes.
-- Failed copies get a 5-minute cooldown instead of being retried
-  (and logged) every poll interval.
-- Log lines now carry timestamps.
-- Free-space check now also verifies the specific file fits on the
-  cache (with 512 MB headroom), not just the max-usage percentage.
-- Episode detection additionally understands the "1x05" naming style
-  (without matching resolutions like 1920x1080).
-- Hardened config parsing: invalid numeric settings fall back to
-  their defaults instead of 0 (which could busy-loop the daemon);
-  poll interval is clamped to >= 1 s.
-- Clean shutdown: SIGTERM/SIGINT now also terminates a running rsync
-  instead of leaving it orphaned; tracked-files list is written
-  atomically.
+
+- Fixed files being moved to the wrong place: a cache path was mapped back to
+  the user share instead of the physical array, and docker mappings with a
+  shared prefix could pick the wrong one.
+- rsync no longer uses --inplace, so an interrupted transfer cannot leave a
+  truncated file under the final name.
+- A season finale check that failed to read its folder no longer assumes the
+  season is over and evicts it.
+- CSRF protection on the settings page and its endpoints.
+- Test suite and CI.
 
 ### 2026.07.18
+
 - Watched detection is now session-based: a title counts as watched
   when playback reached >= 90% in the session that just ended, instead
   of relying on the server's lifetime "played" flag (Plex viewCount /
@@ -258,6 +116,7 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
   atomically.
 
 ### 2026.04.24a
+
 - No internet required on boot: requests dependency removed, daemon
   now uses Python's built-in urllib. On Unraid the root filesystem is
   tmpfs — the previous install step downloaded pip and installed
@@ -281,30 +140,36 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
   on start, and waits up to 5 s on SIGTERM before SIGKILL.
 
 ### 2026.01.30l
+
 - Removed: "Move to Array" buttons (clearcache, moveother, moveall) - feature was unstable
 - Simplified: Cleaner codebase without unused CLI actions
 
 ### 2026.01.30g
+
 - Fixed: rsync now uses --inplace (no temp files with random suffixes)
 - Fixed: Files now get correct ownership (nobody:users) and permissions
 - Fixed: No more .filename.mkv.XXXXX temp files left behind
 
 ### 2026.01.30f
+
 - Changed: Removed "Running/Stopped" text, only status dot remains (hover for tooltip)
 - Fixed: Test button now tests current form values BEFORE saving
 
 ### 2026.01.30e
+
 - Fixed: Plugin update now properly overwrites old files (no reinstall needed)
 - Removed: Restart button (less cluttered UI)
 - Changed: Reduced gap between columns (12px instead of 20px)
 - Changed: Adjusted column widths for better balance
 
 ### 2026.01.30d
+
 - Fixed: Test button now properly validates connections using curl with HTTP status codes
 - Fixed: Grid layout - settings columns narrower, log column wider (2fr)
 - Fixed: UI shows proper error messages (No Token, 401 Unauthorized, Connection error)
 
 ### 2026.01.30c
+
 - Added: "Move ALL to Array" button - moves all cache files including plugin-cached media
 - Added: "Move Cached Media to Array" button (renamed from Clear Cache)
 - Changed: All move operations now check /mnt/user0 before deleting (safety check)
@@ -313,18 +178,21 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 - Fixed: Files are moved to array instead of deleted when possible
 
 ### 2026.01.30b
+
 - Added: Cleanup mode selector (None / Smart / Days-based)
 - Added: Days-based cleanup - automatically moves files after X days
 - Changed: Smart cleanup and days-based cleanup are mutually exclusive
 - Note: Files now track when they were cached for days-based cleanup
 
 ### 2026.01.30a
+
 - Added: File tracking system for cached media
 - Added: "Move Other Files to Array" button (moves all non-plugin files to array)
 - Added: Tracked files counter in UI
 - Changed: Clear cache now only removes plugin-cached files
 
 ### 2026.01.30
+
 - Added: Service status indicator with Start/Stop/Restart buttons
 - Added: Connection test buttons for all media servers
 - Added: Clear cache button to remove all cached media
@@ -334,10 +202,12 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 - Fixed: Errors are now logged instead of silently ignored
 
 ### 2025.12.31.12
+
 - Fix: Settings are no longer deleted during update/uninstall (Safe Update)
 - UI: Finalized CSS Grid Layout (25/25/50 split)
 
 ### 2025.12.31.11
+
 - UI: New Layout Ratio (25% Server / 25% Tuning / 50% Log)
 </CHANGES>
 
@@ -414,6 +284,83 @@ $ptc_tracked_file  = "/boot/config/plugins/$ptc_plugin/cached_files.list";
 $ptc_status_file   = "/var/run/plex_to_cache.status.json";
 $ptc_request_file  = "/var/run/plex_to_cache.flush";
 $ptc_daemon_script = "/usr/local/emhttp/plugins/$ptc_plugin/plex_to_cache.py";
+
+/**
+ * The cache-side folders this plugin works in, derived from the docker
+ * mappings exactly like _protected_cache_dirs() in the daemon. Everything the
+ * browser shows and every path the move endpoint accepts has to sit under one
+ * of these - the rest of the cache pool is out of bounds.
+ */
+function ptc_media_roots() {
+    global $ptc_cfg;
+    $cache_root = rtrim($ptc_cfg['CACHE_ROOT'], '/');
+    $array_root = rtrim($ptc_cfg['ARRAY_ROOT'], '/');
+    $roots = [];
+    foreach (explode(';', $ptc_cfg['DOCKER_MAPPINGS']) as $pair) {
+        if (strpos($pair, ':') === false) continue;
+        list(, $host) = explode(':', $pair, 2);
+        $host = rtrim(trim($host), '/');
+        if ($host === '') continue;
+        if (strpos($host, $array_root . '/') === 0) {
+            $roots[] = $cache_root . substr($host, strlen($array_root));
+        } elseif (strpos($host, $cache_root . '/') === 0) {
+            $roots[] = $host;
+        } else {
+            $roots[] = $cache_root . '/' . ltrim($host, '/');
+        }
+    }
+    return array_values(array_unique($roots));
+}
+
+/** True when $path is one of the media roots or sits inside one. */
+function ptc_path_allowed($path) {
+    foreach (ptc_media_roots() as $root) {
+        if ($path === $root || strpos($path, $root . '/') === 0) return true;
+    }
+    return false;
+}
+
+/**
+ * Resolve a browser path. Returns '' when it does not exist or escapes the
+ * media roots, so a ".." in a request cannot walk out of them.
+ */
+function ptc_safe_path($path) {
+    $path = rtrim((string)$path, '/');
+    if ($path === '') return '';
+    $real = @realpath($path);
+    if ($real === false) return '';
+    return ptc_path_allowed($real) ? $real : '';
+}
+
+/** Is this one of the media file types the plugin handles? */
+function ptc_is_media($name) {
+    global $ptc_cfg;
+    foreach (preg_split('/[\s,]+/', $ptc_cfg['MEDIA_FILETYPES']) as $ext) {
+        $ext = trim($ext);
+        if ($ext !== '' && substr_compare($name, $ext, -strlen($ext), strlen($ext), true) === 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/** Media files anywhere under $dir, as path => size. */
+function ptc_media_under($dir) {
+    $out = [];
+    if (!is_dir($dir)) return $out;
+    try {
+        $it = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::LEAVES_ONLY);
+        foreach ($it as $file) {
+            if (!$file->isFile() || !ptc_is_media($file->getFilename())) continue;
+            $out[$file->getPathname()] = $file->getSize();
+        }
+    } catch (Exception $e) {
+        // Unreadable subtree - report what was collected so far
+    }
+    return $out;
+}
 
 /** The tracked list as path => timestamp. */
 function ptc_tracked() {
@@ -586,6 +533,78 @@ if (isset($_GET['action']) && $_GET['action'] === 'service') {
     exit;
 }
 
+// AJAX: Browse one level of the cache media folders.
+// Folders report the total of the media below them, so a whole series or a
+// single season can be judged and moved as one.
+if (isset($_GET['action']) && $_GET['action'] === 'browse') {
+    header('Content-Type: application/json');
+
+    $roots = ptc_media_roots();
+    $streaming = [];
+    if (is_readable($ptc_status_file)) {
+        $st = json_decode(@file_get_contents($ptc_status_file), true);
+        if (is_array($st) && !empty($st['active_streams'])) $streaming = $st['active_streams'];
+    }
+    $tracked = ptc_tracked();
+
+    $want = (string)($_GET['path'] ?? '');
+    $dirs = [];
+    $files = [];
+    $here = '';
+
+    if ($want === '') {
+        // Top level: one entry per mapped folder.
+        foreach ($roots as $root) {
+            if (!is_dir($root)) continue;
+            $under = ptc_media_under($root);
+            $dirs[] = ['path' => $root, 'name' => $root,
+                       'files' => count($under), 'size' => array_sum($under),
+                       'cached' => count(array_intersect_key($under, $tracked))];
+        }
+    } else {
+        $here = ptc_safe_path($want);
+        if ($here === '') {
+            echo json_encode(['success' => false, 'message' => 'Path is outside the mapped media folders']);
+            exit;
+        }
+        $entries = @scandir($here);
+        if ($entries === false) {
+            echo json_encode(['success' => false,
+                              'message' => 'Cannot read ' . $here . ' (' . (posix_geteuid() === 0 ? 'as root' : 'uid ' . posix_geteuid()) . ')']);
+            exit;
+        }
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..') continue;
+            $full = $here . '/' . $entry;
+            if (is_dir($full)) {
+                $under = ptc_media_under($full);
+                $dirs[] = ['path' => $full, 'name' => $entry,
+                           'files' => count($under), 'size' => array_sum($under),
+                           'cached' => count(array_intersect_key($under, $tracked))];
+            } elseif (is_file($full) && ptc_is_media($entry)) {
+                $files[] = ['path' => $full, 'name' => $entry,
+                            'size' => (int)@filesize($full),
+                            'tracked' => array_key_exists($full, $tracked),
+                            'in_use' => in_array($entry, $streaming, true)];
+            }
+        }
+    }
+
+    usort($dirs,  function ($a, $b) { return $b['size'] - $a['size']; });
+    usort($files, function ($a, $b) { return $b['size'] - $a['size']; });
+
+    // Where "up" goes: '' means back to the list of mapped folders.
+    $parent = null;
+    if ($here !== '') {
+        $parent = in_array($here, $roots, true) ? '' : dirname($here);
+        if ($parent !== '' && !ptc_path_allowed($parent)) $parent = '';
+    }
+
+    echo json_encode(['success' => true, 'path' => $here, 'parent' => $parent,
+                      'dirs' => $dirs, 'files' => $files]);
+    exit;
+}
+
 // AJAX: What is on the cache right now, biggest first.
 if (isset($_GET['action']) && $_GET['action'] === 'cached') {
     header('Content-Type: application/json');
@@ -622,12 +641,35 @@ if (isset($_GET['action']) && $_GET['action'] === 'uncache') {
     ptc_require_csrf();
     header('Content-Type: application/json');
 
-    $path = $_GET['path'] ?? '';
-    // Only ever a file the plugin itself put on the cache. The daemon filters
-    // the same way, so this is a better error message rather than the guard.
-    if (!array_key_exists($path, ptc_tracked())) {
-        echo json_encode(['success' => false, 'message' => 'Not a file this plugin cached']);
+    // A file or a whole folder - a season, a series, a mapped root. The daemon
+    // filters against its own candidate list either way, so this check is here
+    // to give a useful message rather than to be the guard.
+    $path = ptc_safe_path($_GET['path'] ?? '');
+    if ($path === '') {
+        echo json_encode(['success' => false, 'message' => 'Path is outside the mapped media folders']);
         exit;
+    }
+
+    $tracked = ptc_tracked();
+    $scope_all = strtolower($ptc_cfg['FLUSH_SCOPE']) === 'all';
+
+    if (is_dir($path)) {
+        $under = ptc_media_under($path);
+        $count = $scope_all ? count($under) : count(array_intersect_key($under, $tracked));
+        if ($count === 0) {
+            echo json_encode(['success' => false, 'message' => $scope_all
+                ? 'No media files in that folder'
+                : 'Nothing in that folder was cached by the plugin - set Scope to "All media in mapped folders" to move it anyway']);
+            exit;
+        }
+        $label = $count . ' file(s) from ' . basename($path);
+    } else {
+        if (!array_key_exists($path, $tracked) && !$scope_all) {
+            echo json_encode(['success' => false,
+                'message' => 'Not a file this plugin cached - set Scope to "All media in mapped folders" to move it anyway']);
+            exit;
+        }
+        $label = basename($path);
     }
 
     $running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($ptc_pid_file), 0);
@@ -636,7 +678,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'uncache') {
             echo json_encode(['success' => false, 'message' => 'Cannot write the request file']);
             exit;
         }
-        echo json_encode(['success' => true, 'message' => 'Queued: ' . basename($path)]);
+        echo json_encode(['success' => true, 'message' => 'Queued: ' . $label]);
     } else {
         if (!file_exists($ptc_daemon_script)) {
             echo json_encode(['success' => false, 'message' => 'plex_to_cache.py not found']);
@@ -644,7 +686,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'uncache') {
         }
         shell_exec('nohup python3 ' . escapeshellarg($ptc_daemon_script) . ' --flush '
                    . escapeshellarg($path) . ' >> /var/log/plex_to_cache.log 2>&1 &');
-        echo json_encode(['success' => true, 'message' => 'Moving ' . basename($path)]);
+        echo json_encode(['success' => true, 'message' => 'Moving ' . $label]);
     }
     exit;
 }
@@ -1015,12 +1057,13 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
                 <button type="button" onclick="refreshCached();" style="padding: 4px 10px; font-size: 12px; cursor: pointer;">Refresh</button>
             </div>
             <div id="ptc-cached-summary" style="color:#888; font-size:12px; margin-top:6px;"></div>
-            <div id="ptc-cached-wrap" style="max-height:240px; overflow:auto; margin:6px 0 18px;">
+            <div id="ptc-browse-path" style="color:#888; font-size:12px; margin:4px 0; word-break:break-all;"></div>
+            <div id="ptc-cached-wrap" style="max-height:260px; overflow:auto; margin:4px 0 18px;">
                 <table id="ptc-cached-table" style="width:100%; font-size:12px; border-collapse:collapse;">
                     <thead><tr>
-                        <th style="text-align:left; padding:4px 6px;">File</th>
+                        <th style="text-align:left; padding:4px 6px;">Name</th>
                         <th style="text-align:right; padding:4px 6px; white-space:nowrap;">Size</th>
-                        <th style="text-align:right; padding:4px 6px; white-space:nowrap;">Cached</th>
+                        <th style="text-align:right; padding:4px 6px; white-space:nowrap;">On cache</th>
                         <th style="padding:4px 6px;"></th>
                     </tr></thead>
                     <tbody><tr><td colspan="4" style="padding:6px; color:#888;">Loading...</td></tr></tbody>
@@ -1092,48 +1135,90 @@ function ptcBytes(n) {
     return (n / 1024).toFixed(0) + ' KB';
 }
 
-function ptcAge(sec) {
-    if (sec === null || sec === undefined) return '';
-    if (sec < 3600)  return Math.round(sec / 60) + ' min ago';
-    if (sec < 86400) return Math.round(sec / 3600) + ' h ago';
-    return Math.round(sec / 86400) + ' d ago';
+var ptcBrowsePath = '';   // '' = the list of mapped media folders
+
+function refreshCached() { browseCache(ptcBrowsePath); }
+
+function ptcRow(body, name, size, right, title, onOpen, onMove, moveTitle, disabled) {
+    var tr = $('<tr>').css('border-top', '1px solid #222');
+    var cell = $('<td>').css({padding: '4px 6px', wordBreak: 'break-all'}).attr('title', title || '');
+    if (onOpen) {
+        $('<a href="#">').text(name).css({color: 'var(--primary-blue)', textDecoration: 'none'})
+            .on('click', function(e) { e.preventDefault(); onOpen(); }).appendTo(cell);
+    } else {
+        cell.text(name);
+    }
+    cell.appendTo(tr);
+    $('<td>').css({padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap'})
+             .text(size).appendTo(tr);
+    $('<td>').css({padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap', color: '#888'})
+             .text(right).appendTo(tr);
+    var last = $('<td>').css({padding: '4px 6px', textAlign: 'right'}).appendTo(tr);
+    if (onMove) {
+        $('<button type="button" class="btn-test">')
+            .text(disabled ? 'in use' : 'To Array')
+            .prop('disabled', !!disabled)
+            .attr('title', moveTitle || '')
+            .on('click', function() { onMove(this); })
+            .appendTo(last);
+    }
+    body.append(tr);
 }
 
-function refreshCached() {
-    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=cached', function(d) {
+function browseCache(path) {
+    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=browse'
+              + '&path=' + encodeURIComponent(path || ''), function(d) {
         var body = $('#ptc-cached-table tbody').empty();
-        if (!d || !d.success || !d.files.length) {
-            $('#ptc-cached-summary').text('Nothing cached by the plugin right now.');
-            body.append('<tr><td colspan="4" style="padding:6px; color:#888;">Empty</td></tr>');
+        if (!d || !d.success) {
+            $('#ptc-browse-path').text(d && d.message ? d.message : 'Could not read the folder.');
             return;
         }
-        $('#ptc-cached-summary').text(d.files.length + ' files  ·  ' + ptcBytes(d.total_bytes));
-        d.files.forEach(function(f) {
-            var tr = $('<tr>').css('border-top', '1px solid #222');
-            $('<td>').css({padding: '4px 6px', wordBreak: 'break-all'})
-                     .attr('title', f.dir)
-                     .text(f.name + (f.in_use ? '  (streaming)' : '')).appendTo(tr);
-            $('<td>').css({padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap'})
-                     .text(ptcBytes(f.size)).appendTo(tr);
-            $('<td>').css({padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap', color: '#888'})
-                     .text(ptcAge(f.age)).appendTo(tr);
-            var cell = $('<td>').css({padding: '4px 6px', textAlign: 'right'}).appendTo(tr);
-            $('<button type="button" class="btn-test">')
-                .text(f.in_use ? 'in use' : 'To Array')
-                .prop('disabled', f.in_use)
-                .attr('title', f.in_use
-                      ? 'This file is being streamed - it stays on the cache'
-                      : 'Move this file back to the array')
-                .on('click', function() { uncacheFile(f.path, this); })
-                .appendTo(cell);
-            body.append(tr);
+        ptcBrowsePath = d.path || '';
+        $('#ptc-browse-path').text(ptcBrowsePath || 'Mapped media folders');
+
+        if (d.parent !== null && d.parent !== undefined) {
+            ptcRow(body, '.. (up one level)', '', '', '', function() { browseCache(d.parent); });
+        }
+
+        d.dirs.forEach(function(dir) {
+            ptcRow(body, dir.name + '/', ptcBytes(dir.size),
+                   dir.cached + ' of ' + dir.files,
+                   dir.path,
+                   function() { browseCache(dir.path); },
+                   function(btn) { uncacheFile(dir.path, btn, dir.name + '/'); },
+                   'Move every media file in this folder back to the array');
         });
+
+        d.files.forEach(function(f) {
+            ptcRow(body, f.name, ptcBytes(f.size),
+                   f.tracked ? 'cached' : 'not by plugin',
+                   f.path, null,
+                   function(btn) { uncacheFile(f.path, btn, f.name); },
+                   f.in_use ? 'Being streamed - it stays on the cache'
+                            : 'Move this file back to the array',
+                   f.in_use);
+        });
+
+        if (!d.dirs.length && !d.files.length) {
+            body.append('<tr><td colspan="4" style="padding:6px; color:#888;">Empty</td></tr>');
+        }
     }).fail(function() {
-        $('#ptc-cached-summary').text('Could not read the cached-files list.');
+        $('#ptc-browse-path').text('Could not read the folder.');
+    });
+
+    // The totals line comes from the tracked list and is independent of where
+    // the browser currently is.
+    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=cached', function(d) {
+        if (!d || !d.success) return;
+        $('#ptc-cached-summary').text(d.files.length
+            ? 'Cached by plugin: ' + d.files.length + ' files  ·  ' + ptcBytes(d.total_bytes)
+            : 'Nothing cached by the plugin right now.');
     });
 }
 
-function uncacheFile(path, btn) {
+function uncacheFile(path, btn, label) {
+    if (label && label.slice(-1) === '/'
+        && !confirm('Move everything under ' + label + ' back to the array?')) return;
     btn.disabled = true;
     btn.textContent = '...';
     $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=uncache'
@@ -1988,8 +2073,13 @@ def flush_cache_to_array(only=None, label="Flush"):
 
         entries = sorted(candidates.items(), key=lambda kv: kv[1])
         if only is not None:
+            # An entry in `only` is either a file or a folder - the browser
+            # offers a button on a whole season or series. The trailing
+            # separator keeps /Media/Show2 from matching /Media/Show.
             wanted = set(only)
-            entries = [item for item in entries if item[0] in wanted]
+            prefixes = tuple(p.rstrip(os.sep) + os.sep for p in only)
+            entries = [item for item in entries
+                       if item[0] in wanted or item[0].startswith(prefixes)]
         with _flush_lock:
             _flush_state["total"] = len(entries)
 
@@ -2995,7 +3085,7 @@ chmod +x /etc/rc.d/rc.plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache condrestart
-echo "Plex to Cache v2026.08.08b installed successfully."
+echo "Plex to Cache v2026.08.08.01 installed successfully."
 ]]>
 </INLINE>
 </FILE>

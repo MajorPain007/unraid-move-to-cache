@@ -25,6 +25,83 @@ $ptc_status_file   = "/var/run/plex_to_cache.status.json";
 $ptc_request_file  = "/var/run/plex_to_cache.flush";
 $ptc_daemon_script = "/usr/local/emhttp/plugins/$ptc_plugin/plex_to_cache.py";
 
+/**
+ * The cache-side folders this plugin works in, derived from the docker
+ * mappings exactly like _protected_cache_dirs() in the daemon. Everything the
+ * browser shows and every path the move endpoint accepts has to sit under one
+ * of these - the rest of the cache pool is out of bounds.
+ */
+function ptc_media_roots() {
+    global $ptc_cfg;
+    $cache_root = rtrim($ptc_cfg['CACHE_ROOT'], '/');
+    $array_root = rtrim($ptc_cfg['ARRAY_ROOT'], '/');
+    $roots = [];
+    foreach (explode(';', $ptc_cfg['DOCKER_MAPPINGS']) as $pair) {
+        if (strpos($pair, ':') === false) continue;
+        list(, $host) = explode(':', $pair, 2);
+        $host = rtrim(trim($host), '/');
+        if ($host === '') continue;
+        if (strpos($host, $array_root . '/') === 0) {
+            $roots[] = $cache_root . substr($host, strlen($array_root));
+        } elseif (strpos($host, $cache_root . '/') === 0) {
+            $roots[] = $host;
+        } else {
+            $roots[] = $cache_root . '/' . ltrim($host, '/');
+        }
+    }
+    return array_values(array_unique($roots));
+}
+
+/** True when $path is one of the media roots or sits inside one. */
+function ptc_path_allowed($path) {
+    foreach (ptc_media_roots() as $root) {
+        if ($path === $root || strpos($path, $root . '/') === 0) return true;
+    }
+    return false;
+}
+
+/**
+ * Resolve a browser path. Returns '' when it does not exist or escapes the
+ * media roots, so a ".." in a request cannot walk out of them.
+ */
+function ptc_safe_path($path) {
+    $path = rtrim((string)$path, '/');
+    if ($path === '') return '';
+    $real = @realpath($path);
+    if ($real === false) return '';
+    return ptc_path_allowed($real) ? $real : '';
+}
+
+/** Is this one of the media file types the plugin handles? */
+function ptc_is_media($name) {
+    global $ptc_cfg;
+    foreach (preg_split('/[\s,]+/', $ptc_cfg['MEDIA_FILETYPES']) as $ext) {
+        $ext = trim($ext);
+        if ($ext !== '' && substr_compare($name, $ext, -strlen($ext), strlen($ext), true) === 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/** Media files anywhere under $dir, as path => size. */
+function ptc_media_under($dir) {
+    $out = [];
+    if (!is_dir($dir)) return $out;
+    try {
+        $it = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::LEAVES_ONLY);
+        foreach ($it as $file) {
+            if (!$file->isFile() || !ptc_is_media($file->getFilename())) continue;
+            $out[$file->getPathname()] = $file->getSize();
+        }
+    } catch (Exception $e) {
+        // Unreadable subtree - report what was collected so far
+    }
+    return $out;
+}
+
 /** The tracked list as path => timestamp. */
 function ptc_tracked() {
     global $ptc_tracked_file;
@@ -196,6 +273,78 @@ if (isset($_GET['action']) && $_GET['action'] === 'service') {
     exit;
 }
 
+// AJAX: Browse one level of the cache media folders.
+// Folders report the total of the media below them, so a whole series or a
+// single season can be judged and moved as one.
+if (isset($_GET['action']) && $_GET['action'] === 'browse') {
+    header('Content-Type: application/json');
+
+    $roots = ptc_media_roots();
+    $streaming = [];
+    if (is_readable($ptc_status_file)) {
+        $st = json_decode(@file_get_contents($ptc_status_file), true);
+        if (is_array($st) && !empty($st['active_streams'])) $streaming = $st['active_streams'];
+    }
+    $tracked = ptc_tracked();
+
+    $want = (string)($_GET['path'] ?? '');
+    $dirs = [];
+    $files = [];
+    $here = '';
+
+    if ($want === '') {
+        // Top level: one entry per mapped folder.
+        foreach ($roots as $root) {
+            if (!is_dir($root)) continue;
+            $under = ptc_media_under($root);
+            $dirs[] = ['path' => $root, 'name' => $root,
+                       'files' => count($under), 'size' => array_sum($under),
+                       'cached' => count(array_intersect_key($under, $tracked))];
+        }
+    } else {
+        $here = ptc_safe_path($want);
+        if ($here === '') {
+            echo json_encode(['success' => false, 'message' => 'Path is outside the mapped media folders']);
+            exit;
+        }
+        $entries = @scandir($here);
+        if ($entries === false) {
+            echo json_encode(['success' => false,
+                              'message' => 'Cannot read ' . $here . ' (' . (posix_geteuid() === 0 ? 'as root' : 'uid ' . posix_geteuid()) . ')']);
+            exit;
+        }
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..') continue;
+            $full = $here . '/' . $entry;
+            if (is_dir($full)) {
+                $under = ptc_media_under($full);
+                $dirs[] = ['path' => $full, 'name' => $entry,
+                           'files' => count($under), 'size' => array_sum($under),
+                           'cached' => count(array_intersect_key($under, $tracked))];
+            } elseif (is_file($full) && ptc_is_media($entry)) {
+                $files[] = ['path' => $full, 'name' => $entry,
+                            'size' => (int)@filesize($full),
+                            'tracked' => array_key_exists($full, $tracked),
+                            'in_use' => in_array($entry, $streaming, true)];
+            }
+        }
+    }
+
+    usort($dirs,  function ($a, $b) { return $b['size'] - $a['size']; });
+    usort($files, function ($a, $b) { return $b['size'] - $a['size']; });
+
+    // Where "up" goes: '' means back to the list of mapped folders.
+    $parent = null;
+    if ($here !== '') {
+        $parent = in_array($here, $roots, true) ? '' : dirname($here);
+        if ($parent !== '' && !ptc_path_allowed($parent)) $parent = '';
+    }
+
+    echo json_encode(['success' => true, 'path' => $here, 'parent' => $parent,
+                      'dirs' => $dirs, 'files' => $files]);
+    exit;
+}
+
 // AJAX: What is on the cache right now, biggest first.
 if (isset($_GET['action']) && $_GET['action'] === 'cached') {
     header('Content-Type: application/json');
@@ -232,12 +381,35 @@ if (isset($_GET['action']) && $_GET['action'] === 'uncache') {
     ptc_require_csrf();
     header('Content-Type: application/json');
 
-    $path = $_GET['path'] ?? '';
-    // Only ever a file the plugin itself put on the cache. The daemon filters
-    // the same way, so this is a better error message rather than the guard.
-    if (!array_key_exists($path, ptc_tracked())) {
-        echo json_encode(['success' => false, 'message' => 'Not a file this plugin cached']);
+    // A file or a whole folder - a season, a series, a mapped root. The daemon
+    // filters against its own candidate list either way, so this check is here
+    // to give a useful message rather than to be the guard.
+    $path = ptc_safe_path($_GET['path'] ?? '');
+    if ($path === '') {
+        echo json_encode(['success' => false, 'message' => 'Path is outside the mapped media folders']);
         exit;
+    }
+
+    $tracked = ptc_tracked();
+    $scope_all = strtolower($ptc_cfg['FLUSH_SCOPE']) === 'all';
+
+    if (is_dir($path)) {
+        $under = ptc_media_under($path);
+        $count = $scope_all ? count($under) : count(array_intersect_key($under, $tracked));
+        if ($count === 0) {
+            echo json_encode(['success' => false, 'message' => $scope_all
+                ? 'No media files in that folder'
+                : 'Nothing in that folder was cached by the plugin - set Scope to "All media in mapped folders" to move it anyway']);
+            exit;
+        }
+        $label = $count . ' file(s) from ' . basename($path);
+    } else {
+        if (!array_key_exists($path, $tracked) && !$scope_all) {
+            echo json_encode(['success' => false,
+                'message' => 'Not a file this plugin cached - set Scope to "All media in mapped folders" to move it anyway']);
+            exit;
+        }
+        $label = basename($path);
     }
 
     $running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($ptc_pid_file), 0);
@@ -246,7 +418,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'uncache') {
             echo json_encode(['success' => false, 'message' => 'Cannot write the request file']);
             exit;
         }
-        echo json_encode(['success' => true, 'message' => 'Queued: ' . basename($path)]);
+        echo json_encode(['success' => true, 'message' => 'Queued: ' . $label]);
     } else {
         if (!file_exists($ptc_daemon_script)) {
             echo json_encode(['success' => false, 'message' => 'plex_to_cache.py not found']);
@@ -254,7 +426,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'uncache') {
         }
         shell_exec('nohup python3 ' . escapeshellarg($ptc_daemon_script) . ' --flush '
                    . escapeshellarg($path) . ' >> /var/log/plex_to_cache.log 2>&1 &');
-        echo json_encode(['success' => true, 'message' => 'Moving ' . basename($path)]);
+        echo json_encode(['success' => true, 'message' => 'Moving ' . $label]);
     }
     exit;
 }
@@ -625,12 +797,13 @@ $is_running = file_exists($ptc_pid_file) && posix_kill((int)@file_get_contents($
                 <button type="button" onclick="refreshCached();" style="padding: 4px 10px; font-size: 12px; cursor: pointer;">Refresh</button>
             </div>
             <div id="ptc-cached-summary" style="color:#888; font-size:12px; margin-top:6px;"></div>
-            <div id="ptc-cached-wrap" style="max-height:240px; overflow:auto; margin:6px 0 18px;">
+            <div id="ptc-browse-path" style="color:#888; font-size:12px; margin:4px 0; word-break:break-all;"></div>
+            <div id="ptc-cached-wrap" style="max-height:260px; overflow:auto; margin:4px 0 18px;">
                 <table id="ptc-cached-table" style="width:100%; font-size:12px; border-collapse:collapse;">
                     <thead><tr>
-                        <th style="text-align:left; padding:4px 6px;">File</th>
+                        <th style="text-align:left; padding:4px 6px;">Name</th>
                         <th style="text-align:right; padding:4px 6px; white-space:nowrap;">Size</th>
-                        <th style="text-align:right; padding:4px 6px; white-space:nowrap;">Cached</th>
+                        <th style="text-align:right; padding:4px 6px; white-space:nowrap;">On cache</th>
                         <th style="padding:4px 6px;"></th>
                     </tr></thead>
                     <tbody><tr><td colspan="4" style="padding:6px; color:#888;">Loading...</td></tr></tbody>
@@ -702,48 +875,90 @@ function ptcBytes(n) {
     return (n / 1024).toFixed(0) + ' KB';
 }
 
-function ptcAge(sec) {
-    if (sec === null || sec === undefined) return '';
-    if (sec < 3600)  return Math.round(sec / 60) + ' min ago';
-    if (sec < 86400) return Math.round(sec / 3600) + ' h ago';
-    return Math.round(sec / 86400) + ' d ago';
+var ptcBrowsePath = '';   // '' = the list of mapped media folders
+
+function refreshCached() { browseCache(ptcBrowsePath); }
+
+function ptcRow(body, name, size, right, title, onOpen, onMove, moveTitle, disabled) {
+    var tr = $('<tr>').css('border-top', '1px solid #222');
+    var cell = $('<td>').css({padding: '4px 6px', wordBreak: 'break-all'}).attr('title', title || '');
+    if (onOpen) {
+        $('<a href="#">').text(name).css({color: 'var(--primary-blue)', textDecoration: 'none'})
+            .on('click', function(e) { e.preventDefault(); onOpen(); }).appendTo(cell);
+    } else {
+        cell.text(name);
+    }
+    cell.appendTo(tr);
+    $('<td>').css({padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap'})
+             .text(size).appendTo(tr);
+    $('<td>').css({padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap', color: '#888'})
+             .text(right).appendTo(tr);
+    var last = $('<td>').css({padding: '4px 6px', textAlign: 'right'}).appendTo(tr);
+    if (onMove) {
+        $('<button type="button" class="btn-test">')
+            .text(disabled ? 'in use' : 'To Array')
+            .prop('disabled', !!disabled)
+            .attr('title', moveTitle || '')
+            .on('click', function() { onMove(this); })
+            .appendTo(last);
+    }
+    body.append(tr);
 }
 
-function refreshCached() {
-    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=cached', function(d) {
+function browseCache(path) {
+    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=browse'
+              + '&path=' + encodeURIComponent(path || ''), function(d) {
         var body = $('#ptc-cached-table tbody').empty();
-        if (!d || !d.success || !d.files.length) {
-            $('#ptc-cached-summary').text('Nothing cached by the plugin right now.');
-            body.append('<tr><td colspan="4" style="padding:6px; color:#888;">Empty</td></tr>');
+        if (!d || !d.success) {
+            $('#ptc-browse-path').text(d && d.message ? d.message : 'Could not read the folder.');
             return;
         }
-        $('#ptc-cached-summary').text(d.files.length + ' files  ·  ' + ptcBytes(d.total_bytes));
-        d.files.forEach(function(f) {
-            var tr = $('<tr>').css('border-top', '1px solid #222');
-            $('<td>').css({padding: '4px 6px', wordBreak: 'break-all'})
-                     .attr('title', f.dir)
-                     .text(f.name + (f.in_use ? '  (streaming)' : '')).appendTo(tr);
-            $('<td>').css({padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap'})
-                     .text(ptcBytes(f.size)).appendTo(tr);
-            $('<td>').css({padding: '4px 6px', textAlign: 'right', whiteSpace: 'nowrap', color: '#888'})
-                     .text(ptcAge(f.age)).appendTo(tr);
-            var cell = $('<td>').css({padding: '4px 6px', textAlign: 'right'}).appendTo(tr);
-            $('<button type="button" class="btn-test">')
-                .text(f.in_use ? 'in use' : 'To Array')
-                .prop('disabled', f.in_use)
-                .attr('title', f.in_use
-                      ? 'This file is being streamed - it stays on the cache'
-                      : 'Move this file back to the array')
-                .on('click', function() { uncacheFile(f.path, this); })
-                .appendTo(cell);
-            body.append(tr);
+        ptcBrowsePath = d.path || '';
+        $('#ptc-browse-path').text(ptcBrowsePath || 'Mapped media folders');
+
+        if (d.parent !== null && d.parent !== undefined) {
+            ptcRow(body, '.. (up one level)', '', '', '', function() { browseCache(d.parent); });
+        }
+
+        d.dirs.forEach(function(dir) {
+            ptcRow(body, dir.name + '/', ptcBytes(dir.size),
+                   dir.cached + ' of ' + dir.files,
+                   dir.path,
+                   function() { browseCache(dir.path); },
+                   function(btn) { uncacheFile(dir.path, btn, dir.name + '/'); },
+                   'Move every media file in this folder back to the array');
         });
+
+        d.files.forEach(function(f) {
+            ptcRow(body, f.name, ptcBytes(f.size),
+                   f.tracked ? 'cached' : 'not by plugin',
+                   f.path, null,
+                   function(btn) { uncacheFile(f.path, btn, f.name); },
+                   f.in_use ? 'Being streamed - it stays on the cache'
+                            : 'Move this file back to the array',
+                   f.in_use);
+        });
+
+        if (!d.dirs.length && !d.files.length) {
+            body.append('<tr><td colspan="4" style="padding:6px; color:#888;">Empty</td></tr>');
+        }
     }).fail(function() {
-        $('#ptc-cached-summary').text('Could not read the cached-files list.');
+        $('#ptc-browse-path').text('Could not read the folder.');
+    });
+
+    // The totals line comes from the tracked list and is independent of where
+    // the browser currently is.
+    $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=cached', function(d) {
+        if (!d || !d.success) return;
+        $('#ptc-cached-summary').text(d.files.length
+            ? 'Cached by plugin: ' + d.files.length + ' files  ·  ' + ptcBytes(d.total_bytes)
+            : 'Nothing cached by the plugin right now.');
     });
 }
 
-function uncacheFile(path, btn) {
+function uncacheFile(path, btn, label) {
+    if (label && label.slice(-1) === '/'
+        && !confirm('Move everything under ' + label + ' back to the array?')) return;
     btn.disabled = true;
     btn.textContent = '...';
     $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=uncache'

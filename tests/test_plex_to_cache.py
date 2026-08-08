@@ -221,6 +221,40 @@ class FlushCacheToArray(unittest.TestCase):
         moved = self._run_flush({"/mnt/cache/Media/a.mkv": 1.0})
         self.assertEqual(moved, [], "the running flush owns the tracked list")
 
+    def _run_flush_only(self, tracked, only):
+        moved = []
+        with mock.patch.object(ptc.TrackedFiles, 'load', return_value=tracked), \
+             mock.patch.object(ptc, 'move_file_to_array',
+                               side_effect=lambda p, track=True: (moved.append(p), (True, False, 0))[1]), \
+             mock.patch.object(ptc, 'write_status'):
+            ptc.flush_cache_to_array(only=only)
+        return moved
+
+    def test_a_folder_moves_everything_below_it(self):
+        """The browser offers a button on a season or a whole series."""
+        tracked = {
+            "/mnt/cache/Media/Show/S01/e1.mkv": 1.0,
+            "/mnt/cache/Media/Show/S01/e2.mkv": 2.0,
+            "/mnt/cache/Media/Show/S02/e1.mkv": 3.0,
+            "/mnt/cache/Media/Other/film.mkv":  4.0,
+        }
+        moved = self._run_flush_only(tracked, ["/mnt/cache/Media/Show/S01"])
+        self.assertEqual(sorted(moved), ["/mnt/cache/Media/Show/S01/e1.mkv",
+                                         "/mnt/cache/Media/Show/S01/e2.mkv"])
+
+        ptc._flush_state["active"] = False
+        moved = self._run_flush_only(tracked, ["/mnt/cache/Media/Show"])
+        self.assertEqual(len(moved), 3, "the series folder covers both seasons")
+
+    def test_a_sibling_folder_with_a_shared_prefix_is_not_swept_in(self):
+        tracked = {
+            "/mnt/cache/Media/Show/e1.mkv":  1.0,
+            "/mnt/cache/Media/Show2/e1.mkv": 2.0,
+        }
+        moved = self._run_flush_only(tracked, ["/mnt/cache/Media/Show"])
+        self.assertEqual(moved, ["/mnt/cache/Media/Show/e1.mkv"],
+                         "Show2 must not be dragged along by Show")
+
 
 class FlushScopeAll(unittest.TestCase):
     """Scope "all" widens the flush to files the plugin never copied - but only
