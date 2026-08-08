@@ -1,9 +1,16 @@
+### 2026.08.08.08
+
+- Fixes 2026.08.08.07, whose manifest was not valid XML: a bare ampersand in the
+  changelog. It goes into the manifest verbatim, so Unraid could not read the
+  file. The build now refuses a changelog containing characters XML does not
+  allow, rather than producing a broken plugin.
+
 ### 2026.08.08.07
 
 - The Empty Cache button is gone. Picking the media folder in the browser does
   the same thing, and the settings section that governs it is now called Move
   Back to Array.
-- "Save & Apply" was being clipped: the control bar was a flex row that could
+- "Save and Apply" was being clipped: the control bar was a flex row that could
   not wrap, and the submit button shrank past its own label before anything else
   gave way. It wraps now and keeps its width.
 - The list has a frame that runs to the edge behind the To Array button, instead

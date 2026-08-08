@@ -44,6 +44,14 @@ if not re.fullmatch(r"\d{4}\.\d{2}\.\d{2}\.\d+", version):
 # current version, so four releases shipped identical notes under different
 # numbers and none of them said what had changed.
 changes_body = read(SRC / "CHANGES.md").strip()
+# The changelog lands inside <CHANGES> verbatim, so a bare & or < makes the
+# manifest invalid XML and Unraid cannot read the plugin at all.
+_bad = [(n, ln) for n, ln in enumerate(changes_body.splitlines(), 1)
+        if re.search(r"&(?!(amp|lt|gt|quot|apos);)", ln) or re.search(r"<[A-Za-z/!?]", ln)]
+if _bad:
+    for n, ln in _bad[:10]:
+        print(f"  src/CHANGES.md:{n}: {ln.strip()}")
+    sys.exit("Changelog contains characters that are not valid inside XML (& or <)")
 if not changes_body.startswith(f"### {version}"):
     print(f"  note: src/CHANGES.md does not start with an entry for {version}")
 
