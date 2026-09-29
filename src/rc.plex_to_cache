@@ -1,6 +1,6 @@
 #!/bin/bash
 # Plex to Cache — service control script
-# Usage: rc.plex_to_cache {start|stop|restart|condrestart|boot|status}
+# Usage: rc.plex_to_cache {start|stop|restart|condrestart|boot|status|stop_move|array_stopping}
 #
 # Persistent user intent:
 #   A manual `stop` writes a flag file to the flash drive (survives
@@ -8,20 +8,34 @@
 #   verb and `condrestart` respect that flag, so a stopped service
 #   stays stopped until the user explicitly runs `start` again.
 #
+# The service and the mover:
+#   The service copies what is being played to the cache. Moves back to the
+#   array are done by the mover, the same script started with --move, as a
+#   process of its own. `stop` ends the service and leaves a running move
+#   alone; `stop_move` ends the move.
+#
 # Verbs:
-#   start        Enable the service and start it now.
-#   stop         Stop the service and keep it stopped across reboots.
-#   restart      Enable the service and (re)start it.
-#   condrestart  Restart only if the service is enabled (used after
-#                settings changes / plugin updates).
-#   boot         Start only if the service is enabled (used by
-#                /etc/rc.d at system boot).
-#   status       Report running/enabled state.
+#   start          Enable the service and start it now.
+#   stop           Stop the service and keep it stopped across reboots.
+#   restart        Enable the service and (re)start it.
+#   condrestart    Restart only if the service is enabled (used after
+#                  settings changes / plugin updates).
+#   boot           Start only if the service is enabled (used by
+#                  /etc/rc.d at system boot and when the array comes up).
+#   status         Report running/enabled state.
+#   stop_move      Stop a running move to the array. The file being moved
+#                  stays on the cache, and so does everything still queued.
+#   array_stopping Stop both, without touching the flag (the array event).
 
 PYTHON_SCRIPT="/usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py"
 PID_FILE="/var/run/plex_to_cache.pid"
 LOG_FILE="/var/log/plex_to_cache.log"
 DISABLED_FLAG="/boot/config/plugins/plex_to_cache/service_disabled"
+MOVE_PID_FILE="/var/run/plex_to_cache.move.pid"
+
+# Ends at the script name, so it matches the service and never the mover,
+# whose command line goes on with --move.
+SERVICE_PATTERN="${PYTHON_SCRIPT}\$"
 
 # --- state helpers ---------------------------------------------------------
 
@@ -43,6 +57,16 @@ mark_enabled() {
 mark_disabled() {
     mkdir -p "$(dirname "$DISABLED_FLAG")"
     touch "$DISABLED_FLAG"
+}
+
+# PID of the running mover, or nothing. A stale PID file can name a process
+# that has nothing to do with this plugin, so its command line is checked too.
+mover_pid() {
+    local pid
+    pid=$(cat "$MOVE_PID_FILE" 2>/dev/null)
+    [ -n "$pid" ] || return 1
+    tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q -- "plex_to_cache.py --move" || return 1
+    echo "$pid"
 }
 
 # --- start/stop primitives (no flag handling) ------------------------------
@@ -94,9 +118,12 @@ do_stop() {
         fi
         rm -f "$PID_FILE"
     fi
-    # Paranoia: kill anything that looks like our daemon
-    pkill -f "$PYTHON_SCRIPT" 2>/dev/null
+    # Paranoia: kill anything that looks like our daemon - and only that
+    pkill -f "$SERVICE_PATTERN" 2>/dev/null
     echo "Service stopped."
+    if mover_pid >/dev/null; then
+        echo "A move to the array is still running - it carries on until it is done or stopped."
+    fi
 }
 
 # --- user-facing verbs ------------------------------------------------------
@@ -138,6 +165,10 @@ boot() {
 }
 
 status() {
+    local pid
+    if pid=$(mover_pid); then
+        echo "A move to the array is running (PID $pid)."
+    fi
     if is_running; then
         echo "Plex to Cache is running (PID $(cat "$PID_FILE"))."
         exit 0
@@ -150,15 +181,45 @@ status() {
     exit 3
 }
 
+stop_move() {
+    local pid
+    if ! pid=$(mover_pid); then
+        echo "No move to the array is running."
+        return 0
+    fi
+    # The mover answers SIGTERM by ending the current transfer - rsync removes
+    # its unfinished copy - and leaving everything else where it is.
+    kill -TERM "$pid" 2>/dev/null
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "Move to the array stopped. What was not moved yet stays on the cache."
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Asked the move to the array to stop (PID $pid); it is still finishing."
+}
+
+array_stopping() {
+    # The array is going down. A transfer holding files open on it would stall
+    # the unmount until it finished - hours, for a whole series - so both
+    # directions end here. The flag is left alone: `boot` starts the service
+    # again when the array is back, unless it was stopped on purpose.
+    stop_move
+    do_stop
+}
+
 case "$1" in
-    start)       start ;;
-    stop)        stop ;;
-    restart)     restart ;;
-    condrestart) condrestart ;;
-    boot)        boot ;;
-    status)      status ;;
+    start)          start ;;
+    stop)           stop ;;
+    restart)        restart ;;
+    condrestart)    condrestart ;;
+    boot)           boot ;;
+    status)         status ;;
+    stop_move)      stop_move ;;
+    array_stopping) array_stopping ;;
     *)
-        echo "Usage: $0 {start|stop|restart|condrestart|boot|status}"
+        echo "Usage: $0 {start|stop|restart|condrestart|boot|status|stop_move|array_stopping}"
         exit 1
         ;;
 esac

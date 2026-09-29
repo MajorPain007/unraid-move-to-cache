@@ -25,6 +25,8 @@ py_code  = read(SRC / "plex_to_cache.py")
 php_code = read(SRC / "plex_to_cache.php")
 page     = read(SRC / "plex_to_cache.page")
 rc       = read(SRC / "rc.plex_to_cache")
+# Array events: Unraid runs plugins/<name>/event/<event> when it happens.
+events   = {name: read(SRC / "event" / name) for name in ("stopping", "disks_mounted")}
 
 # Determine version. Format is YYYY.MM.DD.NN - Unraid compares versions to
 # decide whether an update is available, and a stray format makes that ordering
@@ -84,21 +86,27 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 <!-- Pre-install: stop running service, clean old files -->
 <FILE Run="/bin/bash">
 <INLINE>
-{cdata('''# Stop previous service (if any)
+{cdata('''# Stop previous service (if any) - the service only. A move to the array
+# runs as a process of its own, on code it has already loaded, and carries on
+# through the update. The pattern ends at the script name, where the mover's
+# command line goes on with --move.
 if [ -f /var/run/plex_to_cache.pid ]; then
     kill $(cat /var/run/plex_to_cache.pid) 2>/dev/null
-    rm /var/run/plex_to_cache.pid
+    rm -f /var/run/plex_to_cache.pid
 fi
-pkill -f plex_to_cache.py 2>/dev/null
+pkill -f 'plex_to_cache/scripts/plex_to_cache.py$' 2>/dev/null
 
 # Remove old plugin files so updates take effect cleanly
 rm -f /usr/local/emhttp/plugins/plex_to_cache/plex_to_cache.php
 rm -f /usr/local/emhttp/plugins/plex_to_cache/plex_to_cache.page
 rm -f /usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py
 rm -f /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache
+rm -f /usr/local/emhttp/plugins/plex_to_cache/event/stopping
+rm -f /usr/local/emhttp/plugins/plex_to_cache/event/disks_mounted
 
 # Create plugin directories
 mkdir -p /usr/local/emhttp/plugins/plex_to_cache/scripts
+mkdir -p /usr/local/emhttp/plugins/plex_to_cache/event
 mkdir -p /boot/config/plugins/plex_to_cache
 
 # NOTE: no pip / curl here on purpose — this plugin has no external
@@ -136,6 +144,20 @@ mkdir -p /boot/config/plugins/plex_to_cache
 </INLINE>
 </FILE>
 
+<!-- Array events: end transfers before the array unmounts, start the service
+     again once it is back -->
+<FILE Name="/usr/local/emhttp/plugins/plex_to_cache/event/stopping" Mode="0755">
+<INLINE>
+{cdata(events["stopping"])}
+</INLINE>
+</FILE>
+
+<FILE Name="/usr/local/emhttp/plugins/plex_to_cache/event/disks_mounted" Mode="0755">
+<INLINE>
+{cdata(events["disks_mounted"])}
+</INLINE>
+</FILE>
+
 <!-- Register a boot-time autostart. Unraid runs /etc/rc.d/rc.<name> at
      boot if present (tmpfs root — must be re-created on every install). -->
 <FILE Name="/etc/rc.d/rc.plex_to_cache" Mode="0755">
@@ -153,6 +175,8 @@ mkdir -p /boot/config/plugins/plex_to_cache
 <INLINE>
 {cdata(f'''chmod +x /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache
 chmod +x /usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py
+chmod +x /usr/local/emhttp/plugins/plex_to_cache/event/stopping
+chmod +x /usr/local/emhttp/plugins/plex_to_cache/event/disks_mounted
 chmod +x /etc/rc.d/rc.plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
@@ -166,12 +190,15 @@ echo "Plex to Cache v{version} installed successfully."''')}
 <INLINE>
 {cdata('''if [ -f /var/run/plex_to_cache.pid ]; then
     kill $(cat /var/run/plex_to_cache.pid) 2>/dev/null
-    rm /var/run/plex_to_cache.pid
+    rm -f /var/run/plex_to_cache.pid
 fi
+# The service and a running mover alike: the plugin is going away. The mover
+# takes SIGTERM as Stop move, so the file it was moving stays on the cache.
 pkill -f plex_to_cache.py 2>/dev/null
 rm -f /etc/rc.d/rc.plex_to_cache
 rm -rf /usr/local/emhttp/plugins/plex_to_cache
-rm -f /var/log/plex_to_cache.log
+rm -f /var/log/plex_to_cache.log /var/log/plex_to_cache.log.1
+rm -f /var/run/plex_to_cache.*
 echo "Plex to Cache uninstalled. Settings in /boot/config/plugins/plex_to_cache preserved."''')}
 </INLINE>
 </FILE>

@@ -1,0 +1,5 @@
+#!/bin/bash
+# Unraid runs this when the array starts to stop. A copy or a move still
+# running would hold files open on it and stall the unmount; see
+# array_stopping in rc.plex_to_cache.
+/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache array_stopping >> /var/log/plex_to_cache.log 2>&1

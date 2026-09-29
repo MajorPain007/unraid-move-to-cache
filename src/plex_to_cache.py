@@ -11,10 +11,15 @@ site-packages gets wiped on reboot. Relying on `requests` means the
 daemon would need internet on every boot to reinstall it.
 
 Architecture:
-  - Main thread: polls media server APIs, decides what should be cached,
-    runs cleanup. Never blocks on file transfers.
+  - Main thread: polls media server APIs, decides what should be cached and
+    what Auto Cleanup sends back. Never blocks on file transfers.
   - Copy worker thread: processes the copy queue one file at a time, so a
     multi-gigabyte rsync never stalls stream detection.
+  - Mover: this script started with --move, as a process of its own. It does
+    every move back to the array - the ones picked in the browser and the ones
+    Auto Cleanup queues. Being separate is what lets Stop end the copying to
+    the cache while a move to the array carries on; the mover has its own
+    button to stop it.
 """
 
 import os
@@ -23,16 +28,19 @@ import re
 import time
 import json
 import ssl
+import stat
+import glob
 import fcntl
 import logging
-from logging.handlers import RotatingFileHandler
+from logging.handlers import RotatingFileHandler, WatchedFileHandler
 import shutil
 import signal
 import queue
 import threading
+import contextlib
 import subprocess
+import http.client
 import urllib.request
-import urllib.parse
 import urllib.error
 from pathlib import Path
 
@@ -42,22 +50,30 @@ from pathlib import Path
 
 CONFIG_FILE   = "/boot/config/plugins/plex_to_cache/settings.cfg"
 TRACKED_FILES = "/boot/config/plugins/plex_to_cache/cached_files.list"
-LOCK_FILE     = "/tmp/media_cache_cleaner.lock"
+TRACKED_LOCK  = "/var/run/plex_to_cache.tracked.lock"   # the service and the mover both change the list
+LOCK_FILE     = "/var/run/plex_to_cache.lock"            # one service at a time
 LOG_FILE      = "/var/log/plex_to_cache.log"
 LOG_MAX_BYTES = 5 * 1024 * 1024   # rotate when the log reaches 5 MB
-ARRAY_ROOT    = "/mnt/user0"      # physical array path (no cache) — used for permission cloning
+USER0_ROOT    = "/mnt/user0"      # the user shares without the cache pool - where a move back goes
+PROC_MOUNTS   = "/proc/self/mounts"
 
 RSYNC_RETRIES        = 3          # attempts per file before giving up
 RSYNC_RETRY_DELAY    = 5          # seconds between attempts
 COPY_FAIL_COOLDOWN   = 300        # seconds before re-trying a file that failed all attempts
 METADATA_CACHE_LIMIT = 500        # max entries kept in the Plex ratingKey→path cache
 
-STATUS_FILE          = "/var/run/plex_to_cache.status.json"  # snapshot for the web UI
-FLUSH_REQUEST        = "/var/run/plex_to_cache.flush"        # web UI asks for a full flush
+STATUS_FILE          = "/var/run/plex_to_cache.status.json"  # service snapshot for the web UI and the mover
 STATUS_INTERVAL      = 30         # seconds between status snapshots
-EVICT_MAX_FILES      = 25         # max files moved back per eviction pass
+STATUS_FRESH         = 90         # the mover does not trust a snapshot older than this
+MOVE_QUEUE           = "/var/run/plex_to_cache.move.queue"   # "<kind>\t<path>" per line
+MOVE_LOCK            = "/var/run/plex_to_cache.move.lock"    # held by the running mover
+MOVE_PID             = "/var/run/plex_to_cache.move.pid"     # read by the Stop move button
+MOVE_STATUS          = "/var/run/plex_to_cache.move.json"    # mover progress for the web UI
 MOVE_MIN_AGE         = 30 * 60    # a file written this recently is left where it is
+MOVE_RETRY           = 600        # Auto Cleanup asks again for a file still on cache after this
+EVICT_MAX_FILES      = 25         # max files moved back per eviction pass
 WATCHED_MIN_PROGRESS = 0.90       # session progress at which media counts as watched
+LEGACY_PARTIAL_DIR   = ".plex_to_cache-partial"  # left by interrupted copies before 2026.09.29.01
 
 DEFAULT_CONFIG = {
     "ENABLE_PLEX": "False", "PLEX_URL": "http://localhost:32400", "PLEX_TOKEN": "",
@@ -85,24 +101,28 @@ config          = dict(DEFAULT_CONFIG)
 docker_mappings = {}
 metadata_cache  = {}
 stream_timers   = {}
-deletion_queue  = {}
-move_queue      = []               # paths the web UI asked to move, oldest first
+deletion_queue  = {}               # cache path -> when it was queued; main loop and copy worker
 failed_copies   = {}               # cache_path -> timestamp of last failed attempt
-active_cache_paths = set()         # cache paths of currently streamed files (never evicted)
+active_cache_paths = set()         # cache paths of currently streamed files (never evicted or moved)
+_requested      = {}               # cache path -> when Auto Cleanup handed it to the mover
+_movers         = []               # mover processes this process started, reaped with poll()
+_api_state      = {}               # media server -> whether it answered the last poll
+_warned         = set()            # keys of warnings already logged by log_once
 
-# Copy worker state
+# Transfer state
 copy_queue      = queue.Queue()
 _pending_copies = set()            # array paths queued or currently copying
 _pending_lock   = threading.Lock()
 _current_copy   = None             # basename of the file being copied right now
 _current_rsync  = None             # running rsync Popen (for clean shutdown)
-_rsync_lock     = threading.Lock()
-_shutting_down  = threading.Event()
+# Re-entrant: the stop handler takes it, and in the mover it runs on the same
+# thread that may be holding it at that moment.
+_rsync_lock     = threading.RLock()
+_shutting_down  = threading.Event()   # asked to stop: end the current transfer, start no new one
 
-# Manual flush state, shown in the web UI while it runs
-_flush_lock  = threading.Lock()
-_flush_state = {"active": False, "total": 0, "done": 0, "bytes": 0,
-                "skipped": 0, "conflicts": 0, "failed": 0, "finished": 0}
+# Mover state (the --move process only), mirrored to MOVE_STATUS for the web UI
+_job         = {}
+_stream_poll = {"at": 0.0, "paths": frozenset()}
 
 # SSL context: Plex / Emby / Jellyfin typically use self-signed certs on the
 # local network, so we intentionally skip verification. This is equivalent
@@ -115,13 +135,18 @@ _SSL_CTX = ssl._create_unverified_context()
 
 _logger = logging.getLogger("plex_to_cache")
 
-def setup_logging():
-    """Log to LOG_FILE with size-based rotation that also works while the
-    daemon is running (the old approach only rotated at start, and the
-    shell's stdout redirect kept writing to the renamed inode anyway).
-    Falls back to stderr if the log file is not writable. Thread-safe."""
+def setup_logging(rotate=True):
+    """Log to LOG_FILE, or to stderr if it is not writable. Thread-safe.
+
+    The service rotates the file by size, also while it runs. The mover writes
+    to the same file but never rotates it: two processes rotating one file keep
+    renaming it out from under each other. It reopens the file when the service
+    has rotated it instead, so its lines land in the current log."""
     try:
-        handler = RotatingFileHandler(LOG_FILE, maxBytes=LOG_MAX_BYTES, backupCount=1)
+        if rotate:
+            handler = RotatingFileHandler(LOG_FILE, maxBytes=LOG_MAX_BYTES, backupCount=1)
+        else:
+            handler = WatchedFileHandler(LOG_FILE)
     except OSError:
         handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter("%(asctime)s %(message)s",
@@ -132,6 +157,12 @@ def setup_logging():
 def log(msg, error=False, warn=False):
     prefix = "[Error] " if error else ("[Warn] " if warn else "")
     _logger.info(f"{prefix}{msg}")
+
+def log_once(key, msg, **kw):
+    """log(), but only the first time for a given key in this process."""
+    if key not in _warned:
+        _warned.add(key)
+        log(msg, **kw)
 
 def load_config():
     global config, docker_mappings
@@ -144,6 +175,10 @@ def load_config():
                     config[k.strip()] = v.strip().strip('"\'')
         except OSError as e:
             log(f"Config load failed: {e}", error=True)
+
+    # Free-text fields, and every prefix comparison assumes no trailing slash.
+    for key in ("ARRAY_ROOT", "CACHE_ROOT"):
+        config[key] = config[key].rstrip('/') or '/'
 
     # Parse docker mappings (stored as docker_path:host_path;...)
     docker_mappings = {}
@@ -169,41 +204,97 @@ def cfg(key, as_int=False, as_bool=False):
                 return 0
     return val
 
+def _size(n):
+    """Bytes the way the web UI shows them."""
+    if n >= 1073741824:
+        return f"{n / 1073741824:.1f} GB"
+    if n >= 1048576:
+        return f"{n / 1048576:.0f} MB"
+    return f"{n / 1024:.0f} KB"
+
+def _read_json(path):
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+def _write_json(path, data):
+    """Atomic replace, so a reader never gets half a file."""
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(data, fh)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
 # =============================================================================
 # FILE TRACKING
 # =============================================================================
 
 class TrackedFiles:
-    """Manages the list of plugin-cached files with timestamps.
-    Thread-safe: accessed by both the main loop (cleanup) and the
-    copy worker (adding freshly cached files)."""
+    """The files this plugin put on the cache, each with the time it did.
 
-    _lock = threading.RLock()
+    The service and the mover both change the list, so every change is a
+    read-modify-write under a lock both processes take. A plain read needs no
+    lock: the file is replaced atomically, so a reader sees one version or the
+    other and never half of one."""
+
+    _lock  = threading.RLock()   # threads of this process
+    _depth = 0                   # how deep the holder of _lock is nested in locked()
+    _fh    = None                # the flock shared with the other process
+
+    @classmethod
+    @contextlib.contextmanager
+    def locked(cls):
+        with cls._lock:
+            if cls._depth == 0:
+                # An flock belongs to the open file, not to the process: a
+                # second open() and flock() in a nested call would wait for
+                # itself. So one handle, taken by the outermost call only.
+                fh = None
+                try:
+                    fh = open(TRACKED_LOCK, "a")
+                    fcntl.flock(fh, fcntl.LOCK_EX)
+                except OSError:
+                    if fh is not None:
+                        fh.close()
+                    fh = None
+                cls._fh = fh
+            cls._depth += 1
+            try:
+                yield
+            finally:
+                cls._depth -= 1
+                if cls._depth == 0 and cls._fh is not None:
+                    cls._fh.close()
+                    cls._fh = None
 
     @staticmethod
     def load():
         """Load tracked files. Returns dict: {path: timestamp}"""
-        with TrackedFiles._lock:
-            tracked = {}
-            if os.path.exists(TRACKED_FILES):
-                try:
-                    for line in Path(TRACKED_FILES).read_text().splitlines():
-                        if '|' in line:
-                            path, ts = line.rsplit('|', 1)
-                            try:
-                                tracked[path] = float(ts)
-                            except ValueError:
-                                continue
-                        elif line.strip():
-                            tracked[line.strip()] = time.time()
-                except OSError as e:
-                    log(f"Tracking load failed: {e}", error=True)
-            return tracked
+        tracked = {}
+        if os.path.exists(TRACKED_FILES):
+            try:
+                for line in Path(TRACKED_FILES).read_text().splitlines():
+                    if '|' in line:
+                        path, ts = line.rsplit('|', 1)
+                        try:
+                            tracked[path] = float(ts)
+                        except ValueError:
+                            continue
+                    elif line.strip():
+                        tracked[line.strip()] = time.time()
+            except OSError as e:
+                log(f"Tracking load failed: {e}", error=True)
+        return tracked
 
     @staticmethod
     def save(tracked):
         """Save tracked files dict to disk (atomic replace)."""
-        with TrackedFiles._lock:
+        with TrackedFiles.locked():
             try:
                 content = '\n'.join(f"{p}|{t}" for p, t in sorted(tracked.items()))
                 tmp = TRACKED_FILES + ".tmp"
@@ -214,80 +305,94 @@ class TrackedFiles:
 
     @staticmethod
     def add(path):
-        with TrackedFiles._lock:
+        with TrackedFiles.locked():
             tracked = TrackedFiles.load()
             if path not in tracked:
                 tracked[path] = time.time()
                 TrackedFiles.save(tracked)
 
     @staticmethod
-    def remove(path):
-        with TrackedFiles._lock:
+    def update(add=None, drop=()):
+        """Add and drop entries with a single write. The list lives on the USB
+        flash drive, so a move of fifty files must not rewrite it fifty times."""
+        with TrackedFiles.locked():
             tracked = TrackedFiles.load()
-            if path in tracked:
-                del tracked[path]
+            changed = False
+            for path in drop:
+                if tracked.pop(path, None) is not None:
+                    changed = True
+            for path, ts in (add or {}).items():
+                if path not in tracked:
+                    tracked[path] = ts
+                    changed = True
+            if changed:
                 TrackedFiles.save(tracked)
 
     @staticmethod
     def remove_many(paths):
-        """Drop several entries with a single write. The list lives on the USB
-        flash drive, so a move of fifty files must not rewrite it fifty times."""
-        if not paths:
-            return
-        with TrackedFiles._lock:
-            tracked = TrackedFiles.load()
-            hit = False
-            for path in paths:
-                if tracked.pop(path, None) is not None:
-                    hit = True
-            if hit:
-                TrackedFiles.save(tracked)
+        if paths:
+            TrackedFiles.update(drop=paths)
 
-    @staticmethod
-    def clear():
-        TrackedFiles.save({})
+def _storage_ready():
+    """True once the cache pool and the array are mounted.
+
+    On boot the plugin is installed, and the service started, before the array
+    is: CACHE_ROOT is missing or an empty mount point, and every tracked file
+    looks deleted. Anything that judges the tracked list by what exists has to
+    wait for this - reconciling at that moment would drop every entry."""
+    try:
+        if not os.listdir(cfg("CACHE_ROOT")):
+            return False
+    except OSError:
+        return False
+    return os.path.isdir(physical_array_root())
 
 def reconcile_tracked_files():
-    """Startup consistency check for the tracked-files list.
+    """Bring the tracked-files list in line with what is on the cache.
 
     1. Drops entries whose cache file no longer exists (e.g. removed
        manually or lost in a crash).
-    2. Adopts orphaned plugin copies: media files inside the docker-mapped
-       cache directories that also exist on the array (i.e. duplicates the
-       plugin created but lost track of). Only mapped media directories are
-       scanned — never the whole cache pool, so appdata/system shares and
-       legitimately cache-only files (e.g. fresh downloads awaiting the
-       mover) are left alone.
+    2. Adopts orphaned plugin copies: media files inside the mapped cache
+       folders with an identical twin on the array - same size and
+       modification time, which is what rsync -a leaves behind. A same-named
+       file that differs is not a copy of anything and is left alone, and so
+       is everything outside the mapped folders. The time it is adopted with
+       is its ctime, the closest thing on disk to when it was copied.
+    3. Removes LEGACY_PARTIAL_DIR folders. Older versions kept interrupted
+       copies in them; they are incomplete by definition and their originals
+       are on the array.
+
+    Only run once _storage_ready() says so.
     """
     tracked = TrackedFiles.load()
-    removed = 0
-    for path in list(tracked):
-        if not os.path.exists(path):
-            del tracked[path]
-            removed += 1
+    stale = [p for p in tracked if not os.path.exists(p)]
 
-    adopted    = 0
-    cache_root = cfg("CACHE_ROOT")
-    for cache_dir in sorted(_protected_cache_dirs()):
-        if cache_dir == cache_root or not os.path.isdir(cache_dir):
+    adopt   = {}
+    cleared = 0
+    for cache_dir in sorted(_mapped_cache_dirs()):
+        if not os.path.isdir(cache_dir):
             continue
-        for root, _dirs, files in os.walk(cache_dir):
+        for root, dirs, files in os.walk(cache_dir):
+            if LEGACY_PARTIAL_DIR in dirs:
+                shutil.rmtree(os.path.join(root, LEGACY_PARTIAL_DIR), ignore_errors=True)
+                cleared += 1
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
             for f in files:
                 cache_path = os.path.join(root, f)
-                if cache_path in tracked or not is_media_file(f):
+                if f.startswith('.') or cache_path in tracked or not is_media_file(f):
                     continue
-                # A duplicate of an array file is one of ours
-                if os.path.exists(cache_to_array(cache_path)):
-                    try:
-                        tracked[cache_path] = os.path.getmtime(cache_path)
-                    except OSError:
-                        tracked[cache_path] = time.time()
-                    adopted += 1
+                try:
+                    if _twin(cache_path) == "same":
+                        adopt[cache_path] = os.stat(cache_path).st_ctime
+                except OSError:
+                    continue
 
-    if removed or adopted:
-        TrackedFiles.save(tracked)
-        log(f"[Reconcile] Tracked list: {removed} stale entries removed, "
-            f"{adopted} orphaned cache copies adopted")
+    if stale or adopt:
+        TrackedFiles.update(add=adopt, drop=stale)
+    if stale or adopt or cleared:
+        log(f"[Reconcile] Tracked list: {len(stale)} stale entries removed, "
+            f"{len(adopt)} orphaned cache copies adopted"
+            + (f", {cleared} folder(s) of interrupted copies removed" if cleared else ""))
 
 # =============================================================================
 # PATH UTILITIES
@@ -322,9 +427,9 @@ def physical_array_root():
     """
     root = cfg("ARRAY_ROOT").rstrip('/')
     if root == '/mnt/user':
-        return ARRAY_ROOT
+        return USER0_ROOT
     if root.startswith('/mnt/user/'):
-        return ARRAY_ROOT + root[len('/mnt/user'):]
+        return USER0_ROOT + root[len('/mnt/user'):]
     return root
 
 def cache_to_array(cache_path):
@@ -340,13 +445,6 @@ def array_to_cache(array_path):
     if rel is None:
         return array_path
     return os.path.join(cfg("CACHE_ROOT").rstrip('/'), rel)
-
-def array_share_to_cache(host_path):
-    """Translate a user-share host path to its cache equivalent.
-    Same as array_to_cache but keeps the result when already on cache."""
-    if _under(host_path, cfg("CACHE_ROOT")):
-        return host_path
-    return array_to_cache(host_path)
 
 def translate_docker_path(docker_path):
     """Translate docker container path to host path.
@@ -364,6 +462,29 @@ def translate_docker_path(docker_path):
                else os.path.join(cfg("ARRAY_ROOT"), host_prefix)
         return os.path.join(base, rel)
     return path
+
+def _mapped_cache_dirs():
+    """The cache-side twin of every mapped host folder - the only part of the
+    pool this plugin works in. The web UI derives its list the same way."""
+    cache_root = cfg("CACHE_ROOT")
+    array_root = cfg("ARRAY_ROOT")
+    mapped = set()
+    for host_path in docker_mappings.values():
+        host_path = host_path.rstrip('/')
+        if not host_path:
+            continue
+        rel = _relative_to(host_path, array_root)
+        if rel is not None:
+            mapped.add(os.path.join(cache_root, rel) if rel else cache_root)
+        elif _under(host_path, cache_root):
+            mapped.add(host_path)
+        else:
+            # host_path given as a relative share name — prepend cache root
+            mapped.add(os.path.join(cache_root, host_path.lstrip('/')))
+    # The pool itself is never one of them: a mapping of the whole user share
+    # would otherwise hand appdata and system to the mover.
+    mapped.discard(cache_root)
+    return mapped
 
 def is_excluded(path):
     """Check if path contains any of the configured excluded folder names."""
@@ -397,7 +518,7 @@ def parse_episode(filename):
 
 def clone_permissions(dest_path):
     """Clone permissions from the array original (via /mnt/user0) to dest_path."""
-    src = cache_to_array(dest_path) if dest_path.startswith(cfg("CACHE_ROOT")) else None
+    src = cache_to_array(dest_path) if _under(dest_path, cfg("CACHE_ROOT")) else None
     if not src or not os.path.exists(src):
         return
     try:
@@ -407,9 +528,142 @@ def clone_permissions(dest_path):
     except OSError as e:
         log(f"Permission clone failed: {e}", error=True)
 
+def _mirror_parents(cache_path):
+    """Create the directories above the array side of cache_path that do not
+    exist yet, each owned like its counterpart on the cache.
+
+    os.makedirs would create them as root with mode 0755. For a folder that
+    only existed on the cache - a series downloaded last night - that shuts out
+    Sonarr and friends, which run as nobody: the next episode could not be
+    written into its own season folder. The array root itself is never made:
+    if it is missing the array is not mounted, and a directory made there would
+    be on the RAM disk.
+
+    Returns the directories it made, top first, so a move that does not happen
+    after all can take them away again."""
+    cache_root = cfg("CACHE_ROOT")
+    rel = _relative_to(os.path.dirname(cache_path), cache_root)
+    if rel is None:
+        raise OSError(f"{cache_path} is not under {cache_root}")
+    dst, src = physical_array_root(), cache_root
+    if not os.path.isdir(dst):
+        raise OSError(f"{dst} does not exist - is the array started?")
+    created = []
+    for part in (p for p in rel.split('/') if p):
+        dst, src = os.path.join(dst, part), os.path.join(src, part)
+        if os.path.isdir(dst):
+            continue
+        os.mkdir(dst)
+        created.append(dst)
+        try:
+            st = os.stat(src)
+            os.chown(dst, st.st_uid, st.st_gid)
+            os.chmod(dst, stat.S_IMODE(st.st_mode))
+        except OSError as e:
+            log(f"Could not give {dst} the owner of {src}: {e}", warn=True)
+    return created
+
+def _remove_empty_dirs(dirs):
+    """Take away directories made for a move that did not happen, deepest
+    first, as far as they are still empty."""
+    for d in reversed(dirs):
+        try:
+            os.rmdir(d)
+        except OSError:
+            break
+
+# =============================================================================
+# CACHE SPACE
+# =============================================================================
+
+_MOUNT_ESCAPE = re.compile(r"\\([0-7]{3})")
+
+def _mount_of(path):
+    """(mount point, source, type) of the filesystem path is on, or None."""
+    best = None
+    try:
+        with open(PROC_MOUNTS) as fh:
+            for line in fh:
+                fields = line.split()
+                if len(fields) < 3:
+                    continue
+                source, mnt, fstype = (_MOUNT_ESCAPE.sub(lambda m: chr(int(m.group(1), 8)), f)
+                                       for f in fields[:3])
+                if _under(path, mnt) and (best is None or len(mnt) > len(best[0])):
+                    best = (mnt, source, fstype)
+    except OSError:
+        return None
+    return best
+
+def _pool_space():
+    """(used, total, free) in bytes for the pool CACHE_ROOT is on, or None.
+
+    statvfs is right for XFS and Btrfs and wrong for ZFS, which answers it per
+    dataset: "used" is what that one dataset references, not its children.
+    Unraid makes each share on a ZFS pool a dataset of its own, so the media
+    folder is a child of /mnt/cache and none of it would be counted - the
+    usage limit would not be reached until the pool was full. For ZFS the
+    numbers come from zfs itself."""
+    root = cfg("CACHE_ROOT")
+    try:
+        du = shutil.disk_usage(root)
+    except OSError:
+        return None
+    mount = _mount_of(root)
+    if mount and mount[2] == "zfs":
+        pool = mount[1].split('/')[0]
+        try:
+            out = subprocess.run(["zfs", "list", "-Hp", "-o", "used,avail", pool],
+                                 capture_output=True, text=True, timeout=15)
+            used, avail = (int(x) for x in out.stdout.split())
+            return used, used + avail, avail
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
+            log_once(("zfs", pool), f"Cannot read the size of ZFS pool {pool} ({e}) - "
+                     f"the usage limit is judged from {root} alone", warn=True)
+    return du.used, du.total, du.free
+
+def _existing_dir(path):
+    """The nearest directory above path that exists."""
+    d = os.path.dirname(path)
+    while d and not os.path.isdir(d):
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return d or '/'
+
+def cache_has_room_for(file_size, dest=None, freed=0):
+    """Check both the configured max-usage percentage and the free bytes this
+    file needs (plus a small safety margin).
+
+    dest is where the file will go: a quota on that dataset can leave less room
+    than the pool has. freed is what the caller has just moved off the cache -
+    ZFS gives deleted space back a few seconds after the fact, and without it
+    eviction would keep finding the pool full and move twenty-five files to
+    make room for one."""
+    space = _pool_space()
+    if space is None:
+        log(f"Cannot stat cache filesystem {cfg('CACHE_ROOT')}", error=True)
+        return False
+    used, total, free = space
+    used = max(0, used - freed)
+    free += freed
+    if total and used / total * 100 >= cfg("CACHE_MAX_USAGE", as_int=True):
+        return False
+    if dest:
+        try:
+            free = min(free, shutil.disk_usage(_existing_dir(dest)).free + freed)
+        except OSError:
+            pass
+    margin = 512 * 1024 * 1024  # keep at least 512 MB headroom
+    return free > file_size + margin
+
 # =============================================================================
 # FILE OPERATIONS
 # =============================================================================
+
+class TransferStopped(Exception):
+    """The transfer was cut short because this process was asked to stop."""
 
 def _rsync_timeout_for(src):
     """Generous size-based timeout so a hung rsync can't block the worker
@@ -429,6 +683,9 @@ def _run_rsync(cmd, timeout):
                             stderr=subprocess.PIPE, text=True)
     with _rsync_lock:
         _current_rsync = proc
+    # A stop that came in just before the line above found nothing to end.
+    if _shutting_down.is_set():
+        proc.terminate()
     try:
         _, stderr = proc.communicate(timeout=timeout)
         return proc.returncode, (stderr or "")
@@ -452,13 +709,29 @@ def _sizes_match(src, dst):
     except OSError:
         return False
 
+def _remove_rsync_leftovers(dst):
+    """rsync cleans up its temporary file when it is told to stop, but not
+    when it is killed - which is what the timeout does."""
+    pattern = os.path.join(os.path.dirname(dst),
+                           "." + glob.escape(os.path.basename(dst)) + ".??????")
+    for leftover in glob.glob(pattern):
+        try:
+            os.remove(leftover)
+        except OSError:
+            pass
+
 def rsync_transfer(src, dst, remove_source=True):
     """Move (or copy) a file using rsync. Robust against transient errors:
 
-    - Retries up to RSYNC_RETRIES times; --partial-dir lets a retry resume
-      instead of starting over.
-    - rsync stderr is captured and logged so failures are diagnosable
-      (previously it was thrown away).
+    - Neither --inplace nor --partial. rsync writes into a hidden temporary
+      file next to the destination and renames it into place once complete,
+      so a stream that opens the file mid-copy never sees a truncated one;
+      Unraid serves new opens from cache. When a transfer is stopped, rsync
+      deletes that temporary file itself. (--partial kept it for a resume,
+      but between two local paths rsync copies whole files and never resumes
+      - all it kept was the debris, up to a whole film of it.)
+    - Retries up to RSYNC_RETRIES times.
+    - rsync stderr is captured and logged so failures are diagnosable.
     - Exit codes 23 (partial transfer / attribute errors) and 24 (source
       file vanished) are tolerated when the destination is verifiably
       complete (same size as source). Exit 23 is frequently caused by
@@ -466,25 +739,31 @@ def rsync_transfer(src, dst, remove_source=True):
       content transferred fine — the caller re-applies permissions via
       clone_permissions anyway.
 
-    Raises subprocess.CalledProcessError if the transfer really failed.
+    The destination directory must exist: only the caller knows whose
+    directory it should be.
+
+    Raises TransferStopped if this process was asked to stop, and
+    subprocess.CalledProcessError if the transfer really failed.
     """
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
-    # --partial-dir instead of --inplace: a retry still resumes, but the
-    # partial data sits in a side directory. With --inplace the destination
-    # carries its final name while still incomplete, and Unraid serves new
-    # opens from cache - a stream starting mid-copy could read a truncated file.
-    cmd = ["rsync", "-a", "--partial", "--partial-dir=.plex_to_cache-partial"]
+    cmd = ["rsync", "-a"]
     if remove_source:
         cmd.append("--remove-source-files")
     cmd.extend([src, dst])
 
     timeout  = _rsync_timeout_for(src)
     last_err = ""
+    rc       = 1
 
     for attempt in range(1, RSYNC_RETRIES + 1):
+        if _shutting_down.is_set():
+            raise TransferStopped()
         rc, stderr = _run_rsync(cmd, timeout)
         if rc == 0:
             return
+        if _shutting_down.is_set():
+            raise TransferStopped()
+        if rc == -1:
+            _remove_rsync_leftovers(dst)
 
         # Keep the last few stderr lines for the log
         err_lines = [l for l in stderr.strip().splitlines() if l.strip()]
@@ -502,45 +781,23 @@ def rsync_transfer(src, dst, remove_source=True):
                     log(f"Could not remove source after transfer: {e}", warn=True)
             return
 
-        if _shutting_down.is_set():
-            break
-
         if attempt < RSYNC_RETRIES:
             log(f"rsync attempt {attempt}/{RSYNC_RETRIES} failed (exit {rc}) for "
                 f"{os.path.basename(src)}: {last_err} — retrying in {RSYNC_RETRY_DELAY}s",
                 warn=True)
-            time.sleep(RSYNC_RETRY_DELAY)
+            if _shutting_down.wait(RSYNC_RETRY_DELAY):
+                raise TransferStopped()
 
     raise subprocess.CalledProcessError(rc if rc != 0 else 1, "rsync", stderr=last_err)
-
-# Backwards-compatible alias (old name used elsewhere / in docs)
-rsync_move = rsync_transfer
-
-def _protected_cache_dirs():
-    """Dirs inside CACHE_ROOT that must never be rmdir'd by cleanup_empty_dirs.
-    Derived from the docker mappings: every mapped host path, translated to
-    its cache-side equivalent."""
-    cache_root = cfg("CACHE_ROOT")
-    array_root = cfg("ARRAY_ROOT")
-    protected  = {cache_root}
-    for host_path in docker_mappings.values():
-        if host_path.startswith(array_root):
-            protected.add(host_path.replace(array_root, cache_root, 1))
-        elif host_path.startswith(cache_root):
-            protected.add(host_path)
-        else:
-            # host_path given as a relative share name — prepend cache root
-            protected.add(os.path.join(cache_root, host_path.lstrip('/')))
-    return protected
 
 def cleanup_empty_dirs(start_path):
     """Remove empty parent directories up to CACHE_ROOT, but stop at any
     directory that's protected by a docker mapping."""
     cache_root = cfg("CACHE_ROOT")
-    protected  = _protected_cache_dirs()
+    protected  = _mapped_cache_dirs() | {cache_root}
 
     parent = os.path.dirname(start_path)
-    while parent.startswith(cache_root) and len(parent) > len(cache_root):
+    while _under(parent, cache_root) and parent != cache_root:
         if parent in protected:
             break
         try:
@@ -549,58 +806,104 @@ def cleanup_empty_dirs(start_path):
         except OSError:
             break
 
-def move_file_to_array(cache_path, track=True):
-    """Move a single file from cache to array. Returns (success, was_deleted, size)."""
-    if not os.path.exists(cache_path):
-        if track:
-            TrackedFiles.remove(cache_path)
-        return True, False, 0
+def _twin(cache_path):
+    """How a cache file relates to the file of the same name on the array.
 
+    None when there is none. "same" for equal size and modification time,
+    which is what rsync -a leaves: the cache file is a copy. Otherwise which of
+    the two was changed later - "cache_newer" or "array_newer" - or "unclear"
+    when they are the same age but not the same size.
+
+    The cache side can legitimately be the newer one. A file on both is served
+    from the cache, so anything that writes to it through the user share - a
+    tag editor, or Sonarr replacing an episode with a better release under the
+    same name - changes the cache copy and leaves the one on the array alone.
+
+    Raises OSError if either file cannot be read, or if cache_path is not on
+    the cache at all - its "twin" would be the file itself."""
+    array_path = cache_to_array(cache_path)
+    if array_path == cache_path:
+        raise OSError(f"{cache_path} is not under {cfg('CACHE_ROOT')}")
+    try:
+        a = os.stat(array_path)
+    except FileNotFoundError:
+        return None
+    c = os.stat(cache_path)
+    dt = c.st_mtime - a.st_mtime
+    if abs(dt) < 2:
+        return "same" if c.st_size == a.st_size else "unclear"
+    return "cache_newer" if dt > 0 else "array_newer"
+
+def move_file_to_array(cache_path):
+    """Move a single file from cache to array. Returns (result, size).
+
+    result is one of:
+      "moved"   - it is on the array now and gone from the cache
+      "dropped" - the array already had it, so only the cache copy was removed
+      "gone"    - there was nothing on the cache to move
+      "kept"    - left alone: the array holds a different file of that name
+                  and there is no telling which of the two is the right one
+      "stopped" - this process was asked to stop; the cache file is untouched
+      "failed"  - see the log
+    The tracked list is the caller's business, so a batch can update it once.
+    """
+    name = os.path.basename(cache_path)
+    # A tracked entry from before CACHE_ROOT was changed. Its "place on the
+    # array" would be the file itself, and a file compared with itself looks
+    # like a duplicate that can go.
+    if _relative_to(cache_path, cfg("CACHE_ROOT")) is None:
+        log(f"{cache_path} is not under {cfg('CACHE_ROOT')} - left where it is", warn=True)
+        return "kept", 0
     try:
         size = os.path.getsize(cache_path)
-        array_path = cache_to_array(cache_path)
+    except FileNotFoundError:
+        return "gone", 0
+    except OSError as e:
+        log(f"Move failed for {name}: {e}", error=True)
+        return "failed", 0
 
-        # If already on array, just delete cache copy
-        if os.path.exists(array_path):
+    array_path = cache_to_array(cache_path)
+    created = []
+    try:
+        twin = _twin(cache_path)
+        if twin in ("same", "array_newer"):
+            if twin == "array_newer":
+                log(f"{name}: the copy on the array is newer - removing the one on the cache",
+                    warn=True)
             os.remove(cache_path)
             cleanup_empty_dirs(cache_path)
-            if track:
-                TrackedFiles.remove(cache_path)
-            return True, True, size
-
-        # Move to array
-        # No clone_permissions here: it copies the array original's ownership
-        # onto a cache copy, and this direction has no original to read from -
-        # the call returned immediately. rsync -a carries them across as root.
+            return "dropped", size
+        if twin == "unclear":
+            log(f"{name} is also on the array, just as old but a different size. Left on "
+                f"the cache: compare the two and delete the one that is wrong.", warn=True)
+            return "kept", 0
+        if twin == "cache_newer":
+            log(f"{name} was changed on the cache after it was cached - "
+                f"it replaces the older copy on the array")
+        else:
+            created = _mirror_parents(cache_path)
         rsync_transfer(cache_path, array_path, remove_source=True)
         cleanup_empty_dirs(cache_path)
-        if track:
-            TrackedFiles.remove(cache_path)
-        return True, False, size
+        return "moved", size
 
+    except TransferStopped:
+        _remove_empty_dirs(created)
+        return "stopped", 0
     except (OSError, subprocess.CalledProcessError) as e:
+        _remove_empty_dirs(created)
         detail = getattr(e, 'stderr', '') or ''
-        log(f"Move failed for {os.path.basename(cache_path)}: {e} {detail}".strip(), error=True)
-        return False, False, 0
+        log(f"Move failed for {name}: {e} {detail}".strip(), error=True)
+        return "failed", 0
 
-def cache_has_room_for(file_size):
-    """Check both the configured max-usage percentage and the actual free
-    bytes needed for this specific file (plus a small safety margin)."""
-    try:
-        usage = shutil.disk_usage(cfg("CACHE_ROOT"))
-    except OSError as e:
-        log(f"Cannot stat cache filesystem: {e}", error=True)
-        return False
-    if (usage.used / usage.total) * 100 >= cfg("CACHE_MAX_USAGE", as_int=True):
-        return False
-    margin = 512 * 1024 * 1024  # keep at least 512 MB headroom
-    return usage.free > file_size + margin
-
-def evict_oldest_cached(needed_size):
+def evict_oldest_cached(needed_size, dest=None):
     """LRU eviction: when the cache is full, move the oldest plugin-cached
     files back to the array until needed_size fits (bounded by
-    EVICT_MAX_FILES per pass). Files that belong to an active stream or
-    are queued for copying are never evicted.
+    EVICT_MAX_FILES per pass). Files that belong to an active stream, are
+    queued for copying or were already handed to the mover are never evicted.
+
+    This runs in the copy worker, as part of copying to the cache, so Stop
+    ends it along with the copy it was making room for. Nothing is lost when
+    it does: the file it was moving stays on the cache, and stays tracked.
 
     Returns True if there is room for needed_size afterwards."""
     if not cfg("ENABLE_CACHE_EVICTION", as_bool=True):
@@ -608,28 +911,38 @@ def evict_oldest_cached(needed_size):
 
     with _pending_lock:
         pending = {array_to_cache(p) for p in _pending_copies}
-    protected = set(active_cache_paths) | pending
+    protected = set(active_cache_paths) | pending | set(_requested)
 
     tracked = TrackedFiles.load()
+    freed   = 0
     evicted = 0
-    for cache_path, _ts in sorted(tracked.items(), key=lambda kv: kv[1]):
-        if cache_has_room_for(needed_size):
-            return True
-        if evicted >= EVICT_MAX_FILES:
-            break
-        if cache_path in protected:
-            continue
-        if not os.path.exists(cache_path):
-            TrackedFiles.remove(cache_path)
-            continue
-        log(f"[Evict] {os.path.basename(cache_path)} (making room on cache)")
-        ok, _, _ = move_file_to_array(cache_path)
-        if ok:
-            evicted += 1
+    untrack = []
+    try:
+        for cache_path, _ts in sorted(tracked.items(), key=lambda kv: kv[1]):
+            if cache_has_room_for(needed_size, dest, freed):
+                return True
+            if evicted >= EVICT_MAX_FILES:
+                break
+            if cache_path in protected:
+                continue
+            if not os.path.exists(cache_path):
+                untrack.append(cache_path)
+                continue
+            log(f"[Evict] {os.path.basename(cache_path)} (making room on cache)")
+            result, size = move_file_to_array(cache_path)
+            if result == "stopped":
+                return False
+            if result != "failed":
+                untrack.append(cache_path)
+            if result in ("moved", "dropped"):
+                freed += size
+                evicted += 1
+    finally:
+        TrackedFiles.remove_many(untrack)
 
-    return cache_has_room_for(needed_size)
+    return cache_has_room_for(needed_size, dest, freed)
 
-def _cache_media_files(min_age_seconds, roots=None):
+def _cache_media_files(min_age_seconds, roots=None, recent=None):
     """Media files sitting in the mapped cache folders, whether this plugin put
     them there or not.
 
@@ -640,31 +953,32 @@ def _cache_media_files(min_age_seconds, roots=None):
 
     Files modified within min_age_seconds are left alone: something still being
     written into the media folder - an import in progress, say - would otherwise
-    be moved out from under the process writing it.
+    be moved out from under the process writing it. Their paths go into
+    `recent`, if given, so the caller can say it left them. Hidden files and
+    folders are skipped, as the browser does: .Recycle.Bin is not media, and
+    neither are the ._ files a Mac leaves on a share.
     """
-    cache_root = cfg("CACHE_ROOT")
-    mapped = [d for d in sorted(_protected_cache_dirs()) if d != cache_root]
+    mapped = sorted(_mapped_cache_dirs())
 
     if roots is None:
         targets = mapped
     else:
-        targets = []
-        for r in roots:
-            r = r.rstrip(os.sep)
-            if any(r == m or r.startswith(m + os.sep) for m in mapped):
-                targets.append(r)
+        targets = [r.rstrip('/') for r in roots
+                   if any(_under(r.rstrip('/'), m) for m in mapped)]
 
     found = {}
     now = time.time()
 
     def consider(path, name):
-        if not is_media_file(name) or is_excluded(path):
+        if name.startswith('.') or not is_media_file(name) or is_excluded(path):
             return
         try:
             st = os.stat(path)
         except OSError:
             return
         if now - st.st_mtime < min_age_seconds:
+            if recent is not None:
+                recent.append(path)
             return
         found[path] = st.st_mtime
 
@@ -672,168 +986,349 @@ def _cache_media_files(min_age_seconds, roots=None):
         if os.path.isfile(target):
             consider(target, os.path.basename(target))
             continue
-        for root, _dirs, files in os.walk(target):
+        for root, dirs, files in os.walk(target):
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
             for name in files:
                 consider(os.path.join(root, name), name)
     return found
 
-def flush_cache_to_array(only=None, label="Flush"):
-    """Move files this plugin cached back to the array.
+# =============================================================================
+# MOVER — everything that goes back to the array, in a process of its own
+# =============================================================================
+#
+# Requests sit in MOVE_QUEUE, one "<kind>\t<path>" per line:
+#   pick  a file or folder chosen in the browser. It covers media the plugin
+#         never cached too - choosing it by hand says what is meant.
+#   auto  a single file Auto Cleanup chose. Only ever one this plugin cached.
+# The web UI and the service append; the mover takes the lot and empties it.
 
-    Same operation as eviction, but unconditional and not bounded by
-    EVICT_MAX_FILES.
+def _queue_append(lines):
+    """flock, not lockf: the web UI appends with PHP's LOCK_EX, which is flock."""
+    with open(MOVE_QUEUE, "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        fh.write("".join(line + "\n" for line in lines))
 
-    Without `only` this moves what the plugin itself put on the cache. With
-    `only` - a file or folder picked in the browser - it also covers media the
-    plugin never copied, since naming something explicitly says what is meant.
-    Either way nothing outside the mapped media folders is reachable.
+def _queue_take():
+    """Everything queued so far as (kind, path), leaving the queue empty.
 
-    Left where they are: a file belonging to an active stream, one queued for
-    copying, one written in the last MOVE_MIN_AGE seconds, and an untracked file
-    whose name already exists on the array. Each is counted so the result can
-    say it did less than everything rather than implying otherwise.
-    """
-    with _flush_lock:
-        if _flush_state["active"]:
-            log(f"[{label}] Another flush is already running", warn=True)
-            return
-        _flush_state.update(active=True, total=0, done=0, bytes=0,
-                            skipped=0, conflicts=0, failed=0, finished=0)
-
-    moved_paths = []
-
+    Emptied by truncating under the lock rather than by deleting the file: a
+    writer that had opened the file just before would otherwise append to one
+    nobody reads any more."""
     try:
-        tracked_map = TrackedFiles.load()
-        candidates = dict(tracked_map)
-        # An explicit selection means "move this", so it covers media the plugin
-        # never copied. Without one - the bare --flush - only what this plugin
-        # put on the cache is touched.
-        if only is not None:
-            extra = _cache_media_files(MOVE_MIN_AGE, roots=only)
-            for path, ts in extra.items():
-                candidates.setdefault(path, ts)
+        fh = open(MOVE_QUEUE, "r+")
+    except FileNotFoundError:
+        return []
+    with fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        data = fh.read()
+        fh.seek(0)
+        fh.truncate()
+    requests = []
+    for line in data.splitlines():
+        kind, sep, path = line.partition("\t")
+        if sep and path and kind in ("pick", "auto"):
+            requests.append((kind, path))
+    return requests
 
-        entries = sorted(candidates.items(), key=lambda kv: kv[1])
-        if only is not None:
-            # An entry in `only` is either a file or a folder - the browser
-            # offers a button on a whole season or series. The trailing
-            # separator keeps /Media/Show2 from matching /Media/Show.
-            wanted = set(only)
-            prefixes = tuple(p.rstrip(os.sep) + os.sep for p in only)
-            entries = [item for item in entries
-                       if item[0] in wanted or item[0].startswith(prefixes)]
-        with _flush_lock:
-            _flush_state["total"] = len(entries)
+def _queue_pending():
+    try:
+        return os.path.getsize(MOVE_QUEUE) > 0
+    except OSError:
+        return False
 
-        log(f"[{label}] Moving {len(entries)} cached file(s) back to the array")
-        last_write = 0.0
+def _try_lock(fh):
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
 
-        for cache_path, _ts in entries:
-            if _shutting_down.is_set():
-                log(f"[{label}] Aborted: service is shutting down", warn=True)
-                break
+def mover_running():
+    """True while a mover holds MOVE_LOCK."""
+    try:
+        fh = open(MOVE_LOCK, "a")
+    except OSError:
+        return False
+    with fh:
+        if not _try_lock(fh):
+            return True
+        fcntl.flock(fh, fcntl.LOCK_UN)
+        return False
 
-            # Read this per file rather than snapshotting it once: the main
-            # loop replaces active_cache_paths every pass, and a move can run
-            # for minutes. A stream started halfway through has to be protected
-            # too, which a snapshot taken at the start cannot do.
-            with _pending_lock:
-                pending = {array_to_cache(p) for p in _pending_copies}
-            if cache_path in active_cache_paths or cache_path in pending:
-                with _flush_lock:
-                    _flush_state["skipped"] += 1
-                log(f"[{label}] Skipping {os.path.basename(cache_path)} (in use)")
-                continue
-
-            # A tracked file is a copy of the array original by construction, so
-            # move_file_to_array may drop the cache side when both exist. An
-            # untracked file is not: a same-named file on the array is a
-            # different file, and deleting the cache copy would lose it.
-            if cache_path not in tracked_map and os.path.exists(cache_to_array(cache_path)):
-                with _flush_lock:
-                    _flush_state["conflicts"] += 1
-                log(f"[{label}] Skipping {os.path.basename(cache_path)}: a different file "
-                    f"of that name is already on the array", warn=True)
-                continue
-
-            ok, _deleted, size = move_file_to_array(cache_path, track=False)
-            if ok:
-                moved_paths.append(cache_path)
-            with _flush_lock:
-                if ok:
-                    _flush_state["done"] += 1
-                    _flush_state["bytes"] += size
-                else:
-                    _flush_state["failed"] += 1
-
-            # The move loop can run for a long time; refresh the snapshot the
-            # UI polls rather than leaving it stale until the next interval.
-            if time.time() - last_write >= 5:
-                write_status()
-                last_write = time.time()
-
-        with _flush_lock:
-            done, moved     = _flush_state["done"], _flush_state["bytes"]
-            skipped, failed = _flush_state["skipped"], _flush_state["failed"]
-            conflicts       = _flush_state["conflicts"]
-        summary = f"[{label}] Done: {done} file(s), {moved / 1073741824:.1f} GB moved"
-        if skipped:
-            summary += f", {skipped} skipped (in use)"
-        if conflicts:
-            summary += f", {conflicts} skipped (name clash on the array)"
-        if failed:
-            summary += f", {failed} failed"
-        log(summary, error=bool(failed))
-
-    except Exception as e:
-        log(f"[{label}] Error: {e}", error=True)
+def _start_mover():
+    """Start a mover unless one is running. It gets a session of its own, so
+    that stopping the service does not take it along."""
+    global _movers
+    _movers = [p for p in _movers if p.poll() is None]   # reap the finished ones
+    if mover_running():
+        return
+    try:
+        err = open(LOG_FILE, "a")
+    except OSError:
+        err = subprocess.DEVNULL
+    try:
+        _movers.append(subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "--move"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err,
+            start_new_session=True, close_fds=True))
+    except OSError as e:
+        log(f"Cannot start the mover: {e}", error=True)
     finally:
-        # One write for the whole run, and in finally so an interrupted move
-        # still records what it managed to shift.
-        TrackedFiles.remove_many(moved_paths)
-        with _flush_lock:
-            _flush_state["active"] = False
-            _flush_state["finished"] = int(time.time())
-        write_status()
+        if err is not subprocess.DEVNULL:
+            err.close()
 
-def drain_move_requests():
-    """Pick up what the web UI asked to move and start it when nothing is
-    running.
+def queue_moves(kind, paths):
+    """Hand paths to the mover and make sure one is running.
 
-    The UI cannot talk to this process, so it appends one path per line to a
-    request file. The paths go into a queue rather than being acted on the
-    moment they arrive: several rows can be clicked in a row, and a move already
-    in progress would otherwise make those requests vanish without a trace.
-    """
-    if os.path.exists(FLUSH_REQUEST):
+    Queued first, then the lock looked at: a mover that is just finishing
+    looks at the queue again after letting go of its lock, so a request
+    cannot fall into the gap between the two (see run_mover)."""
+    if not paths:
+        return
+    _queue_append([f"{kind}\t{p}" for p in paths])
+    _start_mover()
+
+def _stop_transfers():
+    """End the transfer in progress and start no new one. rsync removes its
+    own unfinished file when terminated, so nothing is left half-copied."""
+    _shutting_down.set()
+    with _rsync_lock:
+        proc = _current_rsync
+    if proc is not None:
         try:
-            requested = [ln.strip() for ln in
-                         Path(FLUSH_REQUEST).read_text().splitlines() if ln.strip()]
-        except OSError:
-            requested = []
-        try:
-            os.remove(FLUSH_REQUEST)
+            proc.terminate()
         except OSError:
             pass
-        for path in requested:
-            if path not in move_queue:
-                move_queue.append(path)
 
-    with _flush_lock:
-        busy = _flush_state["active"]
-    if move_queue and not busy:
-        if start_flush(only=list(move_queue), label="Move"):
-            move_queue.clear()
+def _request_stop(signum=None, frame=None):
+    """The mover's SIGTERM: the Stop move button, or a shutdown."""
+    _job["stopped"] = True
+    _stop_transfers()
 
-def start_flush(only=None, label="Flush"):
-    """Run a flush in the background so the main loop keeps tracking streams -
-    it is what keeps the in-use protection current while the flush runs."""
-    with _flush_lock:
-        if _flush_state["active"]:
-            return False
-    threading.Thread(target=flush_cache_to_array, name="flush", daemon=True,
-                     kwargs={"only": only, "label": label}).start()
-    return True
+def _protected_now():
+    """Cache paths the mover must not touch right now: what is being played,
+    and - while the service runs - what it is copying or about to copy.
+
+    Asked again per file rather than once at the start. A move can run for
+    hours, and a stream that begins halfway through needs protecting as much
+    as one that was already running. The media servers are asked directly, so
+    this also holds while the service is stopped."""
+    now = time.time()
+    if now - _stream_poll["at"] >= max(5, cfg("CHECK_INTERVAL", as_int=True)):
+        try:
+            paths = set()
+            for docker_path in get_active_streams():
+                array_path = _stream_array_path(docker_path)
+                if array_path:
+                    paths.add(array_to_cache(array_path))
+            _stream_poll["paths"] = frozenset(paths)
+        except Exception as e:
+            log(f"[Move] Cannot ask the media servers what is playing: {e}", warn=True)
+        _stream_poll["at"] = now
+    protected = set(_stream_poll["paths"])
+    status = _read_json(STATUS_FILE)
+    if status and now - status.get("updated", 0) < STATUS_FRESH:
+        protected.update(status.get("protected") or [])
+    return protected
+
+def _write_job():
+    _write_json(MOVE_STATUS, _job)
+
+def _write_pid():
+    try:
+        Path(MOVE_PID).write_text(f"{os.getpid()}\n")
+    except OSError:
+        pass
+
+def _remove_pid():
+    try:
+        if Path(MOVE_PID).read_text().strip() == str(os.getpid()):
+            os.remove(MOVE_PID)
+    except OSError:
+        pass
+
+def _job_start():
+    _job.clear()
+    _job.update(active=True, pid=os.getpid(), started=int(time.time()),
+                total=0, done=0, bytes=0, skipped=0, conflicts=0, recent=0,
+                kept=0, failed=0, dropped=0, current=None, finished=0,
+                stopped=_shutting_down.is_set())
+    _write_pid()
+    _write_job()
+
+def _job_finish():
+    j = _job
+    parts = [f"{j['done']} of {j['total']} file(s) moved ({_size(j['bytes'])})"]
+    if j["skipped"]:
+        parts.append(f"{j['skipped']} in use")
+    if j["conflicts"]:
+        parts.append(f"{j['conflicts']} with a different file of that name on the array")
+    if j["recent"]:
+        parts.append(f"{j['recent']} written in the last {MOVE_MIN_AGE // 60} minutes")
+    if j["kept"]:
+        parts.append(f"{j['kept']} not matching the copy on the array")
+    if j["failed"]:
+        parts.append(f"{j['failed']} failed")
+    if j["dropped"]:
+        parts.append(f"{j['dropped']} queued request(s) dropped")
+    if j["stopped"]:
+        log("[Move] Stopped: " + ", ".join(parts) + ". The rest stays on the cache.")
+    else:
+        log("[Move] Done: " + ", ".join(parts), error=bool(j["failed"]))
+    j.update(active=False, current=None, finished=int(time.time()))
+    _write_job()
+    _remove_pid()
+
+def _move_batch(requests, seen):
+    """Move what one batch of requests names. `seen` holds everything this run
+    has dealt with, so a path asked for twice is handled once.
+
+    Left where they are: a file being played or about to be, one written in
+    the last MOVE_MIN_AGE seconds, and one whose name the array already has
+    for a different file. Each is counted, so the result can say it did less
+    than everything rather than implying otherwise.
+    """
+    tracked = TrackedFiles.load()
+    picks   = [path for kind, path in requests if kind == "pick"]
+
+    # Auto Cleanup names single files, and only ever ones this plugin cached;
+    # one that is not tracked any more by now is not ours to move.
+    candidates = {path: tracked[path] for kind, path in requests
+                  if kind == "auto" and path in tracked}
+    recent = []
+    if picks:
+        # The trailing separator keeps /Media/Show2 from matching /Media/Show.
+        wanted   = set(picks)
+        prefixes = tuple(p.rstrip('/') + '/' for p in picks)
+        for path, ts in tracked.items():
+            if path in wanted or path.startswith(prefixes):
+                candidates[path] = ts
+        for path, ts in _cache_media_files(MOVE_MIN_AGE, roots=picks, recent=recent).items():
+            candidates.setdefault(path, ts)
+
+    # Oldest first, and by name among equals - a season picked in the browser
+    # then goes episode by episode.
+    entries = sorted(((p, ts) for p, ts in candidates.items() if p not in seen),
+                     key=lambda kv: (kv[1], kv[0]))
+    recent = [p for p in recent if p not in tracked and p not in seen]
+    seen.update(p for p, _ts in entries)
+    seen.update(recent)
+
+    _job["total"]  += len(entries)
+    _job["recent"] += len(recent)
+    for path in recent:
+        log(f"[Move] Leaving {os.path.basename(path)}: written in the last "
+            f"{MOVE_MIN_AGE // 60} minutes")
+    if entries:
+        log(f"[Move] {len(entries)} file(s) to move back to the array")
+    _write_job()
+
+    untrack = []
+    try:
+        for cache_path, _ts in entries:
+            if _shutting_down.is_set():
+                break
+            name = os.path.basename(cache_path)
+
+            if cache_path in _protected_now():
+                _job["skipped"] += 1
+                log(f"[Move] Skipping {name}: being played, or about to be")
+                continue
+
+            # A tracked file is a copy of the array original by construction.
+            # An untracked one is not: a different file of the same name on the
+            # array makes two versions of something, and only a person can say
+            # which to keep. An identical one is a copy this plugin lost track
+            # of, and moving it only drops the duplicate.
+            if cache_path not in tracked:
+                try:
+                    twin = _twin(cache_path)
+                except OSError:
+                    twin = "unclear"
+                if twin not in (None, "same"):
+                    _job["conflicts"] += 1
+                    log(f"[Move] Skipping {name}: a different file of that name "
+                        f"is already on the array", warn=True)
+                    continue
+
+            _job["current"] = name
+            _write_job()
+            result, size = move_file_to_array(cache_path)
+            if result == "stopped":
+                break
+            if result in ("moved", "dropped", "gone"):
+                _job["done"]  += 1
+                _job["bytes"] += size
+                if result == "moved":
+                    log(f"[Move] {name} ({_size(size)})")
+                elif result == "dropped":
+                    log(f"[Move] {name} (the array already had it)")
+            elif result == "kept":
+                _job["kept"] += 1
+            else:
+                _job["failed"] += 1
+            if result != "failed":
+                untrack.append(cache_path)
+    finally:
+        _job["current"] = None
+        TrackedFiles.remove_many(untrack)
+        _write_job()
+
+def run_mover():
+    """The --move process: work through the queue until it is empty, then exit.
+
+    Exiting is where a request could get lost. One queued after the last look
+    at the queue, while the lock is still held, starts no mover - its sender
+    sees this one running. So the lock is let go first and the queue looked at
+    once more: whatever is there by then is either picked up here, or its
+    sender found the lock free and started a mover of its own.
+    """
+    setup_logging(rotate=False)
+    load_config()
+    try:
+        lock = open(MOVE_LOCK, "a")
+    except OSError as e:
+        log(f"[Move] Cannot open {MOVE_LOCK}: {e}", error=True)
+        return 1
+    with lock:
+        if not _try_lock(lock):
+            return 0          # a mover is running, and takes the queue from here
+
+        # SIGTERM is the Stop move button, and also what a shutdown sends.
+        # Either way the file being moved stays on the cache, and so does the
+        # rest.
+        signal.signal(signal.SIGTERM, _request_stop)
+        signal.signal(signal.SIGINT, _request_stop)
+
+        _job_start()
+        seen = set()
+        while True:
+            requests = _queue_take()
+            if requests and not _shutting_down.is_set():
+                try:
+                    _move_batch(requests, seen)
+                except Exception as e:
+                    log(f"[Move] Error: {e}", error=True)
+                continue
+            _job["dropped"] += len(requests)
+            _job_finish()
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            if not _queue_pending():
+                return 0
+            if _shutting_down.is_set():
+                # Queued after the stop: a new request, not part of what was
+                # stopped. It gets a mover of its own.
+                _start_mover()
+                return 0
+            if not _try_lock(lock):
+                return 0
+            _job.update(active=True, finished=0)
+            _write_pid()
+            _write_job()
+
+# =============================================================================
+# COPY TO CACHE
+# =============================================================================
 
 def copy_file_to_cache(array_path):
     """Copy file from array to cache. Runs inside the copy worker thread."""
@@ -842,15 +1337,21 @@ def copy_file_to_cache(array_path):
 
     cache_path = array_to_cache(array_path)
 
-    # Already cached and same size?
+    # Already on the cache. Only a copy of the file on the array is ours:
+    # array_path is on the user share, which shows the cache copy whenever there
+    # is one, so comparing against it compares the file with itself - that is
+    # how a fresh download, on the cache and nowhere else, used to end up on
+    # the tracked list and later get moved to the array by Auto Cleanup.
+    # Anything else of that name is left exactly as it is.
     if os.path.exists(cache_path):
         try:
-            if os.path.getsize(array_path) == os.path.getsize(cache_path):
-                deletion_queue.pop(cache_path, None)
-                TrackedFiles.add(cache_path)
-                return
+            twin = _twin(cache_path)
         except OSError:
-            pass
+            return
+        if twin == "same":
+            deletion_queue.pop(cache_path, None)
+            TrackedFiles.add(cache_path)
+        return
 
     # Recently failed? Don't hammer the disks / spam the log every poll.
     last_fail = failed_copies.get(cache_path, 0)
@@ -865,7 +1366,8 @@ def copy_file_to_cache(array_path):
     except OSError:
         return
 
-    if not cache_has_room_for(file_size) and not evict_oldest_cached(file_size):
+    if not cache_has_room_for(file_size, cache_path) \
+            and not evict_oldest_cached(file_size, cache_path):
         return
 
     log(f"[Copy] -> {os.path.basename(array_path)}")
@@ -886,14 +1388,12 @@ def copy_file_to_cache(array_path):
         clone_permissions(cache_path)
         TrackedFiles.add(cache_path)
         failed_copies.pop(cache_path, None)
+    except TransferStopped:
+        log(f"[Copy] Stopped: {os.path.basename(array_path)}")
     except (OSError, subprocess.CalledProcessError) as e:
         detail = getattr(e, 'stderr', '') or ''
         log(f"Copy failed for {os.path.basename(array_path)}: {e} {detail}".strip(), error=True)
         failed_copies[cache_path] = time.time()
-
-# =============================================================================
-# COPY WORKER — transfers happen off the main loop
-# =============================================================================
 
 def enqueue_copy(array_path):
     """Queue a file for copying to cache. De-duplicates: a path that is
@@ -929,28 +1429,53 @@ def copy_worker():
 # API CLIENTS — urllib-based, no external deps
 # =============================================================================
 
-def api_get(url, headers, timeout=5):
+def api_get(url, headers, timeout=5, errors=None):
     """Make an API GET request and return parsed JSON, or None on failure.
+    `errors`, if given, receives a short reason for a failure.
 
     Uses urllib from the stdlib so this plugin doesn't depend on the
     `requests` package (which needs to be pip-installed on every boot
     because Unraid's root FS is tmpfs). SSL verification is disabled
     to support the self-signed certs that Plex/Emby/Jellyfin typically
     use on LAN."""
+    def fail(reason):
+        if errors is not None:
+            errors.append(reason)
+        return None
+
     try:
         req = urllib.request.Request(url, headers=headers, method='GET')
         with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as resp:
             if resp.status != 200:
-                return None
+                return fail(f"HTTP {resp.status}")
             body = resp.read()
-            if not body:
-                return None
-            try:
-                return json.loads(body.decode('utf-8', errors='replace'))
-            except ValueError:
-                return None
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
-        return None
+    except urllib.error.HTTPError as e:
+        return fail(f"HTTP {e.code} {e.reason}")
+    except urllib.error.URLError as e:
+        return fail(str(e.reason))
+    # ValueError: a server address without http:// - the field is free text.
+    # It used to escape from here and abort the whole pass of the main loop, so
+    # one mistyped address kept the other servers' streams from being cached.
+    except (http.client.HTTPException, OSError, ValueError) as e:
+        return fail(str(e) or type(e).__name__)
+    if not body:
+        return fail("empty response")
+    try:
+        return json.loads(body.decode('utf-8', errors='replace'))
+    except ValueError:
+        return fail("the response is not JSON")
+
+def _note_api(service, ok, errors):
+    """Say when a media server stops or starts answering - once per change,
+    not on every poll. A server that never answers looks exactly like one
+    where nobody is watching, and nothing else would tell the two apart."""
+    was = _api_state.get(service)
+    _api_state[service] = ok
+    if ok and was is False:
+        log(f"{service} is answering again")
+    elif not ok and was is not False:
+        log(f"{service} does not answer ({errors[-1] if errors else 'no reason given'}) - "
+            f"nothing played on it is cached until it does", warn=True)
 
 def _progress(position, duration):
     """Playback progress as 0.0–1.0, or None if unknown."""
@@ -962,6 +1487,14 @@ def _progress(position, duration):
         pass
     return None
 
+def _first_part_file(media):
+    """The file of the first part of a Plex Media list, or None."""
+    for med in media or []:
+        for part in med.get('Part', []) or []:
+            if part.get('file'):
+                return part['file']
+    return None
+
 def get_active_streams():
     """Get currently playing files from all enabled services.
     Each session carries the current playback progress so that watched
@@ -971,32 +1504,26 @@ def get_active_streams():
     # --- Plex ---
     if cfg("ENABLE_PLEX", as_bool=True):
         headers = {'X-Plex-Token': cfg("PLEX_TOKEN"), 'Accept': 'application/json'}
-        data = api_get(f"{cfg('PLEX_URL')}/status/sessions", headers)
-        if data and 'MediaContainer' in data:
+        errors = []
+        data = api_get(f"{cfg('PLEX_URL')}/status/sessions", headers, errors=errors)
+        ok = isinstance(data, dict) and 'MediaContainer' in data
+        if data is not None and not ok:
+            errors.append("unexpected response")
+        _note_api("Plex", ok, errors)
+        if ok:
             for item in data['MediaContainer'].get('Metadata', []):
                 rk = item.get('ratingKey')
-                path = metadata_cache.get(rk)
-
-                if not path:
-                    for media in item.get('Media', []):
-                        for part in media.get('Part', []):
-                            if part.get('file'):
-                                path = part['file']
-                                break
-                        if path:
-                            break
+                # The session names the file it plays. The ratingKey cache is a
+                # fallback for sessions that do not: an item upgraded to a
+                # better release keeps its ratingKey, and the cached path
+                # would point at the file that has since been replaced.
+                path = _first_part_file(item.get('Media')) or metadata_cache.get(rk)
 
                 if not path and rk:
                     meta = api_get(f"{cfg('PLEX_URL')}/library/metadata/{rk}", headers)
                     if meta and 'MediaContainer' in meta:
                         for m in meta['MediaContainer'].get('Metadata', []):
-                            for med in m.get('Media', []):
-                                for p in med.get('Part', []):
-                                    if p.get('file'):
-                                        path = p['file']
-                                        break
-                                if path:
-                                    break
+                            path = _first_part_file(m.get('Media'))
                             if path:
                                 break
 
@@ -1011,14 +1538,19 @@ def get_active_streams():
                     }
 
     # --- Emby / Jellyfin ---
-    for enabled_key, api_key, url_key, name in [
-        ("ENABLE_EMBY",     "EMBY_API_KEY",     "EMBY_URL",     "emby"),
-        ("ENABLE_JELLYFIN", "JELLYFIN_API_KEY", "JELLYFIN_URL", "jellyfin"),
+    for enabled_key, api_key, url_key, name, label in [
+        ("ENABLE_EMBY",     "EMBY_API_KEY",     "EMBY_URL",     "emby",     "Emby"),
+        ("ENABLE_JELLYFIN", "JELLYFIN_API_KEY", "JELLYFIN_URL", "jellyfin", "Jellyfin"),
     ]:
         if cfg(enabled_key, as_bool=True):
             headers = {'X-Emby-Token': cfg(api_key), 'Accept': 'application/json'}
-            data = api_get(f"{cfg(url_key)}/Sessions", headers)
-            if isinstance(data, list):
+            errors = []
+            data = api_get(f"{cfg(url_key)}/Sessions", headers, errors=errors)
+            ok = isinstance(data, list)
+            if data is not None and not ok:
+                errors.append("unexpected response")
+            _note_api(label, ok, errors)
+            if ok:
                 for s in data:
                     item = s.get('NowPlayingItem', {}) or {}
                     if item.get('Path'):
@@ -1130,6 +1662,8 @@ def _season_episode_files(season_dir):
         return {}
     ep_files = {}
     for f in files:
+        if f.startswith('.'):
+            continue
         ep = parse_episode(f)
         if ep is not None:
             ep_files.setdefault(ep, []).append(f)
@@ -1217,19 +1751,21 @@ def handle_series(array_path):
     season_dir       = os.path.dirname(array_path)
     cache_season_dir = array_to_cache(season_dir)
 
-    # Smart cleanup: remove old episodes
-    if cfg("CLEANUP_MODE").lower() == "smart" and os.path.exists(cache_season_dir):
+    # Smart cleanup: send older episodes back - the ones this plugin cached.
+    # The season folder can also hold a download waiting for Unraid's mover.
+    if cfg("CLEANUP_MODE").lower() == "smart" and os.path.isdir(cache_season_dir):
         threshold = episode - cfg("EPISODE_KEEP_PREVIOUS", as_int=True)
+        tracked = TrackedFiles.load()
+        old = []
         try:
-            for f in os.listdir(cache_season_dir):
+            for f in sorted(os.listdir(cache_season_dir)):
                 ep = parse_episode(f)
-                if ep is not None and ep < threshold:
-                    cache_path = os.path.join(cache_season_dir, f)
-                    if os.path.exists(cache_path):
-                        move_file_to_array(cache_path)
-                        log(f"[Smart Cleanup] {f}")
+                path = os.path.join(cache_season_dir, f)
+                if ep is not None and ep < threshold and path in tracked:
+                    old.append(path)
         except OSError:
             pass
+        request_moves(old, "Smart Cleanup")
 
     # Cache current and upcoming episodes
     if not os.path.isdir(season_dir):
@@ -1253,13 +1789,106 @@ def handle_series(array_path):
         if remaining_in_season <= max(0, cfg("EPISODE_BATCH_PREFETCH", as_int=True)):
             prefetch_next_season(season_dir)
 
+def _stream_array_path(docker_path):
+    """The array path a stream plays, or None if it is nothing to cache."""
+    array_path = translate_docker_path(docker_path)
+    if not _under(array_path, cfg("ARRAY_ROOT")):
+        return None
+    if is_excluded(array_path) or not is_media_file(os.path.basename(array_path)):
+        return None
+    return array_path
+
+def request_moves(paths, label):
+    """Hand files Auto Cleanup picked to the mover.
+
+    What is being played or copied right now is left out already here - the
+    mover checks again, but asking it for what it would only skip fills the log
+    for nothing. A file asked for recently is not asked for again: the main
+    loop comes round every few seconds, and the move may not have happened
+    yet."""
+    if not paths:
+        return
+    now = time.time()
+    for path, when in list(_requested.items()):
+        if now - when >= MOVE_RETRY:
+            del _requested[path]
+    with _pending_lock:
+        pending = {array_to_cache(p) for p in _pending_copies}
+
+    fresh = []
+    for path in dict.fromkeys(paths):
+        if path in _requested or path in active_cache_paths or path in pending:
+            continue
+        _requested[path] = now
+        fresh.append(path)
+        log(f"[{label}] {os.path.basename(path)}")
+    queue_moves("auto", fresh)
+
+def _smart_cleanup(last_streams, streams):
+    """Smart Cleanup for streams that ended: a watched movie goes back to the
+    array after MOVIE_DELETE_DELAY, and so does a season once its finale was
+    watched. Only files this plugin cached: a fresh download waiting for the
+    mover, or a file somebody keeps on the cache on purpose, is not ours."""
+    tracked = None
+    for docker_path in set(last_streams) - set(streams):
+        session    = last_streams[docker_path]
+        array_path = translate_docker_path(docker_path)
+        if not is_watched(session):
+            continue
+        cache_path = array_to_cache(array_path)
+        if not os.path.exists(cache_path):
+            continue
+        if tracked is None:
+            tracked = TrackedFiles.load()
+
+        ep = parse_episode(os.path.basename(array_path))
+        if ep is None:
+            if cache_path in tracked:
+                deletion_queue[cache_path] = time.time()
+            continue
+
+        # If this was the last episode in the season folder, queue the whole
+        # season for deletion.
+        folder = os.path.dirname(array_path)
+        max_ep = None
+        if os.path.exists(folder):
+            try:
+                eps = [parse_episode(f) for f in os.listdir(folder)]
+                eps = [e for e in eps if e is not None]
+                max_ep = max(eps) if eps else None
+            except OSError as e:
+                # Cannot tell whether this was the finale. Assuming it was
+                # would evict the whole season on a transient listing error.
+                log(f"Cannot read {folder}: {e} - not treating "
+                    f"episode {ep} as the season finale", warn=True)
+                max_ep = None
+        if max_ep is not None and ep >= max_ep:
+            cache_dir = os.path.dirname(cache_path)
+            try:
+                for f in os.listdir(cache_dir):
+                    candidate = os.path.join(cache_dir, f)
+                    if candidate in tracked:
+                        deletion_queue[candidate] = time.time()
+            except OSError:
+                pass
+
+    # pop() rather than del: the copy worker takes entries out of the queue too
+    # when a file is played again, and a del racing it raised KeyError.
+    delay = cfg("MOVIE_DELETE_DELAY", as_int=True)
+    now = time.time()
+    due = [p for p, queued in list(deletion_queue.items()) if now - queued > delay]
+    for path in due:
+        deletion_queue.pop(path, None)
+    request_moves([p for p in due if os.path.exists(p)], "Cleanup")
+
 # =============================================================================
-# STATUS SNAPSHOT (read by the web UI)
+# STATUS SNAPSHOT (read by the web UI and the mover)
 # =============================================================================
 
-def write_status():
+def write_status(protected=frozenset()):
     """Write a small JSON snapshot to STATUS_FILE (atomic replace).
-    The web UI polls this to show cache/queue state."""
+    The web UI polls this to show cache/queue state; the mover reads
+    `protected` so it leaves alone what is playing or being copied."""
     cached_files = 0
     cached_bytes = 0
     for path in TrackedFiles.load():
@@ -1269,19 +1898,13 @@ def write_status():
         except OSError:
             continue
 
-    try:
-        usage = shutil.disk_usage(cfg("CACHE_ROOT"))
-        usage_pct = round(usage.used / usage.total * 100, 1)
-    except OSError:
-        usage_pct = None
+    space = _pool_space()
+    usage_pct = round(space[0] / space[1] * 100, 1) if space and space[1] else None
 
     with _pending_lock:
         queue_length = len(_pending_copies)
 
-    with _flush_lock:
-        flush = dict(_flush_state)
-
-    status = {
+    _write_json(STATUS_FILE, {
         "updated":         int(time.time()),
         "cached_files":    cached_files,
         "cached_bytes":    cached_bytes,
@@ -1289,20 +1912,65 @@ def write_status():
         "queue_length":    queue_length,
         "copying":         _current_copy,
         "active_streams":  sorted(os.path.basename(p) for p in stream_timers),
-        "flush":           flush,
-    }
-
-    try:
-        tmp = STATUS_FILE + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(status, f)
-        os.replace(tmp, STATUS_FILE)
-    except OSError:
-        pass
+        "stream_paths":    sorted(active_cache_paths),
+        "protected":       sorted(protected),
+    })
 
 # =============================================================================
 # DAEMON
 # =============================================================================
+
+def _daemon_pass(state):
+    """One round of the main loop. Returns the cache paths the mover must not
+    touch right now: what is being played and what is being copied."""
+    global active_cache_paths
+
+    ready = _storage_ready()
+    if ready != state["storage"]:
+        state["storage"] = ready
+        if ready:
+            reconcile_tracked_files()
+        else:
+            log("Waiting for the cache pool and the array to be mounted")
+    if not ready:
+        return frozenset()
+
+    streams = get_active_streams()
+    active_paths = {p for p in map(_stream_array_path, streams) if p}
+    # Protect first, act second: the handlers below decide what goes back to
+    # the array, and they have to see this pass's streams, not the last one's.
+    active_cache_paths = {array_to_cache(p) for p in active_paths}
+
+    now = time.time()
+    for array_path in sorted(active_paths):
+        if array_path not in stream_timers:
+            log(f"[Stream] Active: {os.path.basename(array_path)}")
+            stream_timers[array_path] = now
+        elif now - stream_timers[array_path] >= cfg("COPY_DELAY", as_int=True):
+            if parse_episode(os.path.basename(array_path)) is not None:
+                handle_series(array_path)
+            else:
+                handle_movie(array_path)
+
+    # Remove inactive streams from the timer map
+    for path in list(stream_timers):
+        if path not in active_paths:
+            del stream_timers[path]
+
+    cleanup_mode = cfg("CLEANUP_MODE").lower()
+    if cleanup_mode == "smart":
+        _smart_cleanup(state["last_streams"], streams)
+    elif cleanup_mode == "days" and now - state["last_days_check"] > 3600:
+        # At most once an hour
+        max_age = cfg("CACHE_MAX_DAYS", as_int=True) * 86400
+        request_moves([p for p, cached in TrackedFiles.load().items()
+                       if now - cached > max_age and os.path.exists(p)], "Days Cleanup")
+        state["last_days_check"] = now
+    state["last_streams"] = streams
+
+    with _pending_lock:
+        pending = {array_to_cache(p) for p in _pending_copies}
+    return frozenset(active_cache_paths | pending)
 
 def run_daemon():
     """Main daemon loop."""
@@ -1313,13 +1981,13 @@ def run_daemon():
     lock_fd = open(LOCK_FILE, 'w')
     try:
         fcntl.lockf(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except IOError:
+    except OSError:
         log("Another instance is already running", error=True)
         sys.exit(1)
 
     signal.signal(signal.SIGHUP,  lambda s, f: load_config())
-    signal.signal(signal.SIGTERM, lambda s, f: (_shutdown_cleanup(), sys.exit(0)))
-    signal.signal(signal.SIGINT,  lambda s, f: (_shutdown_cleanup(), sys.exit(0)))
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT,  _shutdown)
 
     worker = threading.Thread(target=copy_worker, name="copy-worker", daemon=True)
     worker.start()
@@ -1330,181 +1998,43 @@ def run_daemon():
             f"tolerance={cfg('EPISODE_BATCH_TOLERANCE', as_int=True)}, "
             f"prefetch={cfg('EPISODE_BATCH_PREFETCH', as_int=True)}")
 
-    reconcile_tracked_files()
-    write_status()
-
-    global active_cache_paths
-    last_streams      = {}
-    last_days_check   = 0
-    last_status_write = time.time()
+    state = {"storage": None, "last_streams": {}, "last_days_check": 0}
+    last_protected    = None
+    last_status_write = 0.0
 
     while True:
         try:
-            drain_move_requests()
-
-            streams = get_active_streams()
-            active_paths = set()
-
-            for docker_path, session in streams.items():
-                array_path = translate_docker_path(docker_path)
-
-                if not array_path.startswith(cfg("ARRAY_ROOT")):
-                    continue
-                if is_excluded(array_path):
-                    continue
-                if not is_media_file(os.path.basename(array_path)):
-                    continue
-
-                active_paths.add(array_path)
-
-                # New stream?
-                if array_path not in stream_timers:
-                    log(f"[Stream] Active: {os.path.basename(array_path)}")
-                    stream_timers[array_path] = time.time()
-                    continue
-
-                # Copy delay passed?
-                if time.time() - stream_timers[array_path] >= cfg("COPY_DELAY", as_int=True):
-                    if parse_episode(os.path.basename(array_path)) is not None:
-                        handle_series(array_path)
-                    else:
-                        handle_movie(array_path)
-
-            # Remove inactive streams from the timer map
-            for path in list(stream_timers.keys()):
-                if path not in active_paths:
-                    del stream_timers[path]
-
-            # Cache paths of active streams must never be evicted
-            active_cache_paths = {array_to_cache(p) for p in active_paths}
-
-            cleanup_mode = cfg("CLEANUP_MODE").lower()
-
-            # Smart cleanup (fires when a session has stopped)
-            if cleanup_mode == "smart":
-                stopped = set(last_streams.keys()) - set(streams.keys())
-                for docker_path in stopped:
-                    session    = last_streams[docker_path]
-                    array_path = translate_docker_path(docker_path)
-
-                    if is_watched(session):
-                        cache_path = array_to_cache(array_path)
-                        if os.path.exists(cache_path):
-                            ep = parse_episode(os.path.basename(array_path))
-                            if ep is None:
-                                deletion_queue[cache_path] = time.time()
-                            else:
-                                # If this was the last episode in the season folder,
-                                # queue the whole season for deletion.
-                                folder = os.path.dirname(array_path)
-                                max_ep = None
-                                if os.path.exists(folder):
-                                    try:
-                                        eps = [parse_episode(f) for f in os.listdir(folder)]
-                                        eps = [e for e in eps if e is not None]
-                                        max_ep = max(eps) if eps else None
-                                    except OSError as e:
-                                        # Cannot tell whether this was the finale.
-                                        # Assuming it was would evict the whole
-                                        # season on a transient listing error.
-                                        log(f"Cannot read {folder}: {e} - not treating "
-                                            f"episode {ep} as the season finale", warn=True)
-                                        max_ep = None
-                                if max_ep is not None and ep >= max_ep:
-                                    cache_dir = os.path.dirname(cache_path)
-                                    # Only ever queue files this plugin cached.
-                                    # The season folder can also hold a fresh
-                                    # download waiting for the mover, or a file
-                                    # the user keeps on cache deliberately -
-                                    # moving those to the array is not ours to do.
-                                    ours = TrackedFiles.load()
-                                    try:
-                                        for f in os.listdir(cache_dir):
-                                            candidate = os.path.join(cache_dir, f)
-                                            if candidate in ours:
-                                                deletion_queue[candidate] = time.time()
-                                    except OSError:
-                                        pass
-
-                # Process deletion queue
-                delay = cfg("MOVIE_DELETE_DELAY", as_int=True)
-                for cache_path, queued_time in list(deletion_queue.items()):
-                    if time.time() - queued_time > delay:
-                        if os.path.exists(cache_path):
-                            move_file_to_array(cache_path)
-                            log(f"[Cleanup] {os.path.basename(cache_path)}")
-                        del deletion_queue[cache_path]
-
-            # Days-based cleanup (runs at most once per hour)
-            elif cleanup_mode == "days":
-                if time.time() - last_days_check > 3600:
-                    max_age = cfg("CACHE_MAX_DAYS", as_int=True) * 86400
-                    tracked = TrackedFiles.load()
-                    now = time.time()
-
-                    for cache_path, cached_time in list(tracked.items()):
-                        if now - cached_time > max_age and os.path.exists(cache_path):
-                            log(f"[Days Cleanup] {os.path.basename(cache_path)}")
-                            move_file_to_array(cache_path)
-
-                    last_days_check = time.time()
-
-            last_streams = streams
-
-            # Status snapshot for the web UI
-            if time.time() - last_status_write >= STATUS_INTERVAL:
-                write_status()
+            protected = _daemon_pass(state)
+            # The mover reads `protected` from the snapshot, so it is written
+            # the moment that changes, not only on the interval.
+            if protected != last_protected or time.time() - last_status_write >= STATUS_INTERVAL:
+                write_status(protected)
+                last_protected    = protected
                 last_status_write = time.time()
-
         except Exception as e:
             log(f"Loop error: {e}", error=True)
 
         time.sleep(max(1, cfg("CHECK_INTERVAL", as_int=True)))
 
-def _shutdown_cleanup():
-    """Called on SIGTERM/SIGINT so systemd/rc.d stop reports cleanly and
-    a running rsync doesn't linger as an orphan."""
-    _shutting_down.set()
-    try:
-        with _rsync_lock:
-            proc = _current_rsync
-        if proc and proc.poll() is None:
-            proc.terminate()
-    except Exception:
-        pass
+def _shutdown(signum=None, frame=None):
+    """SIGTERM/SIGINT: stop copying and exit, so rc.d stop reports cleanly and
+    a running rsync doesn't linger as an orphan. The mover is a process of its
+    own and carries on."""
+    _stop_transfers()
     try:
         log("Service stopped.")
     except Exception:
         pass
+    sys.exit(0)
 
 # =============================================================================
 # MAIN
 # =============================================================================
 
 if __name__ == "__main__":
-    if "--flush" in sys.argv:
-        # One-shot flush for when the service is stopped. The daemon holds
-        # LOCK_FILE for its whole life, so this refuses to run next to it -
-        # the web UI routes the request through FLUSH_REQUEST in that case.
-        setup_logging()
-        load_config()
-        _flush_lock_fd = open(LOCK_FILE, 'w')
-        try:
-            fcntl.lockf(_flush_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except IOError:
-            log("Service is running - ask it to flush instead of running --flush", error=True)
-            sys.exit(1)
-
-        # Nothing is streaming as far as this process knows, so ask the media
-        # servers directly rather than moving a file somebody is watching.
-        try:
-            active_cache_paths = {
-                array_to_cache(translate_docker_path(p)) for p in get_active_streams()
-            }
-        except Exception as e:
-            log(f"Cannot determine active streams: {e} - flushing everything", warn=True)
-
-        paths = [a for a in sys.argv[1:] if a != "--flush"]
-        flush_cache_to_array(only=paths or None, label="Move" if paths else "Flush")
-    else:
-        run_daemon()
+    args = sys.argv[1:]
+    if args == ["--move"]:
+        sys.exit(run_mover())
+    if args:
+        sys.exit(f"usage: {sys.argv[0]} [--move]")
+    run_daemon()

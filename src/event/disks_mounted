@@ -1,0 +1,4 @@
+#!/bin/bash
+# Unraid runs this once the array is mounted again. The service was ended when
+# the array stopped; start it again unless it was stopped on purpose.
+/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache boot >> /var/log/plex_to_cache.log 2>&1

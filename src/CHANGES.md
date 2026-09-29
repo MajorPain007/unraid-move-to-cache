@@ -1,3 +1,71 @@
+### 2026.09.29.01
+
+Stop and the move to the array are separate now.
+
+- Stop ends the service - copying to the cache, and Auto Cleanup deciding what
+  goes back - and leaves a move to the array that is running alone. The move
+  carries on until it is done, also through Save and Apply and plugin updates,
+  which restart the service. Moves to the array run as a process of their own
+  for that.
+- Stop move, in a bar above the list while a move runs, ends it. The file being
+  moved stays on the cache, and so does everything still waiting; rsync removes
+  its unfinished copy. The bar shows how far the move has got.
+- When the array stops, both end, so neither holds up the unmount. The service
+  starts again when the array is back, unless it was stopped by hand.
+- Updating to this version still ends a move that is running at that moment:
+  the version before ran it inside the service.
+
+Fixed:
+
+- The tracked list was emptied whenever the service started before the array -
+  which is how a boot goes. No cached file could be found at that moment, and it
+  took that to mean they were all gone. Auto Cleanup then left alone everything
+  cached before the reboot, unless it was played again. The service now waits
+  for the pool and the array to be mounted.
+- On a ZFS cache pool, Max Cache did not count what is in the media folder when
+  that folder is a dataset of its own, which is how Unraid creates shares on
+  ZFS. The usage is read from the pool itself now.
+- A file changed on the cache after it was cached - Sonarr replacing an episode
+  with a better release under the same name, say - was deleted on its way back,
+  because the array already had a file of that name. It now replaces the older
+  copy on the array. If both are the same age but differ in size, neither is
+  touched and the log says so.
+- A tracked file outside Cache Root, left from before Cache Root was changed,
+  counted as a duplicate of itself and could be deleted. It is left alone.
+- Moving anything to the array while the service was stopped failed with
+  "plex_to_cache.py not found": the page looked for the script in the wrong
+  folder.
+- A fresh download that was played before Unraid's mover ran could end up on
+  the tracked list, and Auto Cleanup would then move it. Only a file with an
+  identical copy on the array counts as cached by the plugin.
+- Smart Cleanup and Days-based cleanup moved files without checking whether
+  somebody was watching them, and Smart Cleanup did not always check that the
+  plugin had cached them. Both check now.
+- Auto Cleanup did its moves inside the main loop, which stopped noticing new
+  streams for as long as they took. The mover does them now.
+- A request for an action the page no longer has, from a tab left open across
+  an update, was taken as saving the settings with every field empty. That
+  switched all media servers off and cleared the Docker mappings. It is refused.
+- A server address such as 192.168.1.10 - no http://, no port - made every round
+  of the main loop fail, so nothing was cached from any server. A server that
+  does not answer is now mentioned in the log, once.
+- Folders the move created on the array belonged to root, which can lock out
+  apps that run as nobody. They get the owner and mode of the folder on the
+  cache.
+- An interrupted copy left its partial file on the cache until that file was
+  copied again. Nothing is left behind now, and leftovers from before are
+  removed when the service starts.
+- A move could pick up hidden files: the contents of .Recycle.Bin, or the ._
+  files a Mac leaves next to real ones.
+- The list's columns did not line up with its header.
+- A file with the same name as one being played in another folder was shown as
+  in use.
+- Files written in the last 30 minutes were skipped by a move without a word.
+  The result counts them.
+- A quote or a line break in a setting could break the settings file.
+- The status dot follows the service; it used to change only when Start or Stop
+  was pressed on the page. Auto Refresh pauses only the log.
+
 ### 2026.08.08.18
 
 Review pass. Four defects, three of them real:
