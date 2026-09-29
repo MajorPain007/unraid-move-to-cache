@@ -1,3 +1,11 @@
+### 2026.09.30.01
+
+- Sending something to the array while a move was running - a second series,
+  say - queued it behind the whole move. The progress bar left it out until
+  everything before it had gone, so the click seemed to do nothing. It now joins
+  the running move within a second, also halfway through a file, and is counted
+  at once. It still goes after what was already in line.
+
 ### 2026.09.29.01
 
 Stop and the move to the array are separate now.

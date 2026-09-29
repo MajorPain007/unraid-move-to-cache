@@ -505,7 +505,7 @@ if ($ptc_action === 'uncache') {
         exit;
     }
     if (ptc_mover_running()) {
-        echo json_encode(['success' => true, 'message' => 'Queued: ' . $label]);
+        echo json_encode(['success' => true, 'message' => 'Added to the running move: ' . $label]);
         exit;
     }
     if (!file_exists($ptc_daemon_script)) {

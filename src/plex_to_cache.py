@@ -36,6 +36,7 @@ from logging.handlers import RotatingFileHandler, WatchedFileHandler
 import shutil
 import signal
 import queue
+import collections
 import threading
 import contextlib
 import subprocess
@@ -59,6 +60,7 @@ PROC_MOUNTS   = "/proc/self/mounts"
 
 RSYNC_RETRIES        = 3          # attempts per file before giving up
 RSYNC_RETRY_DELAY    = 5          # seconds between attempts
+RSYNC_POLL           = 1          # seconds between looks at the move queue while rsync runs
 COPY_FAIL_COOLDOWN   = 300        # seconds before re-trying a file that failed all attempts
 METADATA_CACHE_LIMIT = 500        # max entries kept in the Plex ratingKey→path cache
 
@@ -115,6 +117,7 @@ _pending_copies = set()            # array paths queued or currently copying
 _pending_lock   = threading.Lock()
 _current_copy   = None             # basename of the file being copied right now
 _current_rsync  = None             # running rsync Popen (for clean shutdown)
+_while_waiting  = None             # the mover's: called every RSYNC_POLL seconds while rsync runs
 # Re-entrant: the stop handler takes it, and in the mover it runs on the same
 # thread that may be holding it at that moment.
 _rsync_lock     = threading.RLock()
@@ -677,7 +680,12 @@ def _rsync_timeout_for(src):
 
 def _run_rsync(cmd, timeout):
     """Run rsync, tracking the process so shutdown can terminate it.
-    Returns (returncode, stderr_text)."""
+    Returns (returncode, stderr_text).
+
+    If _while_waiting is set, it is called every RSYNC_POLL seconds until rsync
+    is done - the mover takes new requests there, rather than after a file that
+    can take minutes. It must not raise: rsync would go on without anyone
+    waiting for it."""
     global _current_rsync
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                             stderr=subprocess.PIPE, text=True)
@@ -686,9 +694,21 @@ def _run_rsync(cmd, timeout):
     # A stop that came in just before the line above found nothing to end.
     if _shutting_down.is_set():
         proc.terminate()
+    deadline = time.monotonic() + timeout
     try:
-        _, stderr = proc.communicate(timeout=timeout)
-        return proc.returncode, (stderr or "")
+        while True:
+            step = deadline - time.monotonic()
+            if _while_waiting is not None:
+                step = min(step, RSYNC_POLL)
+            try:
+                # Asking again after a timeout loses none of the output.
+                _, stderr = proc.communicate(timeout=max(step, 0))
+                return proc.returncode, (stderr or "")
+            except subprocess.TimeoutExpired:
+                if time.monotonic() >= deadline:
+                    raise
+            if _while_waiting is not None:
+                _while_waiting()
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.communicate()
@@ -1179,14 +1199,14 @@ def _job_finish():
     _write_job()
     _remove_pid()
 
-def _move_batch(requests, seen):
-    """Move what one batch of requests names. `seen` holds everything this run
-    has dealt with, so a path asked for twice is handled once.
+def _plan_moves(requests, seen):
+    """The files a batch of requests names, as (cache path, tracked) pairs in
+    the order they are to be moved. What `seen` holds - everything this run has
+    dealt with - is left out, so a path asked for twice is handled once.
 
-    Left where they are: a file being played or about to be, one written in
-    the last MOVE_MIN_AGE seconds, and one whose name the array already has
-    for a different file. Each is counted, so the result can say it did less
-    than everything rather than implying otherwise.
+    They are counted into the job here, before the first of them moves, so the
+    progress bar has the total from the start. Files written in the last
+    MOVE_MIN_AGE seconds are counted and left out.
     """
     tracked = TrackedFiles.load()
     picks   = [path for kind, path in requests if kind == "pick"]
@@ -1214,20 +1234,52 @@ def _move_batch(requests, seen):
     seen.update(p for p, _ts in entries)
     seen.update(recent)
 
-    _job["total"]  += len(entries)
-    _job["recent"] += len(recent)
     for path in recent:
         log(f"[Move] Leaving {os.path.basename(path)}: written in the last "
             f"{MOVE_MIN_AGE // 60} minutes")
     if entries:
-        log(f"[Move] {len(entries)} file(s) to move back to the array")
+        more = "more " if _job["total"] else ""
+        log(f"[Move] {len(entries)} {more}file(s) to move back to the array")
+    _job["total"]  += len(entries)
+    _job["recent"] += len(recent)
     _write_job()
+    return [(p, p in tracked) for p, _ts in entries]
+
+def _move_batch(requests, seen):
+    """Move what a batch of requests names, and what is asked for while it
+    runs. `seen` is passed on to _plan_moves.
+
+    A request that comes in meanwhile - a second series picked while the first
+    is on its way - is taken within RSYNC_POLL seconds, also halfway through a
+    file. Its files join the total at once and go to the back of the line. They
+    used to wait for the whole batch, and the progress bar left them out until
+    the first selection had gone.
+
+    Left where they are: a file being played or about to be, one written in
+    the last MOVE_MIN_AGE seconds, and one whose name the array already has
+    for a different file. Each is counted, so the result can say it did less
+    than everything rather than implying otherwise.
+    """
+    global _while_waiting
+    work = collections.deque(_plan_moves(requests, seen))
+
+    def take_new():
+        # Nothing new after a stop: run_mover deals with what is queued then.
+        if _shutting_down.is_set() or not _queue_pending():
+            return
+        try:
+            work.extend(_plan_moves(_queue_take(), seen))
+        except Exception as e:
+            log(f"[Move] Error: {e}", error=True)
 
     untrack = []
+    _while_waiting = take_new
     try:
-        for cache_path, _ts in entries:
+        while work:
+            take_new()
             if _shutting_down.is_set():
                 break
+            cache_path, is_tracked = work.popleft()
             name = os.path.basename(cache_path)
 
             if cache_path in _protected_now():
@@ -1240,7 +1292,7 @@ def _move_batch(requests, seen):
             # array makes two versions of something, and only a person can say
             # which to keep. An identical one is a copy this plugin lost track
             # of, and moving it only drops the duplicate.
-            if cache_path not in tracked:
+            if not is_tracked:
                 try:
                     twin = _twin(cache_path)
                 except OSError:
@@ -1270,6 +1322,7 @@ def _move_batch(requests, seen):
             if result != "failed":
                 untrack.append(cache_path)
     finally:
+        _while_waiting = None
         _job["current"] = None
         TrackedFiles.remove_many(untrack)
         _write_job()

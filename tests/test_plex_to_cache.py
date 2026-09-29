@@ -233,6 +233,34 @@ class RsyncCommand(unittest.TestCase):
         self.assertNotIn('--partial-dir=', source)
 
 
+class RsyncWait(unittest.TestCase):
+    """While rsync runs, the mover gets a look at its queue every RSYNC_POLL
+    seconds - a film can take minutes."""
+
+    def setUp(self):
+        ptc._shutting_down.clear()
+
+    def _run(self, seconds, timeout, hook):
+        cmd = [sys.executable, "-c", f"import time; time.sleep({seconds})"]
+        with mock.patch.object(ptc, 'RSYNC_POLL', 0.05), \
+             mock.patch.object(ptc, '_while_waiting', hook):
+            return ptc._run_rsync(cmd, timeout)
+
+    def test_the_mover_looks_while_a_transfer_runs(self):
+        calls = []
+        rc, _err = self._run(0.5, 60, lambda: calls.append(1))
+        self.assertEqual(rc, 0)
+        self.assertGreaterEqual(len(calls), 3)
+        self.assertEqual(self._run(0.1, 60, None)[0], 0, "and the service, with no hook, waits as before")
+
+    def test_the_timeout_still_ends_a_hung_transfer(self):
+        started = time.monotonic()
+        rc, err = self._run(30, 0.3, lambda: None)
+        self.assertEqual(rc, -1)
+        self.assertIn("timed out", err)
+        self.assertLess(time.monotonic() - started, 5)
+
+
 class MoveBatch(StateInTempDir):
     """A move to the array must never pull a file out from under a playback."""
 
@@ -353,6 +381,95 @@ class MoveBatch(StateInTempDir):
         self.assertEqual(move.call_count, 1)
         self.assertEqual(untrack.call_args[0][0], ["/mnt/cache/Media/a.mkv"],
                          "what was moved before the stop is recorded")
+
+    def test_nothing_new_is_taken_after_a_stop(self):
+        tracked = {"/mnt/cache/Media/A/e1.mkv": 1.0, "/mnt/cache/Media/B/e1.mkv": 2.0}
+
+        def stop_then_pick(path):
+            ptc._shutting_down.set()
+            ptc._queue_append(["pick\t/mnt/cache/Media/B"])
+            ptc._while_waiting()
+            return "stopped", 0
+
+        with mock.patch.object(ptc.TrackedFiles, 'load', return_value=tracked), \
+             mock.patch.object(ptc, 'move_file_to_array', side_effect=stop_then_pick), \
+             mock.patch.object(ptc, '_protected_now', return_value=set()), \
+             mock.patch.object(ptc.TrackedFiles, 'remove_many'), \
+             mock.patch.object(ptc, '_write_job'):
+            ptc._move_batch([("pick", "/mnt/cache/Media/A")], set())
+        self.assertEqual(ptc._job["total"], 1)
+        self.assertEqual(ptc._queue_take(), [("pick", "/mnt/cache/Media/B")],
+                         "left in the queue for run_mover to deal with")
+
+
+class PickDuringAMove(StateInTempDir):
+    """A second series picked while the first is on its way. It was taken only
+    once the whole first one had gone, and until then the progress bar left it
+    out - the click seemed to do nothing."""
+
+    # Stands in for rsync. On its first call it does what the web UI does when
+    # a folder is picked, then takes its time, as a film would, and notes the
+    # total the progress bar has by then.
+    FAKE_RSYNC = """#!{python}
+import json, os, shutil, sys, time
+src, dst = [a for a in sys.argv[1:] if not a.startswith("-")]
+if not os.path.exists(os.environ["FAKE_MARK"]):
+    open(os.environ["FAKE_MARK"], "w").close()
+    with open(os.environ["FAKE_QUEUE"], "a") as fh:
+        fh.write("pick\\t" + os.environ["FAKE_PICK"] + "\\n")
+    time.sleep(0.6)
+    with open(os.environ["FAKE_STATUS"]) as fh:
+        total = json.load(fh)["total"]
+    with open(os.environ["FAKE_SEEN"], "w") as fh:
+        fh.write(str(total))
+shutil.copy2(src, dst)
+if "--remove-source-files" in sys.argv:
+    os.remove(src)
+with open(os.environ["FAKE_LOG"], "a") as fh:
+    fh.write(src + "\\n")
+"""
+
+    def setUp(self):
+        super().setUp()
+        self.cache = os.path.join(self.tmp, "cache")
+        self.array = os.path.join(self.tmp, "user")
+        os.makedirs(os.path.join(self.array, "Media"))
+        configure(ARRAY_ROOT=self.array, CACHE_ROOT=self.cache,
+                  DOCKER_MAPPINGS="/media:" + os.path.join(self.array, "Media"))
+        bin_dir = os.path.join(self.tmp, "bin")
+        os.makedirs(bin_dir)
+        rsync = os.path.join(bin_dir, "rsync")
+        Path(rsync).write_text(self.FAKE_RSYNC.format(python=sys.executable))
+        os.chmod(rsync, 0o755)
+        self.seen = os.path.join(self.tmp, "seen_total")
+        self.moves = os.path.join(self.tmp, "moves")
+        env = {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
+               "FAKE_MARK": os.path.join(self.tmp, "mark"), "FAKE_QUEUE": ptc.MOVE_QUEUE,
+               "FAKE_STATUS": ptc.MOVE_STATUS, "FAKE_SEEN": self.seen, "FAKE_LOG": self.moves,
+               "FAKE_PICK": os.path.join(self.cache, "Media", "B")}
+        for p in (mock.patch.dict(os.environ, env),
+                  mock.patch.object(ptc, 'RSYNC_POLL', 0.05),
+                  mock.patch.object(ptc, '_protected_now', return_value=set())):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_it_is_counted_at_once_and_moved_after_what_was_in_line(self):
+        media = os.path.join(self.cache, "Media")
+        first  = [self.make(os.path.join(media, "A", f"e{i}.mkv")) for i in (1, 2)]
+        # Older than the first series: the order is the order of asking.
+        second = [self.make(os.path.join(media, "B", f"e{i}.mkv"), age_seconds=90000)
+                  for i in (1, 2)]
+
+        ptc._move_batch([("pick", os.path.join(media, "A"))], set())
+
+        self.assertEqual(Path(self.seen).read_text(), "4",
+                         "the second series is counted while the first file is still moving")
+        self.assertEqual(ptc._job["done"], 4, "and moved in the same run")
+        self.assertEqual(Path(self.moves).read_text().splitlines(), first + second)
+        for path in first + second:
+            self.assertFalse(os.path.exists(path))
+            self.assertTrue(os.path.exists(ptc.cache_to_array(path)))
+        self.assertIsNone(ptc._while_waiting, "the hook goes with the batch")
 
 
 class MovesBeyondTheTrackedList(StateInTempDir):
