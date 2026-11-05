@@ -16,7 +16,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Unraid ships its own python3; the daemon must not depend on a recent one.
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
@@ -27,8 +26,6 @@ jobs:
       - name: Tests
         run: python -m unittest discover -s tests -v
 
-      # Resolves every import against the interpreter running it, so on 3.9 it
-      # also catches modules that only became stdlib in a later version.
       - name: Standard library only
         run: python tests/check_stdlib_only.py src/plex_to_cache.py
 

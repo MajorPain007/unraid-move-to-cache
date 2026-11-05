@@ -19,7 +19,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
-import plex_to_cache as ptc  # noqa: E402
+import plex_to_cache as ptc
 
 
 def configure(**overrides):
@@ -80,7 +80,6 @@ class PathRoundTrip(unittest.TestCase):
         src = "/mnt/user/Media/Show/S01/ep.mkv"
         cache = ptc.array_to_cache(src)
         self.assertEqual(cache, "/mnt/cache/Media/Show/S01/ep.mkv")
-        # back onto the array, never through the cache-inclusive share
         self.assertEqual(ptc.cache_to_array(cache), "/mnt/user0/Media/Show/S01/ep.mkv")
 
     def test_array_root_below_the_share(self):
@@ -153,7 +152,6 @@ class DockerPathTranslation(unittest.TestCase):
     def test_prefix_needs_a_path_boundary(self):
         configure(ARRAY_ROOT="/mnt/user", DOCKER_MAPPINGS="/data:/mnt/user/Data")
         self.assertEqual(ptc.translate_docker_path("/data/x.mkv"), "/mnt/user/Data/x.mkv")
-        # /database is a different directory, not a child of /data
         self.assertEqual(ptc.translate_docker_path("/database/dump.mkv"),
                          "/database/dump.mkv")
 
@@ -186,7 +184,7 @@ class BatchSelection(unittest.TestCase):
     def test_short_season_is_cached_whole(self):
         configure(ENABLE_EPISODE_BATCHING="True", EPISODE_BATCH_SIZE="30",
                   EPISODE_BATCH_TOLERANCE="10")
-        eps = list(range(1, 37))          # 36 <= 30 + 10
+        eps = list(range(1, 37))
         self.assertEqual(set(ptc.select_batch_episodes(eps, 1)), set(eps))
 
     def test_long_season_is_split(self):
@@ -407,9 +405,6 @@ class PickDuringAMove(StateInTempDir):
     once the whole first one had gone, and until then the progress bar left it
     out - the click seemed to do nothing."""
 
-    # Stands in for rsync. On its first call it does what the web UI does when
-    # a folder is picked, then takes its time, as a film would, and notes the
-    # total the progress bar has by then.
     FAKE_RSYNC = """#!{python}
 import json, os, shutil, sys, time
 src, dst = [a for a in sys.argv[1:] if not a.startswith("-")]
@@ -456,7 +451,6 @@ with open(os.environ["FAKE_LOG"], "a") as fh:
     def test_it_is_counted_at_once_and_moved_after_what_was_in_line(self):
         media = os.path.join(self.cache, "Media")
         first  = [self.make(os.path.join(media, "A", f"e{i}.mkv")) for i in (1, 2)]
-        # Older than the first series: the order is the order of asking.
         second = [self.make(os.path.join(media, "B", f"e{i}.mkv"), age_seconds=90000)
                   for i in (1, 2)]
 
@@ -573,7 +567,6 @@ class MoveFileToArray(StateInTempDir):
         os.makedirs(os.path.join(self.array, "Media"))
         configure(ARRAY_ROOT=self.array, CACHE_ROOT=self.cache,
                   DOCKER_MAPPINGS="/media:" + os.path.join(self.array, "Media"))
-        # rsync as far as these tests care: copy with attributes, drop the source
         self.rsync = mock.patch.object(ptc, 'rsync_transfer', side_effect=self._fake_rsync)
         self.rsync.start()
 
@@ -951,7 +944,6 @@ class Mover(StateInTempDir):
                                           "protected": ["/mnt/cache/Media/copying.mkv"]})
         self.assertEqual(ptc._protected_now(), {"/mnt/cache/Media/playing.mkv",
                                                 "/mnt/cache/Media/copying.mkv"})
-        # A snapshot left by a service that has since stopped says nothing.
         ptc._write_json(ptc.STATUS_FILE, {"updated": int(time.time()) - 3600,
                                           "protected": ["/mnt/cache/Media/copying.mkv"]})
         self.assertEqual(ptc._protected_now(), {"/mnt/cache/Media/playing.mkv"})
@@ -982,7 +974,7 @@ class AutoCleanup(StateInTempDir):
                   EPISODE_KEEP_PREVIOUS="1")
         season = os.path.join(tmp_cache, "Show", "S01")
         ours = self.make(os.path.join(season, "Show.S01E01.mkv"))
-        self.make(os.path.join(season, "Show.S01E02.mkv"))   # a download, untracked
+        self.make(os.path.join(season, "Show.S01E02.mkv"))
         self.make(os.path.join(tmp_array, "Show", "S01", "Show.S01E05.mkv"))
         ptc.TrackedFiles.save({ours: 1.0})
         with mock.patch.object(ptc, 'request_moves') as request, \
@@ -1021,9 +1013,9 @@ class DaemonPass(StateInTempDir):
              mock.patch.object(ptc, 'reconcile_tracked_files'), \
              mock.patch.object(ptc, 'enqueue_copy') as enqueue, \
              mock.patch.object(ptc, 'queue_moves') as queue_moves:
-            ptc._daemon_pass(state)                  # the stream is noticed
+            ptc._daemon_pass(state)
             enqueue.assert_not_called()
-            protected = ptc._daemon_pass(state)      # the copy delay has passed
+            protected = ptc._daemon_pass(state)
 
         copied = sorted(os.path.basename(c[0][0]) for c in enqueue.call_args_list)
         self.assertEqual(copied, ["Show.S01E05.mkv", "Show.S01E06.mkv"])
@@ -1072,7 +1064,6 @@ class StopSparesTheMover(unittest.TestCase):
     def test_the_stop_pattern_matches_the_service_only(self):
         rc = (ROOT / "src" / "rc.plex_to_cache").read_text()
         self.assertIn('pkill -f "$SERVICE_PATTERN"', rc)
-        # Let bash expand the two assignments, rather than guessing at quoting.
         lines = [l for l in rc.splitlines() if l.startswith(("PYTHON_SCRIPT=", "SERVICE_PATTERN="))]
         out = subprocess.run(["bash", "-c", "\n".join(lines) + '\nprintf %s "$SERVICE_PATTERN"'],
                              capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
@@ -1119,7 +1110,7 @@ class WebUiActions(unittest.TestCase):
 
     def test_an_unknown_action_is_refused_before_the_save(self):
         guard = self.php.index("if ($ptc_action !== '')")
-        save = self.php.index("// POST: Save settings")
+        save = self.php.index("if ($_SERVER['REQUEST_METHOD'] === 'POST') {")
         self.assertLess(guard, save)
 
     def test_the_web_ui_starts_the_script_that_is_installed(self):

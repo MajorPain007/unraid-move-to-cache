@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.09.30.01">
+<!ENTITY version   "2026.11.05.01">
 <!ENTITY launch    "Utilities/plex_to_cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/MajorPain007/unraid-move-to-cache/main/plex_to_cache.plg">
 ]>
@@ -13,6 +13,11 @@ Plex to Cache: Automatically moves media from array to cache on stream start. In
 </DESCRIPTION>
 
 <CHANGES>
+### 2026.11.05.01
+
+- Leaner source: the comments are gone from the code. Nothing changes in how
+  the plugin works.
+
 ### 2026.09.30.01
 
 - Sending something to the array while a move was running - a second series,
@@ -465,21 +470,15 @@ Review pass. Four defects, three of them real:
 - UI: New Layout Ratio (25% Server / 25% Tuning / 50% Log)
 </CHANGES>
 
-<!-- Pre-install: stop running service, clean old files -->
 <FILE Run="/bin/bash">
 <INLINE>
 <![CDATA[
-# Stop previous service (if any) - the service only. A move to the array
-# runs as a process of its own, on code it has already loaded, and carries on
-# through the update. The pattern ends at the script name, where the mover's
-# command line goes on with --move.
 if [ -f /var/run/plex_to_cache.pid ]; then
     kill $(cat /var/run/plex_to_cache.pid) 2>/dev/null
     rm -f /var/run/plex_to_cache.pid
 fi
 pkill -f 'plex_to_cache/scripts/plex_to_cache.py$' 2>/dev/null
 
-# Remove old plugin files so updates take effect cleanly
 rm -f /usr/local/emhttp/plugins/plex_to_cache/plex_to_cache.php
 rm -f /usr/local/emhttp/plugins/plex_to_cache/plex_to_cache.page
 rm -f /usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py
@@ -487,20 +486,13 @@ rm -f /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache
 rm -f /usr/local/emhttp/plugins/plex_to_cache/event/stopping
 rm -f /usr/local/emhttp/plugins/plex_to_cache/event/disks_mounted
 
-# Create plugin directories
 mkdir -p /usr/local/emhttp/plugins/plex_to_cache/scripts
 mkdir -p /usr/local/emhttp/plugins/plex_to_cache/event
 mkdir -p /boot/config/plugins/plex_to_cache
-
-# NOTE: no pip / curl here on purpose — this plugin has no external
-# Python dependencies any more. Everything the daemon needs is in the
-# stdlib (urllib, ssl, json, fcntl, subprocess). Install & boot work
-# offline.
 ]]>
 </INLINE>
 </FILE>
 
-<!-- Plugin page wrapper -->
 <FILE Name="/usr/local/emhttp/plugins/plex_to_cache/plex_to_cache.page">
 <INLINE>
 <![CDATA[
@@ -515,7 +507,6 @@ Markdown="false"
 </INLINE>
 </FILE>
 
-<!-- Web UI (PHP) -->
 <FILE Name="/usr/local/emhttp/plugins/plex_to_cache/plex_to_cache.php">
 <INLINE>
 <![CDATA[
@@ -525,7 +516,6 @@ $ptc_cfg_file = "/boot/config/plugins/$ptc_plugin/settings.cfg";
 $ptc_log_file = "/var/log/plex_to_cache.log";
 $ptc_pid_file = "/var/run/plex_to_cache.pid";
 
-// Defaults
 $ptc_cfg = [
     "ENABLE_PLEX" => "False", "PLEX_URL" => "http://localhost:32400", "PLEX_TOKEN" => "",
     "ENABLE_EMBY" => "False", "EMBY_URL" => "http://localhost:8096", "EMBY_API_KEY" => "",
@@ -547,12 +537,6 @@ $ptc_move_status   = "/var/run/plex_to_cache.move.json";
 $ptc_daemon_script = "/usr/local/emhttp/plugins/$ptc_plugin/scripts/plex_to_cache.py";
 $ptc_rc_script     = "/usr/local/emhttp/plugins/$ptc_plugin/scripts/rc.plex_to_cache";
 
-/**
- * The cache-side folders this plugin works in, derived from the docker
- * mappings exactly like _mapped_cache_dirs() in the daemon. Everything the
- * browser shows and every path the move endpoint accepts has to sit under one
- * of these - the rest of the cache pool is out of bounds.
- */
 function ptc_media_roots() {
     global $ptc_cfg;
     $cache_root = rtrim($ptc_cfg['CACHE_ROOT'], '/');
@@ -571,12 +555,9 @@ function ptc_media_roots() {
             $roots[] = $cache_root . '/' . ltrim($host, '/');
         }
     }
-    // Never the pool itself, as in the daemon: a mapping of the whole user
-    // share would otherwise put appdata and system in the browser.
     return array_values(array_diff(array_unique($roots), [$cache_root]));
 }
 
-/** True when $path is one of the media roots or sits inside one. */
 function ptc_path_allowed($path) {
     foreach (ptc_media_roots() as $root) {
         if ($path === $root || strpos($path, $root . '/') === 0) return true;
@@ -584,10 +565,6 @@ function ptc_path_allowed($path) {
     return false;
 }
 
-/**
- * Resolve a browser path. Returns '' when it does not exist or escapes the
- * media roots, so a ".." in a request cannot walk out of them.
- */
 function ptc_safe_path($path) {
     $path = rtrim((string)$path, '/');
     if ($path === '') return '';
@@ -596,7 +573,6 @@ function ptc_safe_path($path) {
     return ptc_path_allowed($real) ? $real : '';
 }
 
-/** Is this one of the media file types the plugin handles? */
 function ptc_is_media($name) {
     global $ptc_cfg;
     foreach (preg_split('/[\s,]+/', $ptc_cfg['MEDIA_FILETYPES']) as $ext) {
@@ -608,17 +584,8 @@ function ptc_is_media($name) {
     return false;
 }
 
-define('PTC_SCAN_CAP', 20000);   // media files counted per folder before giving up
+define('PTC_SCAN_CAP', 20000);
 
-/**
- * Media files anywhere under $dir as path => size, plus whether the walk hit
- * the cap. Listing a folder walks it once per row, so an unbounded scan of a
- * very large library would be the slowest thing on the page.
- *
- * Hidden entries are skipped, as they are in the list and in the mover:
- * .Recycle.Bin holds deleted media, and a Mac leaves ._ files next to real
- * ones. An unreadable folder is skipped too instead of ending the count.
- */
 function ptc_media_under($dir, $cap = 0) {
     $out = ['files' => [], 'capped' => false];
     if (!is_dir($dir)) return $out;
@@ -635,12 +602,10 @@ function ptc_media_under($dir, $cap = 0) {
             if ($cap > 0 && count($out['files']) >= $cap) { $out['capped'] = true; break; }
         }
     } catch (Exception $e) {
-        // Unreadable subtree - report what was collected so far
     }
     return $out;
 }
 
-/** The tracked list as path => timestamp. */
 function ptc_tracked() {
     global $ptc_tracked_file;
     $out = [];
@@ -653,23 +618,17 @@ function ptc_tracked() {
     return $out;
 }
 
-// Known keys only: settings of features that no longer exist would otherwise
-// be carried along and written back on every save.
 if (file_exists($ptc_cfg_file)) {
     $ptc_loaded = parse_ini_file($ptc_cfg_file);
     if ($ptc_loaded) { $ptc_cfg = array_merge($ptc_cfg, array_intersect_key($ptc_loaded, $ptc_cfg)); }
 }
 
-/** True while the service's PID file names a live process. */
 function ptc_service_running() {
     global $ptc_pid_file;
-    // (int) of an empty file is 0, and kill(0, 0) asks about our own process
-    // group - which always exists.
     $pid = file_exists($ptc_pid_file) ? (int)@file_get_contents($ptc_pid_file) : 0;
     return $pid > 0 && posix_kill($pid, 0);
 }
 
-/** True while a mover holds its lock - the same flock the daemon checks. */
 function ptc_mover_running() {
     global $ptc_move_lock;
     $fh = @fopen($ptc_move_lock, 'c');
@@ -680,7 +639,6 @@ function ptc_mover_running() {
     return !$free;
 }
 
-/** Cache paths being played, if the service's snapshot is recent enough to say. */
 function ptc_stream_paths() {
     global $ptc_status_file;
     $st = is_readable($ptc_status_file) ? json_decode(@file_get_contents($ptc_status_file), true) : null;
@@ -688,15 +646,6 @@ function ptc_stream_paths() {
     return (isset($st['stream_paths']) && is_array($st['stream_paths'])) ? $st['stream_paths'] : [];
 }
 
-/**
- * Unraid's CSRF token.
- *
- * Without it, any page an authenticated admin visits can trigger the
- * state-changing endpoints below - an <img src="...?action=service&cmd=stop">
- * is enough to stop the daemon. $var is normally provided by the page layout;
- * fall back to var.ini so the check also works when this file is requested
- * directly by the AJAX calls.
- */
 function ptc_csrf_token() {
     global $var;
     if (isset($var['csrf_token']) && $var['csrf_token'] !== '') return $var['csrf_token'];
@@ -706,14 +655,10 @@ function ptc_csrf_token() {
 
 function ptc_require_csrf($as_json = true) {
     $expected = ptc_csrf_token();
-    if ($expected === '') return;                       // nothing to check against
+    if ($expected === '') return;
     $got = (string)($_POST['csrf_token'] ?? $_GET['csrf_token'] ?? $_REQUEST['csrf_token'] ?? '');
     if (hash_equals($expected, $got)) return;
 
-    // Say which of the two it is. A token that never arrived points at the
-    // request, one that arrived stale points at the page: Unraid mints a new
-    // token when it boots, and a tab left open since before that still carries
-    // the old one.
     $why = $got === ''
         ? 'No CSRF token was sent with this request.'
         : 'This page is holding an out-of-date CSRF token. Reload it - Unraid '
@@ -731,16 +676,12 @@ function ptc_require_csrf($as_json = true) {
 
 $ptc_action = (string)($_GET['action'] ?? '');
 
-// AJAX: Get log
 if ($ptc_action === 'log') {
     header('Content-Type: text/plain');
     echo file_exists($ptc_log_file) ? shell_exec("tail -n 200 " . escapeshellarg($ptc_log_file)) : "Log file not found. Service might be starting...";
     exit;
 }
 
-// AJAX: What the service and the mover are doing. The service's snapshot is
-// written by the daemon, the mover's progress by the mover; whether each is
-// running is asked here, since a process that died cannot say so itself.
 if ($ptc_action === 'status') {
     header('Content-Type: application/json');
     $service = is_readable($ptc_status_file) ? json_decode(@file_get_contents($ptc_status_file), true) : null;
@@ -753,14 +694,12 @@ if ($ptc_action === 'status') {
     exit;
 }
 
-// AJAX: Test connection (uses form values sent via POST, not saved config)
 if ($ptc_action === 'test') {
     ptc_require_csrf();
     header('Content-Type: application/json');
     $service = $_GET['service'] ?? '';
     $result = ['success' => false, 'message' => 'Unknown service'];
 
-    // Get values from POST (current form input) instead of saved config
     $test_url = $_POST['url'] ?? '';
     $test_key = $_POST['key'] ?? '';
 
@@ -842,7 +781,6 @@ if ($ptc_action === 'test') {
 }
 
 
-// AJAX: Service control
 if ($ptc_action === 'service') {
     ptc_require_csrf();
     header('Content-Type: application/json');
@@ -857,15 +795,9 @@ if ($ptc_action === 'service') {
     exit;
 }
 
-// AJAX: Browse one level of the cache media folders.
-// Folders report the total of the media below them, so a whole series or a
-// single season can be judged and moved as one.
 if ($ptc_action === 'browse') {
     header('Content-Type: application/json');
 
-    // A fatal - execution timeout, memory, a dying worker - cannot be caught by
-    // try/catch and leaves the client with an empty response and no status,
-    // which is indistinguishable from "still loading". This says what happened.
     $ptc_answered = false;
     register_shutdown_function(function () use (&$ptc_answered) {
         if ($ptc_answered) return;
@@ -878,8 +810,6 @@ if ($ptc_action === 'browse') {
     try {
 
     $roots = ptc_media_roots();
-    // Full paths: comparing names alone marks every "S01E01.mkv" in the
-    // library as playing when one of them is.
     $streaming = ptc_stream_paths();
     $tracked = ptc_tracked();
 
@@ -888,9 +818,6 @@ if ($ptc_action === 'browse') {
     $files = [];
     $here = '';
 
-    // What is actually in the folder, not just what the plugin put there - the
-    // point of the number is to tell a full folder from an empty one. Capped so
-    // an enormous tree cannot stall the request; the UI says when it was.
     $summarise = function ($dir) use ($tracked, $streaming) {
         $under  = ptc_media_under($dir, PTC_SCAN_CAP);
         $cached = 0; $busy = 0;
@@ -907,7 +834,6 @@ if ($ptc_action === 'browse') {
     };
 
     if ($want === '') {
-        // Top level: one entry per mapped folder.
         foreach ($roots as $root) {
             if (!is_dir($root)) continue;
             $label = (strpos($root, rtrim($ptc_cfg['CACHE_ROOT'], '/') . '/') === 0)
@@ -930,8 +856,6 @@ if ($ptc_action === 'browse') {
             exit;
         }
         foreach ($entries as $entry) {
-            // Skips . and .. along with .Recycle.Bin and other hidden entries -
-            // none of them are media the plugin has any business moving.
             if ($entry === '' || $entry[0] === '.') continue;
             $full = $here . '/' . $entry;
             if (is_dir($full)) {
@@ -945,12 +869,10 @@ if ($ptc_action === 'browse') {
         }
     }
 
-    // By name, naturally: a plain string compare puts episode 10 ahead of 2.
     $by_name = function ($a, $b) { return strnatcasecmp($a['name'], $b['name']); };
     usort($dirs,  $by_name);
     usort($files, $by_name);
 
-    // Where "up" goes: '' means back to the list of mapped folders.
     $parent = null;
     if ($here !== '') {
         $parent = in_array($here, $roots, true) ? '' : dirname($here);
@@ -971,14 +893,13 @@ if ($ptc_action === 'browse') {
     exit;
 }
 
-// AJAX: How much of the cache this plugin holds right now.
 if ($ptc_action === 'cached') {
     header('Content-Type: application/json');
     $count = 0;
     $total = 0;
     foreach (ptc_tracked() as $path => $ts) {
         $size = @filesize($path);
-        if ($size === false) continue;   // gone since the list was written
+        if ($size === false) continue;
         $count++;
         $total += $size;
     }
@@ -986,24 +907,16 @@ if ($ptc_action === 'cached') {
     exit;
 }
 
-// AJAX: Move a file or folder back to the array.
 if ($ptc_action === 'uncache') {
     ptc_require_csrf();
     header('Content-Type: application/json');
 
-    // A file or a whole folder - a season, a series, a mapped root. The mover
-    // enforces the mapped folders itself, so this check is here to give a
-    // useful message rather than to be the guard. A line break would split
-    // the request in two in the mover's queue.
     $path = ptc_safe_path($_POST['path'] ?? $_GET['path'] ?? '');
     if ($path === '' || strpbrk($path, "\r\n") !== false) {
         echo json_encode(['success' => false, 'message' => 'Path is outside the mapped media folders']);
         exit;
     }
 
-    // Clicking To Array on a specific file or folder is an explicit instruction,
-    // so it moves whatever media is in there whether this plugin put it on the
-    // cache or not. Auto Cleanup only ever touches what this plugin put there.
     if (is_dir($path)) {
         $under = ptc_media_under($path, PTC_SCAN_CAP);
         $count = count($under['files']);
@@ -1017,10 +930,6 @@ if ($ptc_action === 'uncache') {
         $label = basename($path);
     }
 
-    // Queue first, then look for a mover - the order the mover's exit relies
-    // on (see run_mover in plex_to_cache.py). Appended, so that several rows
-    // clicked in a row all get moved. The mover is its own process whether the
-    // service runs or not, so Stop does not end a move that is under way.
     if (@file_put_contents($ptc_move_queue, "pick\t" . $path . "\n", FILE_APPEND | LOCK_EX) === false) {
         echo json_encode(['success' => false, 'message' => 'Cannot write the move queue']);
         exit;
@@ -1039,8 +948,6 @@ if ($ptc_action === 'uncache') {
     exit;
 }
 
-// AJAX: Stop the move to the array. The file being moved stays on the cache
-// and so does everything still queued; the service is not touched.
 if ($ptc_action === 'stop_move') {
     ptc_require_csrf();
     header('Content-Type: application/json');
@@ -1049,10 +956,6 @@ if ($ptc_action === 'stop_move') {
     exit;
 }
 
-// Every action is handled above. A request naming one that is not - from a
-// page left open across an update, say - must not fall through to the save
-// below: none of the form's fields would be in it, so the save would switch
-// every media server off and clear the Docker mappings.
 if ($ptc_action !== '') {
     http_response_code(400);
     header('Content-Type: application/json');
@@ -1061,17 +964,13 @@ if ($ptc_action !== '') {
     exit;
 }
 
-// POST: Save settings
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     ptc_require_csrf(false);
     foreach ($ptc_cfg as $key => $val) {
         if (isset($_POST[$key])) {
-            // Written as key="value", one per line: a quote or a line break in
-            // a value would end it early or start a key of its own, and then
-            // parse_ini_file fails and every setting reads as its default.
             $ptc_cfg[$key] = str_replace(["\r", "\n", '"'], '', (string)$_POST[$key]);
         } elseif (strpos($key, "ENABLE_") === 0) {
-            $ptc_cfg[$key] = "False";   // an unticked checkbox is not sent at all
+            $ptc_cfg[$key] = "False";
         }
     }
     $m_str = "";
@@ -1090,8 +989,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!is_dir(dirname($ptc_cfg_file))) mkdir(dirname($ptc_cfg_file), 0777, true);
     file_put_contents($ptc_cfg_file, $content);
 
-    // condrestart: apply new settings if the service is enabled, but do not
-    // force-start a service the user has stopped on purpose.
     shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache condrestart > /dev/null 2>&1 &");
     echo "<script>window.location.href = window.location.href;</script>";
     exit;
@@ -1135,18 +1032,9 @@ $is_running = ptc_service_running();
     display: flex;
     flex-direction: column;
     min-height: 650px;
-    /* Without this a grid item refuses to shrink below its content's
-       min-content width, so one long file name in the list widens the whole
-       page and puts a scrollbar under it. */
     min-width: 0;
 }
 
-/* The list is two tables sharing one set of column widths: the header and ../
-   sit in a static block, the rows in a scrolling one. That is the only way to
-   have them always visible without content sliding underneath, which is what
-   position:sticky does by definition. The scrollbar of the lower box would
-   offset the columns by its own width, so the head reserves the same gap -
-   measured, not guessed. */
 #ptc-cached-head { border: 1px solid #333; border-bottom: none;
                    border-radius: 8px 8px 0 0; background: var(--bg-dark); }
 #ptc-cached-wrap { max-height: 260px; overflow-x: hidden; overflow-y: auto;
@@ -1159,8 +1047,6 @@ table.ptc-list th, table.ptc-list td { padding: 5px 6px; }
 table.ptc-list td:first-child,
 table.ptc-list th:first-child { white-space: nowrap; overflow: hidden;
                                 text-overflow: ellipsis; }
-/* Unraid styles bare buttons uppercase and letter-spaced, which makes the label
-   wider than the column reserved for it. */
 table.ptc-list .btn-test { text-transform: none; letter-spacing: 0; }
 
 table.ptc-list thead tr { background: #262b33; }
@@ -1169,7 +1055,6 @@ table.ptc-list thead th { background: #262b33; color: #c3ccd4;
 table.ptc-list tbody tr { background: #17191d; }
 #ptc-cached-table tbody tr:nth-child(even) { background: #1b1e23; }
 table.ptc-list tbody tr.ptc-up-row { background: #1e2228; }
-/* Last, so hovering still highlights - equal specificity, later wins. */
 table.ptc-list tbody tr:hover { background: #223142; }
 
 table.ptc-list a { color: var(--primary-blue); text-decoration: none; }
@@ -1177,8 +1062,6 @@ table.ptc-list a:hover { text-decoration: underline; }
 table.ptc-list .ptc-ico { width: 14px; display: inline-block; text-align: center;
                           margin-right: 6px; color: #7a8894; }
 table.ptc-list .ptc-ico.folder { color: var(--primary-blue); }
-/* The whole name cell opens the folder, not just the text - at narrow widths
-   the label is shortened to almost nothing and would be hard to hit. */
 table.ptc-list td.ptc-openable { cursor: pointer; }
 .btn-test:disabled { opacity: .45; cursor: default; border-color: #333; }
 #ptc-crumbs a { color: var(--primary-blue); text-decoration: none; }
@@ -1188,8 +1071,6 @@ table.ptc-list col.ptc-c-note { width: 84px; }
 table.ptc-list col.ptc-c-act  { width: 92px; }
 table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
 
-/* What the mover is doing, with the button that stops it. Only there while a
-   move runs, or for a few minutes after one ended. */
 #ptc-move-bar { display: flex; align-items: center; gap: 10px; margin: 8px 0 2px;
                 padding: 6px 10px; background: #12202c; border: 1px solid #1f3a52;
                 border-radius: 6px; font-size: 12px; color: #c3ccd4; }
@@ -1221,7 +1102,6 @@ table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
     overflow-y: auto;
 }
 
-/* Status dot */
 .status-dot {
     width: 14px;
     height: 14px;
@@ -1239,11 +1119,8 @@ table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
     50% { opacity: 0.5; }
 }
 
-/* Top control bar with Save and Service buttons */
 .top-control-bar {
     display: flex;
-    /* Without wrapping, flex:1 on the submit shrinks it past its own label
-       before anything else gives way, and "Save & Apply" gets clipped. */
     flex-wrap: wrap;
     gap: 10px;
     margin-bottom: 15px;
@@ -1277,7 +1154,6 @@ table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
     border-color: var(--primary-blue);
 }
 
-/* Form elements */
 .section-header { color: var(--primary-blue); font-size: 18px; font-weight: bold; margin-bottom: 15px; margin-top: 20px; border-bottom: 1px solid #333; padding-bottom: 5px; display: flex; align-items: center; gap: 8px; }
 .section-header:first-of-type { margin-top: 0; }
 
@@ -1288,7 +1164,6 @@ table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
 .expand-row .form-input-wrapper { flex: 1; }
 .expand-row input { width: 100% !important; max-width: none !important; box-sizing: border-box !important; }
 
-/* Custom Tooltip */
 .form-pair label:after {
     content: attr(data-tooltip);
     position: absolute;
@@ -1324,7 +1199,6 @@ table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
 #mapping_table td { padding: 5px 0; }
 
 
-/* Test button */
 .btn-test {
     padding: 4px 10px;
     font-size: 11px;
@@ -1340,7 +1214,6 @@ table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
 .btn-test.error { border-color: var(--error-red); color: var(--error-red); }
 
 
-/* Cleanup mode selector */
 .cleanup-mode-selector {
     display: flex;
     flex-direction: column;
@@ -1461,8 +1334,6 @@ table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
             </div>
             <div id="ptc-cached-summary" style="color:#888; font-size:12px; margin-top:6px;"></div>
             <div id="ptc-crumbs" style="color:#8b98a5; font-size:12px; margin:4px 0; word-break:break-all;"></div>
-            <!-- Header and ../ live outside the scrolling box, so nothing can
-                 scroll underneath them. Both tables share the column widths. -->
             <div id="ptc-cached-head">
                 <table class="ptc-list">
                     <colgroup><col><col class="ptc-c-size"><col class="ptc-c-note"><col class="ptc-c-act"></colgroup>
@@ -1506,10 +1377,10 @@ function refreshLog() {
     });
 }
 
-var ptcMoveSeen = null;     // `finished` of the last move the list was refreshed for
-var ptcMoveDone = -1;       // files done when the list was last refreshed during a move
+var ptcMoveSeen = null;
+var ptcMoveDone = -1;
 var ptcMoveListAt = 0;
-var ptcNoticeUntil = 0;     // a message in the move bar stays this long before progress replaces it
+var ptcNoticeUntil = 0;
 
 function ptcSetDot(running) {
     var dot = document.getElementById('status-dot');
@@ -1520,13 +1391,9 @@ function ptcSetDot(running) {
 function refreshStatus() {
     $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=status', function(r) {
         if (!r) return;
-        // The dot follows the service on every poll, so a crash shows too -
-        // not only a Stop pressed on this page.
         ptcSetDot(r.running);
         var d = r.service || {}, parts = [];
         if (!r.running) {
-            // The snapshot is what the service saw when it stopped; showing it
-            // as current would say it is still copying.
             parts.push('Service stopped');
         } else if (d.updated) {
             parts.push('Cached: ' + d.cached_files + ' files / ' + (d.cached_bytes / 1073741824).toFixed(1) + ' GB');
@@ -1551,9 +1418,6 @@ function ptcMoveBar(m, now) {
     var bar = $('#ptc-move-bar'), btn = $('#ptc-move-stop');
     if (!m.running) {
         btn.prop('disabled', false).text('Stop move');
-        // Refresh the list once when a move ends, so it does not go on showing
-        // files that have left the cache. Not on the first poll: that move
-        // ended before the page was opened.
         if (m.finished && m.finished !== ptcMoveSeen) {
             if (ptcMoveSeen !== null) refreshCached();
             ptcMoveDone = -1;
@@ -1577,7 +1441,6 @@ function ptcMoveBar(m, now) {
             .attr('title', m.current || '');
         btn.prop('hidden', false);
         bar.prop('hidden', false);
-        // Rows leave the list as their files leave the cache.
         if (m.done !== ptcMoveDone && Date.now() - ptcMoveListAt > 10000) {
             ptcMoveDone = m.done;
             ptcMoveListAt = Date.now();
@@ -1594,9 +1457,6 @@ function ptcMoveBar(m, now) {
     }
 }
 
-// What a failed request says: the server's message when it sent one. A bare
-// "Request failed" hides a 403 from the CSRF check just as much as a request
-// that never arrived.
 function ptcFailText(xhr) {
     var msg = 'Request failed (HTTP ' + (xhr.status || '0 - no response') + ')';
     try {
@@ -1628,7 +1488,7 @@ function ptcBytes(n) {
     return (n / 1024).toFixed(0) + ' KB';
 }
 
-var ptcBrowsePath = '';   // '' = the list of mapped media folders
+var ptcBrowsePath = '';
 
 function refreshCached() { browseCache(ptcBrowsePath); }
 
@@ -1637,8 +1497,6 @@ function ptcRow(body, o) {
     var cell = $('<td>').attr('title', o.title || '');
     $('<i>').addClass('ptc-ico ' + (o.icon || '')).addClass(o.folder ? 'folder' : '').appendTo(cell);
     if (o.open) {
-        // The whole cell is the target: at narrow widths the label is cut down
-        // to an ellipsis and would be almost impossible to hit.
         cell.addClass('ptc-openable').on('click', function(e) { e.preventDefault(); o.open(); });
         $('<a href="#">').text(o.name).appendTo(cell);
     } else {
@@ -1661,7 +1519,6 @@ function ptcRow(body, o) {
     body.append(tr);
 }
 
-// Clickable path segments, so a deep folder is one click from any level above.
 function ptcCrumbs(path, roots) {
     var box = $('#ptc-crumbs').empty();
     if (!path) { box.text('Mapped media folders'); return; }
@@ -1684,14 +1541,9 @@ function ptcCrumbs(path, roots) {
     });
 }
 
-// The scrolling box has a scrollbar and the static head does not, which would
-// offset the columns by exactly its width. Measure it rather than guess: it
-// differs between platforms and is zero with overlay scrollbars.
 function ptcAlignHead() {
     var wrap = document.getElementById('ptc-cached-wrap');
     if (!wrap) return;
-    // offsetWidth - clientWidth is the scrollbar plus both borders. The head
-    // has the same borders, so only the scrollbar is to be made up for.
     var cs = getComputedStyle(wrap);
     var gap = wrap.offsetWidth - wrap.clientWidth
             - (parseFloat(cs.borderLeftWidth) || 0) - (parseFloat(cs.borderRightWidth) || 0);
@@ -1699,10 +1551,6 @@ function ptcAlignHead() {
 }
 
 function browseCache(path) {
-    // POST rather than a GET carrying the path in the query string: content
-    // blockers match on URLs, and a request they drop arrives here as status 0
-    // with an empty body - indistinguishable from a server that died. The same
-    // thing bit the snapshot browser in the other plugin.
     $.post('/plugins/plex_to_cache/plex_to_cache.php?action=browse',
            {path: path || '', csrf_token: ptcToken}, null, 'json')
      .done(function(d) {
@@ -1759,8 +1607,6 @@ function browseCache(path) {
         }
         ptcAlignHead();
     }).fail(function(xhr) {
-        // Say what went wrong in the table itself. Leaving "Loading..." sitting
-        // there says nothing and looks like the request is still running.
         var detail = 'HTTP ' + (xhr.status || '?');
         if (xhr.responseText) detail += ': ' + xhr.responseText.substring(0, 300);
         $('#ptc-crumbs').text('Could not read the folder.');
@@ -1770,8 +1616,6 @@ function browseCache(path) {
                                                         whiteSpace: 'pre-wrap'}).text(detail)));
     });
 
-    // The totals line comes from the tracked list and is independent of where
-    // the browser currently is.
     $.post('/plugins/plex_to_cache/plex_to_cache.php?action=cached',
            {csrf_token: ptcToken}, null, 'json').done(function(d) {
         if (!d || !d.success) return;
@@ -1782,17 +1626,10 @@ function browseCache(path) {
 }
 
 function uncacheFile(path, btn) {
-    // No confirm() here: it renders as the browser's own "JavaScript from
-    // <origin>" prompt, and this is not a destructive action - the file moves
-    // to the array and gets cached again next time it is played.
     btn.disabled = true;
     btn.textContent = '...';
     $.post('/plugins/plex_to_cache/plex_to_cache.php?action=uncache',
            {path: path, csrf_token: ptcToken}, null, 'json').done(function(data) {
-        // The mover takes a moment to start, and a poll made before it has
-        // would find nothing running. So the answer shows first, with the
-        // button that stops the move, and progress takes over after that.
-        // A refusal has to stay readable longer.
         if (data.success) {
             ptcNotice(data.message || 'Moving', 2500, true);
             setTimeout(refreshStatus, 2600);
@@ -1808,14 +1645,10 @@ function uncacheFile(path, btn) {
     });
 }
 
-// Unraid exposes csrf_token as a global on its own pages; fall back to the
-// hidden field in the form so the AJAX calls work either way.
 var ptcToken = (typeof csrf_token !== 'undefined' && csrf_token)
     ? csrf_token
     : ($('input[name="csrf_token"]').val() || '');
 
-// Values go in with .val(), not pasted into markup: a path with a quote or an
-// ampersand in it would otherwise cut the input short.
 function addMappingRow(dockerVal, hostVal) {
     var style = 'padding:4px !important; height:26px !important;';
     var row = $('<tr>');
@@ -1833,7 +1666,6 @@ function testConnection(service, btn) {
     btn.textContent = '...';
     btn.className = 'btn-test';
 
-    // Get current form values (not saved config)
     var url, key;
     if (service === 'plex') {
         url = $('input[name="PLEX_URL"]').val();
@@ -1903,14 +1735,10 @@ $(function() {
     refreshLog();
     refreshStatus();
     refreshCached();
-    // Auto Refresh is about the log. The status line, the dot and the move bar
-    // with its Stop move button keep updating either way.
     setInterval(function() {
         refreshStatus();
         if ($('#auto_refresh').is(':checked')) { refreshLog(); }
     }, 3000);
-    // The file list changes far less often than the log, and reading it walks
-    // the tracked list on flash - once a minute is plenty.
     setInterval(function() {
         if ($('#auto_refresh').is(':checked')) { refreshCached(); }
     }, 60000);
@@ -1920,7 +1748,6 @@ $(function() {
 </INLINE>
 </FILE>
 
-<!-- Daemon (Python) -->
 <FILE Name="/usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py" Mode="0755">
 <INLINE>
 <![CDATA[
@@ -1971,37 +1798,33 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-
 CONFIG_FILE   = "/boot/config/plugins/plex_to_cache/settings.cfg"
 TRACKED_FILES = "/boot/config/plugins/plex_to_cache/cached_files.list"
-TRACKED_LOCK  = "/var/run/plex_to_cache.tracked.lock"   # the service and the mover both change the list
-LOCK_FILE     = "/var/run/plex_to_cache.lock"            # one service at a time
+TRACKED_LOCK  = "/var/run/plex_to_cache.tracked.lock"
+LOCK_FILE     = "/var/run/plex_to_cache.lock"
 LOG_FILE      = "/var/log/plex_to_cache.log"
-LOG_MAX_BYTES = 5 * 1024 * 1024   # rotate when the log reaches 5 MB
-USER0_ROOT    = "/mnt/user0"      # the user shares without the cache pool - where a move back goes
+LOG_MAX_BYTES = 5 * 1024 * 1024
+USER0_ROOT    = "/mnt/user0"
 PROC_MOUNTS   = "/proc/self/mounts"
 
-RSYNC_RETRIES        = 3          # attempts per file before giving up
-RSYNC_RETRY_DELAY    = 5          # seconds between attempts
-RSYNC_POLL           = 1          # seconds between looks at the move queue while rsync runs
-COPY_FAIL_COOLDOWN   = 300        # seconds before re-trying a file that failed all attempts
-METADATA_CACHE_LIMIT = 500        # max entries kept in the Plex ratingKey→path cache
+RSYNC_RETRIES        = 3
+RSYNC_RETRY_DELAY    = 5
+RSYNC_POLL           = 1
+COPY_FAIL_COOLDOWN   = 300
+METADATA_CACHE_LIMIT = 500
 
-STATUS_FILE          = "/var/run/plex_to_cache.status.json"  # service snapshot for the web UI and the mover
-STATUS_INTERVAL      = 30         # seconds between status snapshots
-STATUS_FRESH         = 90         # the mover does not trust a snapshot older than this
-MOVE_QUEUE           = "/var/run/plex_to_cache.move.queue"   # "<kind>\t<path>" per line
-MOVE_LOCK            = "/var/run/plex_to_cache.move.lock"    # held by the running mover
-MOVE_PID             = "/var/run/plex_to_cache.move.pid"     # read by the Stop move button
-MOVE_STATUS          = "/var/run/plex_to_cache.move.json"    # mover progress for the web UI
-MOVE_MIN_AGE         = 30 * 60    # a file written this recently is left where it is
-MOVE_RETRY           = 600        # Auto Cleanup asks again for a file still on cache after this
-EVICT_MAX_FILES      = 25         # max files moved back per eviction pass
-WATCHED_MIN_PROGRESS = 0.90       # session progress at which media counts as watched
-LEGACY_PARTIAL_DIR   = ".plex_to_cache-partial"  # left by interrupted copies before 2026.09.29.01
+STATUS_FILE          = "/var/run/plex_to_cache.status.json"
+STATUS_INTERVAL      = 30
+STATUS_FRESH         = 90
+MOVE_QUEUE           = "/var/run/plex_to_cache.move.queue"
+MOVE_LOCK            = "/var/run/plex_to_cache.move.lock"
+MOVE_PID             = "/var/run/plex_to_cache.move.pid"
+MOVE_STATUS          = "/var/run/plex_to_cache.move.json"
+MOVE_MIN_AGE         = 30 * 60
+MOVE_RETRY           = 600
+EVICT_MAX_FILES      = 25
+WATCHED_MIN_PROGRESS = 0.90
+LEGACY_PARTIAL_DIR   = ".plex_to_cache-partial"
 
 DEFAULT_CONFIG = {
     "ENABLE_PLEX": "False", "PLEX_URL": "http://localhost:32400", "PLEX_TOKEN": "",
@@ -2011,56 +1834,39 @@ DEFAULT_CONFIG = {
     "CLEANUP_MODE": "none", "MOVIE_DELETE_DELAY": "1800", "EPISODE_KEEP_PREVIOUS": "2",
     "CACHE_MAX_DAYS": "7", "EXCLUDE_DIRS": "", "MEDIA_FILETYPES": ".mkv .mp4 .avi",
     "ARRAY_ROOT": "/mnt/user", "CACHE_ROOT": "/mnt/cache", "DOCKER_MAPPINGS": "",
-    # Season batching: for very long seasons, cache episodes in batches
-    # instead of the whole season at once.
     "ENABLE_EPISODE_BATCHING": "False",
-    "EPISODE_BATCH_SIZE": "30",        # episodes per batch
-    "EPISODE_BATCH_TOLERANCE": "10",   # if the leftover after a batch is <= this, merge it in
-    "EPISODE_BATCH_PREFETCH": "4",     # start next batch when this many episodes remain in the current one
-    # When the cache is full, move the oldest plugin-cached files back to
-    # the array to make room for the currently streamed media.
+    "EPISODE_BATCH_SIZE": "30",
+    "EPISODE_BATCH_TOLERANCE": "10",
+    "EPISODE_BATCH_PREFETCH": "4",
     "ENABLE_CACHE_EVICTION": "True",
-    # Near the end of a season, pre-cache the beginning of the next season.
     "ENABLE_NEXT_SEASON_PREFETCH": "False",
 }
 
-# Runtime state
 config          = dict(DEFAULT_CONFIG)
 docker_mappings = {}
 metadata_cache  = {}
 stream_timers   = {}
-deletion_queue  = {}               # cache path -> when it was queued; main loop and copy worker
-failed_copies   = {}               # cache_path -> timestamp of last failed attempt
-active_cache_paths = set()         # cache paths of currently streamed files (never evicted or moved)
-_requested      = {}               # cache path -> when Auto Cleanup handed it to the mover
-_movers         = []               # mover processes this process started, reaped with poll()
-_api_state      = {}               # media server -> whether it answered the last poll
-_warned         = set()            # keys of warnings already logged by log_once
+deletion_queue  = {}
+failed_copies   = {}
+active_cache_paths = set()
+_requested      = {}
+_movers         = []
+_api_state      = {}
+_warned         = set()
 
-# Transfer state
 copy_queue      = queue.Queue()
-_pending_copies = set()            # array paths queued or currently copying
+_pending_copies = set()
 _pending_lock   = threading.Lock()
-_current_copy   = None             # basename of the file being copied right now
-_current_rsync  = None             # running rsync Popen (for clean shutdown)
-_while_waiting  = None             # the mover's: called every RSYNC_POLL seconds while rsync runs
-# Re-entrant: the stop handler takes it, and in the mover it runs on the same
-# thread that may be holding it at that moment.
+_current_copy   = None
+_current_rsync  = None
+_while_waiting  = None
 _rsync_lock     = threading.RLock()
-_shutting_down  = threading.Event()   # asked to stop: end the current transfer, start no new one
+_shutting_down  = threading.Event()
 
-# Mover state (the --move process only), mirrored to MOVE_STATUS for the web UI
 _job         = {}
 _stream_poll = {"at": 0.0, "paths": frozenset()}
 
-# SSL context: Plex / Emby / Jellyfin typically use self-signed certs on the
-# local network, so we intentionally skip verification. This is equivalent
-# to the old `verify=False` on the `requests` calls.
 _SSL_CTX = ssl._create_unverified_context()
-
-# =============================================================================
-# UTILITIES
-# =============================================================================
 
 _logger = logging.getLogger("plex_to_cache")
 
@@ -2105,11 +1911,9 @@ def load_config():
         except OSError as e:
             log(f"Config load failed: {e}", error=True)
 
-    # Free-text fields, and every prefix comparison assumes no trailing slash.
     for key in ("ARRAY_ROOT", "CACHE_ROOT"):
         config[key] = config[key].rstrip('/') or '/'
 
-    # Parse docker mappings (stored as docker_path:host_path;...)
     docker_mappings = {}
     for pair in config.get("DOCKER_MAPPINGS", "").split(';'):
         if ':' in pair:
@@ -2124,9 +1928,6 @@ def cfg(key, as_int=False, as_bool=False):
         try:
             return int(str(val).strip())
         except (ValueError, TypeError):
-            # Fall back to the built-in default instead of a silent 0,
-            # so a typo in settings.cfg can't create a busy-loop or
-            # zero-delay behaviour.
             try:
                 return int(DEFAULT_CONFIG.get(key, "0"))
             except (ValueError, TypeError):
@@ -2159,10 +1960,6 @@ def _write_json(path, data):
     except OSError:
         pass
 
-# =============================================================================
-# FILE TRACKING
-# =============================================================================
-
 class TrackedFiles:
     """The files this plugin put on the cache, each with the time it did.
 
@@ -2171,18 +1968,15 @@ class TrackedFiles:
     lock: the file is replaced atomically, so a reader sees one version or the
     other and never half of one."""
 
-    _lock  = threading.RLock()   # threads of this process
-    _depth = 0                   # how deep the holder of _lock is nested in locked()
-    _fh    = None                # the flock shared with the other process
+    _lock  = threading.RLock()
+    _depth = 0
+    _fh    = None
 
     @classmethod
     @contextlib.contextmanager
     def locked(cls):
         with cls._lock:
             if cls._depth == 0:
-                # An flock belongs to the open file, not to the process: a
-                # second open() and flock() in a nested call would wait for
-                # itself. So one handle, taken by the outermost call only.
                 fh = None
                 try:
                     fh = open(TRACKED_LOCK, "a")
@@ -2323,10 +2117,6 @@ def reconcile_tracked_files():
             f"{len(adopt)} orphaned cache copies adopted"
             + (f", {cleared} folder(s) of interrupted copies removed" if cleared else ""))
 
-# =============================================================================
-# PATH UTILITIES
-# =============================================================================
-
 def _under(path, prefix):
     """True if path is prefix itself or lies below it.
 
@@ -2408,10 +2198,7 @@ def _mapped_cache_dirs():
         elif _under(host_path, cache_root):
             mapped.add(host_path)
         else:
-            # host_path given as a relative share name — prepend cache root
             mapped.add(os.path.join(cache_root, host_path.lstrip('/')))
-    # The pool itself is never one of them: a mapping of the whole user share
-    # would otherwise hand appdata and system to the mover.
     mapped.discard(cache_root)
     return mapped
 
@@ -2425,9 +2212,6 @@ def is_media_file(filename):
     extensions = cfg("MEDIA_FILETYPES").split()
     return not extensions or any(filename.lower().endswith(ext.lower()) for ext in extensions)
 
-# Matches "S01E05" style and "1x05" style episode numbering.
-# The lookarounds on the 1x05 pattern prevent matching inside
-# resolutions like "1920x1080".
 _EP_PATTERNS = (
     re.compile(r"[sS]\d{1,4}[eE](\d{1,4})"),
     re.compile(r"(?<!\d)\d{1,2}x(\d{2,3})(?!\d)"),
@@ -2440,10 +2224,6 @@ def parse_episode(filename):
         if match:
             return int(match.group(1))
     return None
-
-# =============================================================================
-# PERMISSIONS
-# =============================================================================
 
 def clone_permissions(dest_path):
     """Clone permissions from the array original (via /mnt/user0) to dest_path."""
@@ -2500,10 +2280,6 @@ def _remove_empty_dirs(dirs):
             os.rmdir(d)
         except OSError:
             break
-
-# =============================================================================
-# CACHE SPACE
-# =============================================================================
 
 _MOUNT_ESCAPE = re.compile(r"\\([0-7]{3})")
 
@@ -2584,12 +2360,8 @@ def cache_has_room_for(file_size, dest=None, freed=0):
             free = min(free, shutil.disk_usage(_existing_dir(dest)).free + freed)
         except OSError:
             pass
-    margin = 512 * 1024 * 1024  # keep at least 512 MB headroom
+    margin = 512 * 1024 * 1024
     return free > file_size + margin
-
-# =============================================================================
-# FILE OPERATIONS
-# =============================================================================
 
 class TransferStopped(Exception):
     """The transfer was cut short because this process was asked to stop."""
@@ -2617,7 +2389,6 @@ def _run_rsync(cmd, timeout):
                             stderr=subprocess.PIPE, text=True)
     with _rsync_lock:
         _current_rsync = proc
-    # A stop that came in just before the line above found nothing to end.
     if _shutting_down.is_set():
         proc.terminate()
     deadline = time.monotonic() + timeout
@@ -2627,7 +2398,6 @@ def _run_rsync(cmd, timeout):
             if _while_waiting is not None:
                 step = min(step, RSYNC_POLL)
             try:
-                # Asking again after a timeout loses none of the output.
                 _, stderr = proc.communicate(timeout=max(step, 0))
                 return proc.returncode, (stderr or "")
             except subprocess.TimeoutExpired:
@@ -2711,12 +2481,9 @@ def rsync_transfer(src, dst, remove_source=True):
         if rc == -1:
             _remove_rsync_leftovers(dst)
 
-        # Keep the last few stderr lines for the log
         err_lines = [l for l in stderr.strip().splitlines() if l.strip()]
         last_err  = "; ".join(err_lines[-3:]) if err_lines else f"exit status {rc}"
 
-        # Partial transfer (23) / vanished source (24): accept if the data
-        # actually arrived completely.
         if rc in (23, 24) and _sizes_match(src, dst):
             log(f"rsync finished with warnings (exit {rc}) but file is complete: "
                 f"{os.path.basename(dst)} — {last_err}", warn=True)
@@ -2794,9 +2561,6 @@ def move_file_to_array(cache_path):
     The tracked list is the caller's business, so a batch can update it once.
     """
     name = os.path.basename(cache_path)
-    # A tracked entry from before CACHE_ROOT was changed. Its "place on the
-    # array" would be the file itself, and a file compared with itself looks
-    # like a duplicate that can go.
     if _relative_to(cache_path, cfg("CACHE_ROOT")) is None:
         log(f"{cache_path} is not under {cfg('CACHE_ROOT')} - left where it is", warn=True)
         return "kept", 0
@@ -2938,16 +2702,6 @@ def _cache_media_files(min_age_seconds, roots=None, recent=None):
                 consider(os.path.join(root, name), name)
     return found
 
-# =============================================================================
-# MOVER — everything that goes back to the array, in a process of its own
-# =============================================================================
-#
-# Requests sit in MOVE_QUEUE, one "<kind>\t<path>" per line:
-#   pick  a file or folder chosen in the browser. It covers media the plugin
-#         never cached too - choosing it by hand says what is meant.
-#   auto  a single file Auto Cleanup chose. Only ever one this plugin cached.
-# The web UI and the service append; the mover takes the lot and empties it.
-
 def _queue_append(lines):
     """flock, not lockf: the web UI appends with PHP's LOCK_EX, which is flock."""
     with open(MOVE_QUEUE, "a") as fh:
@@ -3005,7 +2759,7 @@ def _start_mover():
     """Start a mover unless one is running. It gets a session of its own, so
     that stopping the service does not take it along."""
     global _movers
-    _movers = [p for p in _movers if p.poll() is None]   # reap the finished ones
+    _movers = [p for p in _movers if p.poll() is None]
     if mover_running():
         return
     try:
@@ -3137,13 +2891,10 @@ def _plan_moves(requests, seen):
     tracked = TrackedFiles.load()
     picks   = [path for kind, path in requests if kind == "pick"]
 
-    # Auto Cleanup names single files, and only ever ones this plugin cached;
-    # one that is not tracked any more by now is not ours to move.
     candidates = {path: tracked[path] for kind, path in requests
                   if kind == "auto" and path in tracked}
     recent = []
     if picks:
-        # The trailing separator keeps /Media/Show2 from matching /Media/Show.
         wanted   = set(picks)
         prefixes = tuple(p.rstrip('/') + '/' for p in picks)
         for path, ts in tracked.items():
@@ -3152,8 +2903,6 @@ def _plan_moves(requests, seen):
         for path, ts in _cache_media_files(MOVE_MIN_AGE, roots=picks, recent=recent).items():
             candidates.setdefault(path, ts)
 
-    # Oldest first, and by name among equals - a season picked in the browser
-    # then goes episode by episode.
     entries = sorted(((p, ts) for p, ts in candidates.items() if p not in seen),
                      key=lambda kv: (kv[1], kv[0]))
     recent = [p for p in recent if p not in tracked and p not in seen]
@@ -3190,7 +2939,6 @@ def _move_batch(requests, seen):
     work = collections.deque(_plan_moves(requests, seen))
 
     def take_new():
-        # Nothing new after a stop: run_mover deals with what is queued then.
         if _shutting_down.is_set() or not _queue_pending():
             return
         try:
@@ -3213,11 +2961,6 @@ def _move_batch(requests, seen):
                 log(f"[Move] Skipping {name}: being played, or about to be")
                 continue
 
-            # A tracked file is a copy of the array original by construction.
-            # An untracked one is not: a different file of the same name on the
-            # array makes two versions of something, and only a person can say
-            # which to keep. An identical one is a copy this plugin lost track
-            # of, and moving it only drops the duplicate.
             if not is_tracked:
                 try:
                     twin = _twin(cache_path)
@@ -3271,11 +3014,8 @@ def run_mover():
         return 1
     with lock:
         if not _try_lock(lock):
-            return 0          # a mover is running, and takes the queue from here
+            return 0
 
-        # SIGTERM is the Stop move button, and also what a shutdown sends.
-        # Either way the file being moved stays on the cache, and so does the
-        # rest.
         signal.signal(signal.SIGTERM, _request_stop)
         signal.signal(signal.SIGINT, _request_stop)
 
@@ -3295,8 +3035,6 @@ def run_mover():
             if not _queue_pending():
                 return 0
             if _shutting_down.is_set():
-                # Queued after the stop: a new request, not part of what was
-                # stopped. It gets a mover of its own.
                 _start_mover()
                 return 0
             if not _try_lock(lock):
@@ -3305,10 +3043,6 @@ def run_mover():
             _write_pid()
             _write_job()
 
-# =============================================================================
-# COPY TO CACHE
-# =============================================================================
-
 def copy_file_to_cache(array_path):
     """Copy file from array to cache. Runs inside the copy worker thread."""
     if is_excluded(array_path) or not is_media_file(os.path.basename(array_path)):
@@ -3316,12 +3050,6 @@ def copy_file_to_cache(array_path):
 
     cache_path = array_to_cache(array_path)
 
-    # Already on the cache. Only a copy of the file on the array is ours:
-    # array_path is on the user share, which shows the cache copy whenever there
-    # is one, so comparing against it compares the file with itself - that is
-    # how a fresh download, on the cache and nowhere else, used to end up on
-    # the tracked list and later get moved to the array by Auto Cleanup.
-    # Anything else of that name is left exactly as it is.
     if os.path.exists(cache_path):
         try:
             twin = _twin(cache_path)
@@ -3332,7 +3060,6 @@ def copy_file_to_cache(array_path):
             TrackedFiles.add(cache_path)
         return
 
-    # Recently failed? Don't hammer the disks / spam the log every poll.
     last_fail = failed_copies.get(cache_path, 0)
     if time.time() - last_fail < COPY_FAIL_COOLDOWN:
         return
@@ -3351,7 +3078,6 @@ def copy_file_to_cache(array_path):
 
     log(f"[Copy] -> {os.path.basename(array_path)}")
     try:
-        # Create directory structure with proper permissions
         cache_dir  = os.path.dirname(cache_path)
         cache_root = cfg("CACHE_ROOT")
         cur = cache_root
@@ -3404,10 +3130,6 @@ def copy_worker():
                 _pending_copies.discard(array_path)
             copy_queue.task_done()
 
-# =============================================================================
-# API CLIENTS — urllib-based, no external deps
-# =============================================================================
-
 def api_get(url, headers, timeout=5, errors=None):
     """Make an API GET request and return parsed JSON, or None on failure.
     `errors`, if given, receives a short reason for a failure.
@@ -3432,9 +3154,6 @@ def api_get(url, headers, timeout=5, errors=None):
         return fail(f"HTTP {e.code} {e.reason}")
     except urllib.error.URLError as e:
         return fail(str(e.reason))
-    # ValueError: a server address without http:// - the field is free text.
-    # It used to escape from here and abort the whole pass of the main loop, so
-    # one mistyped address kept the other servers' streams from being cached.
     except (http.client.HTTPException, OSError, ValueError) as e:
         return fail(str(e) or type(e).__name__)
     if not body:
@@ -3480,7 +3199,6 @@ def get_active_streams():
     detection works per-session (and therefore also on rewatches)."""
     streams = {}
 
-    # --- Plex ---
     if cfg("ENABLE_PLEX", as_bool=True):
         headers = {'X-Plex-Token': cfg("PLEX_TOKEN"), 'Accept': 'application/json'}
         errors = []
@@ -3492,10 +3210,6 @@ def get_active_streams():
         if ok:
             for item in data['MediaContainer'].get('Metadata', []):
                 rk = item.get('ratingKey')
-                # The session names the file it plays. The ratingKey cache is a
-                # fallback for sessions that do not: an item upgraded to a
-                # better release keeps its ratingKey, and the cached path
-                # would point at the file that has since been replaced.
                 path = _first_part_file(item.get('Media')) or metadata_cache.get(rk)
 
                 if not path and rk:
@@ -3516,7 +3230,6 @@ def get_active_streams():
                         'progress': _progress(item.get('viewOffset'), item.get('duration')),
                     }
 
-    # --- Emby / Jellyfin ---
     for enabled_key, api_key, url_key, name, label in [
         ("ENABLE_EMBY",     "EMBY_API_KEY",     "EMBY_URL",     "emby",     "Emby"),
         ("ENABLE_JELLYFIN", "JELLYFIN_API_KEY", "JELLYFIN_URL", "jellyfin", "Jellyfin"),
@@ -3579,10 +3292,6 @@ def is_watched(session):
 
     return False
 
-# =============================================================================
-# SEASON BATCHING
-# =============================================================================
-
 def select_batch_episodes(all_eps, current_ep):
     """Decide which episodes (>= current_ep) should be on cache when
     season batching is enabled.
@@ -3609,13 +3318,10 @@ def select_batch_episodes(all_eps, current_ep):
     if len(all_eps) <= batch_size + tolerance:
         return set(upcoming)
 
-    # Fixed batch boundaries across the full season, so they stay stable
-    # regardless of which episode is currently playing.
     batches = [all_eps[i:i + batch_size] for i in range(0, len(all_eps), batch_size)]
     if len(batches) >= 2 and len(batches[-1]) <= tolerance:
         batches[-2].extend(batches.pop())
 
-    # Locate the batch containing (or nearest after) the current episode
     idx = len(batches) - 1
     for i, b in enumerate(batches):
         if current_ep <= b[-1]:
@@ -3628,10 +3334,6 @@ def select_batch_episodes(all_eps, current_ep):
         selected.extend(batches[idx + 1])
 
     return set(selected)
-
-# =============================================================================
-# STREAM HANDLERS
-# =============================================================================
 
 def _season_episode_files(season_dir):
     """Map episode number -> list of filenames for a season directory."""
@@ -3678,7 +3380,7 @@ def find_next_season_dir(season_dir):
             return full
     return None
 
-_prefetched_seasons = set()   # log each next-season prefetch only once per run
+_prefetched_seasons = set()
 
 def prefetch_next_season(season_dir):
     """Queue the beginning of the next season (first batch if batching is
@@ -3730,8 +3432,6 @@ def handle_series(array_path):
     season_dir       = os.path.dirname(array_path)
     cache_season_dir = array_to_cache(season_dir)
 
-    # Smart cleanup: send older episodes back - the ones this plugin cached.
-    # The season folder can also hold a download waiting for Unraid's mover.
     if cfg("CLEANUP_MODE").lower() == "smart" and os.path.isdir(cache_season_dir):
         threshold = episode - cfg("EPISODE_KEEP_PREVIOUS", as_int=True)
         tracked = TrackedFiles.load()
@@ -3746,7 +3446,6 @@ def handle_series(array_path):
             pass
         request_moves(old, "Smart Cleanup")
 
-    # Cache current and upcoming episodes
     if not os.path.isdir(season_dir):
         return
     ep_files = _season_episode_files(season_dir)
@@ -3761,8 +3460,6 @@ def handle_series(array_path):
 
     _enqueue_episodes(season_dir, ep_files, wanted)
 
-    # Near the end of the season: pre-cache the start of the next one,
-    # using the same threshold as the batch prefetch.
     if cfg("ENABLE_NEXT_SEASON_PREFETCH", as_bool=True):
         remaining_in_season = sum(1 for e in all_eps if e > episode)
         if remaining_in_season <= max(0, cfg("EPISODE_BATCH_PREFETCH", as_int=True)):
@@ -3826,8 +3523,6 @@ def _smart_cleanup(last_streams, streams):
                 deletion_queue[cache_path] = time.time()
             continue
 
-        # If this was the last episode in the season folder, queue the whole
-        # season for deletion.
         folder = os.path.dirname(array_path)
         max_ep = None
         if os.path.exists(folder):
@@ -3836,8 +3531,6 @@ def _smart_cleanup(last_streams, streams):
                 eps = [e for e in eps if e is not None]
                 max_ep = max(eps) if eps else None
             except OSError as e:
-                # Cannot tell whether this was the finale. Assuming it was
-                # would evict the whole season on a transient listing error.
                 log(f"Cannot read {folder}: {e} - not treating "
                     f"episode {ep} as the season finale", warn=True)
                 max_ep = None
@@ -3851,18 +3544,12 @@ def _smart_cleanup(last_streams, streams):
             except OSError:
                 pass
 
-    # pop() rather than del: the copy worker takes entries out of the queue too
-    # when a file is played again, and a del racing it raised KeyError.
     delay = cfg("MOVIE_DELETE_DELAY", as_int=True)
     now = time.time()
     due = [p for p, queued in list(deletion_queue.items()) if now - queued > delay]
     for path in due:
         deletion_queue.pop(path, None)
     request_moves([p for p in due if os.path.exists(p)], "Cleanup")
-
-# =============================================================================
-# STATUS SNAPSHOT (read by the web UI and the mover)
-# =============================================================================
 
 def write_status(protected=frozenset()):
     """Write a small JSON snapshot to STATUS_FILE (atomic replace).
@@ -3895,10 +3582,6 @@ def write_status(protected=frozenset()):
         "protected":       sorted(protected),
     })
 
-# =============================================================================
-# DAEMON
-# =============================================================================
-
 def _daemon_pass(state):
     """One round of the main loop. Returns the cache paths the mover must not
     touch right now: what is being played and what is being copied."""
@@ -3916,8 +3599,6 @@ def _daemon_pass(state):
 
     streams = get_active_streams()
     active_paths = {p for p in map(_stream_array_path, streams) if p}
-    # Protect first, act second: the handlers below decide what goes back to
-    # the array, and they have to see this pass's streams, not the last one's.
     active_cache_paths = {array_to_cache(p) for p in active_paths}
 
     now = time.time()
@@ -3931,7 +3612,6 @@ def _daemon_pass(state):
             else:
                 handle_movie(array_path)
 
-    # Remove inactive streams from the timer map
     for path in list(stream_timers):
         if path not in active_paths:
             del stream_timers[path]
@@ -3940,7 +3620,6 @@ def _daemon_pass(state):
     if cleanup_mode == "smart":
         _smart_cleanup(state["last_streams"], streams)
     elif cleanup_mode == "days" and now - state["last_days_check"] > 3600:
-        # At most once an hour
         max_age = cfg("CACHE_MAX_DAYS", as_int=True) * 86400
         request_moves([p for p, cached in TrackedFiles.load().items()
                        if now - cached > max_age and os.path.exists(p)], "Days Cleanup")
@@ -3956,7 +3635,6 @@ def run_daemon():
     setup_logging()
     load_config()
 
-    # Acquire lock
     lock_fd = open(LOCK_FILE, 'w')
     try:
         fcntl.lockf(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -3984,8 +3662,6 @@ def run_daemon():
     while True:
         try:
             protected = _daemon_pass(state)
-            # The mover reads `protected` from the snapshot, so it is written
-            # the moment that changes, not only on the interval.
             if protected != last_protected or time.time() - last_status_write >= STATUS_INTERVAL:
                 write_status(protected)
                 last_protected    = protected
@@ -4006,10 +3682,6 @@ def _shutdown(signum=None, frame=None):
         pass
     sys.exit(0)
 
-# =============================================================================
-# MAIN
-# =============================================================================
-
 if __name__ == "__main__":
     args = sys.argv[1:]
     if args == ["--move"]:
@@ -4021,38 +3693,10 @@ if __name__ == "__main__":
 </INLINE>
 </FILE>
 
-<!-- Service control script -->
 <FILE Name="/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache" Mode="0755">
 <INLINE>
 <![CDATA[
 #!/bin/bash
-# Plex to Cache — service control script
-# Usage: rc.plex_to_cache {start|stop|restart|condrestart|boot|status|stop_move|array_stopping}
-#
-# Persistent user intent:
-#   A manual `stop` writes a flag file to the flash drive (survives
-#   reboots, since Unraid's root FS is tmpfs). The boot-time `boot`
-#   verb and `condrestart` respect that flag, so a stopped service
-#   stays stopped until the user explicitly runs `start` again.
-#
-# The service and the mover:
-#   The service copies what is being played to the cache. Moves back to the
-#   array are done by the mover, the same script started with --move, as a
-#   process of its own. `stop` ends the service and leaves a running move
-#   alone; `stop_move` ends the move.
-#
-# Verbs:
-#   start          Enable the service and start it now.
-#   stop           Stop the service and keep it stopped across reboots.
-#   restart        Enable the service and (re)start it.
-#   condrestart    Restart only if the service is enabled (used after
-#                  settings changes / plugin updates).
-#   boot           Start only if the service is enabled (used by
-#                  /etc/rc.d at system boot and when the array comes up).
-#   status         Report running/enabled state.
-#   stop_move      Stop a running move to the array. The file being moved
-#                  stays on the cache, and so does everything still queued.
-#   array_stopping Stop both, without touching the flag (the array event).
 
 PYTHON_SCRIPT="/usr/local/emhttp/plugins/plex_to_cache/scripts/plex_to_cache.py"
 PID_FILE="/var/run/plex_to_cache.pid"
@@ -4060,11 +3704,7 @@ LOG_FILE="/var/log/plex_to_cache.log"
 DISABLED_FLAG="/boot/config/plugins/plex_to_cache/service_disabled"
 MOVE_PID_FILE="/var/run/plex_to_cache.move.pid"
 
-# Ends at the script name, so it matches the service and never the mover,
-# whose command line goes on with --move.
 SERVICE_PATTERN="${PYTHON_SCRIPT}\$"
-
-# --- state helpers ---------------------------------------------------------
 
 is_running() {
     [ -f "$PID_FILE" ] || return 1
@@ -4086,8 +3726,6 @@ mark_disabled() {
     touch "$DISABLED_FLAG"
 }
 
-# PID of the running mover, or nothing. A stale PID file can name a process
-# that has nothing to do with this plugin, so its command line is checked too.
 mover_pid() {
     local pid
     pid=$(cat "$MOVE_PID_FILE" 2>/dev/null)
@@ -4096,18 +3734,14 @@ mover_pid() {
     echo "$pid"
 }
 
-# --- start/stop primitives (no flag handling) ------------------------------
-
 do_start() {
     if is_running; then
         echo "Plex to Cache is already running (PID $(cat "$PID_FILE"))."
         return 0
     fi
 
-    # Clean stale PID file from a previous crash/reboot
     rm -f "$PID_FILE"
 
-    # Make sure logfile exists and is writable before the daemon touches it
     touch "$LOG_FILE" 2>/dev/null
     chmod 666 "$LOG_FILE" 2>/dev/null
 
@@ -4116,8 +3750,6 @@ do_start() {
     local pid=$!
     echo "$pid" > "$PID_FILE"
 
-    # Give the daemon a moment to acquire its flock — if another instance
-    # already has the lock, our process exits fast and we should reflect that.
     sleep 1
     if ! kill -0 "$pid" 2>/dev/null; then
         rm -f "$PID_FILE"
@@ -4134,7 +3766,6 @@ do_stop() {
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
             echo "Stopping Plex to Cache service (PID $pid)..."
             kill "$pid" 2>/dev/null
-            # Wait up to 5 s for graceful shutdown, then SIGKILL
             for _ in 1 2 3 4 5; do
                 kill -0 "$pid" 2>/dev/null || break
                 sleep 1
@@ -4145,15 +3776,12 @@ do_stop() {
         fi
         rm -f "$PID_FILE"
     fi
-    # Paranoia: kill anything that looks like our daemon - and only that
     pkill -f "$SERVICE_PATTERN" 2>/dev/null
     echo "Service stopped."
     if mover_pid >/dev/null; then
         echo "A move to the array is still running - it carries on until it is done or stopped."
     fi
 }
-
-# --- user-facing verbs ------------------------------------------------------
 
 start() {
     mark_enabled
@@ -4214,8 +3842,6 @@ stop_move() {
         echo "No move to the array is running."
         return 0
     fi
-    # The mover answers SIGTERM by ending the current transfer - rsync removes
-    # its unfinished copy - and leaving everything else where it is.
     kill -TERM "$pid" 2>/dev/null
     for _ in 1 2 3 4 5 6 7 8 9 10; do
         if ! kill -0 "$pid" 2>/dev/null; then
@@ -4228,10 +3854,6 @@ stop_move() {
 }
 
 array_stopping() {
-    # The array is going down. A transfer holding files open on it would stall
-    # the unmount until it finished - hours, for a whole series - so both
-    # directions end here. The flag is left alone: `boot` starts the service
-    # again when the array is back, unless it was stopped on purpose.
     stop_move
     do_stop
 }
@@ -4254,15 +3876,10 @@ esac
 </INLINE>
 </FILE>
 
-<!-- Array events: end transfers before the array unmounts, start the service
-     again once it is back -->
 <FILE Name="/usr/local/emhttp/plugins/plex_to_cache/event/stopping" Mode="0755">
 <INLINE>
 <![CDATA[
 #!/bin/bash
-# Unraid runs this when the array starts to stop. A copy or a move still
-# running would hold files open on it and stall the unmount; see
-# array_stopping in rc.plex_to_cache.
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache array_stopping >> /var/log/plex_to_cache.log 2>&1
 ]]>
 </INLINE>
@@ -4272,28 +3889,20 @@ esac
 <INLINE>
 <![CDATA[
 #!/bin/bash
-# Unraid runs this once the array is mounted again. The service was ended when
-# the array stopped; start it again unless it was stopped on purpose.
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache boot >> /var/log/plex_to_cache.log 2>&1
 ]]>
 </INLINE>
 </FILE>
 
-<!-- Register a boot-time autostart. Unraid runs /etc/rc.d/rc.<name> at
-     boot if present (tmpfs root — must be re-created on every install). -->
 <FILE Name="/etc/rc.d/rc.plex_to_cache" Mode="0755">
 <INLINE>
 <![CDATA[
 #!/bin/bash
-# Auto-start wrapper — Unraid calls this at boot.
-# `boot` respects the user's persisted stop: if the service was stopped
-# manually, it stays stopped until the user starts it again.
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache boot >> /var/log/plex_to_cache.log 2>&1
 ]]>
 </INLINE>
 </FILE>
 
-<!-- Post-install: permissions, logfile, start the service -->
 <FILE Run="/bin/bash">
 <INLINE>
 <![CDATA[
@@ -4305,12 +3914,11 @@ chmod +x /etc/rc.d/rc.plex_to_cache
 touch /var/log/plex_to_cache.log
 chmod 666 /var/log/plex_to_cache.log
 /usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache condrestart
-echo "Plex to Cache v2026.09.30.01 installed successfully."
+echo "Plex to Cache v2026.11.05.01 installed successfully."
 ]]>
 </INLINE>
 </FILE>
 
-<!-- Uninstall -->
 <FILE Run="/bin/bash" Method="remove">
 <INLINE>
 <![CDATA[
@@ -4318,8 +3926,6 @@ if [ -f /var/run/plex_to_cache.pid ]; then
     kill $(cat /var/run/plex_to_cache.pid) 2>/dev/null
     rm -f /var/run/plex_to_cache.pid
 fi
-# The service and a running mover alike: the plugin is going away. The mover
-# takes SIGTERM as Stop move, so the file it was moving stays on the cache.
 pkill -f plex_to_cache.py 2>/dev/null
 rm -f /etc/rc.d/rc.plex_to_cache
 rm -rf /usr/local/emhttp/plugins/plex_to_cache

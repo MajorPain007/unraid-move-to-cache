@@ -1,3 +1,8 @@
+### 2026.11.05.01
+
+- Leaner source: the comments are gone from the code. Nothing changes in how
+  the plugin works.
+
 ### 2026.09.30.01
 
 - Sending something to the array while a move was running - a second series,

@@ -48,8 +48,6 @@ def stdlib_dirs():
 
 
 def site_dirs():
-    # On Linux site-packages lives *inside* the stdlib directory, so it has to
-    # be subtracted explicitly rather than tested by "is it under stdlib".
     found = []
     for getter in (getattr(site, 'getsitepackages', None),
                    getattr(site, 'getusersitepackages', None)):

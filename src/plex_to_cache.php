@@ -4,7 +4,6 @@ $ptc_cfg_file = "/boot/config/plugins/$ptc_plugin/settings.cfg";
 $ptc_log_file = "/var/log/plex_to_cache.log";
 $ptc_pid_file = "/var/run/plex_to_cache.pid";
 
-// Defaults
 $ptc_cfg = [
     "ENABLE_PLEX" => "False", "PLEX_URL" => "http://localhost:32400", "PLEX_TOKEN" => "",
     "ENABLE_EMBY" => "False", "EMBY_URL" => "http://localhost:8096", "EMBY_API_KEY" => "",
@@ -26,12 +25,6 @@ $ptc_move_status   = "/var/run/plex_to_cache.move.json";
 $ptc_daemon_script = "/usr/local/emhttp/plugins/$ptc_plugin/scripts/plex_to_cache.py";
 $ptc_rc_script     = "/usr/local/emhttp/plugins/$ptc_plugin/scripts/rc.plex_to_cache";
 
-/**
- * The cache-side folders this plugin works in, derived from the docker
- * mappings exactly like _mapped_cache_dirs() in the daemon. Everything the
- * browser shows and every path the move endpoint accepts has to sit under one
- * of these - the rest of the cache pool is out of bounds.
- */
 function ptc_media_roots() {
     global $ptc_cfg;
     $cache_root = rtrim($ptc_cfg['CACHE_ROOT'], '/');
@@ -50,12 +43,9 @@ function ptc_media_roots() {
             $roots[] = $cache_root . '/' . ltrim($host, '/');
         }
     }
-    // Never the pool itself, as in the daemon: a mapping of the whole user
-    // share would otherwise put appdata and system in the browser.
     return array_values(array_diff(array_unique($roots), [$cache_root]));
 }
 
-/** True when $path is one of the media roots or sits inside one. */
 function ptc_path_allowed($path) {
     foreach (ptc_media_roots() as $root) {
         if ($path === $root || strpos($path, $root . '/') === 0) return true;
@@ -63,10 +53,6 @@ function ptc_path_allowed($path) {
     return false;
 }
 
-/**
- * Resolve a browser path. Returns '' when it does not exist or escapes the
- * media roots, so a ".." in a request cannot walk out of them.
- */
 function ptc_safe_path($path) {
     $path = rtrim((string)$path, '/');
     if ($path === '') return '';
@@ -75,7 +61,6 @@ function ptc_safe_path($path) {
     return ptc_path_allowed($real) ? $real : '';
 }
 
-/** Is this one of the media file types the plugin handles? */
 function ptc_is_media($name) {
     global $ptc_cfg;
     foreach (preg_split('/[\s,]+/', $ptc_cfg['MEDIA_FILETYPES']) as $ext) {
@@ -87,17 +72,8 @@ function ptc_is_media($name) {
     return false;
 }
 
-define('PTC_SCAN_CAP', 20000);   // media files counted per folder before giving up
+define('PTC_SCAN_CAP', 20000);
 
-/**
- * Media files anywhere under $dir as path => size, plus whether the walk hit
- * the cap. Listing a folder walks it once per row, so an unbounded scan of a
- * very large library would be the slowest thing on the page.
- *
- * Hidden entries are skipped, as they are in the list and in the mover:
- * .Recycle.Bin holds deleted media, and a Mac leaves ._ files next to real
- * ones. An unreadable folder is skipped too instead of ending the count.
- */
 function ptc_media_under($dir, $cap = 0) {
     $out = ['files' => [], 'capped' => false];
     if (!is_dir($dir)) return $out;
@@ -114,12 +90,10 @@ function ptc_media_under($dir, $cap = 0) {
             if ($cap > 0 && count($out['files']) >= $cap) { $out['capped'] = true; break; }
         }
     } catch (Exception $e) {
-        // Unreadable subtree - report what was collected so far
     }
     return $out;
 }
 
-/** The tracked list as path => timestamp. */
 function ptc_tracked() {
     global $ptc_tracked_file;
     $out = [];
@@ -132,23 +106,17 @@ function ptc_tracked() {
     return $out;
 }
 
-// Known keys only: settings of features that no longer exist would otherwise
-// be carried along and written back on every save.
 if (file_exists($ptc_cfg_file)) {
     $ptc_loaded = parse_ini_file($ptc_cfg_file);
     if ($ptc_loaded) { $ptc_cfg = array_merge($ptc_cfg, array_intersect_key($ptc_loaded, $ptc_cfg)); }
 }
 
-/** True while the service's PID file names a live process. */
 function ptc_service_running() {
     global $ptc_pid_file;
-    // (int) of an empty file is 0, and kill(0, 0) asks about our own process
-    // group - which always exists.
     $pid = file_exists($ptc_pid_file) ? (int)@file_get_contents($ptc_pid_file) : 0;
     return $pid > 0 && posix_kill($pid, 0);
 }
 
-/** True while a mover holds its lock - the same flock the daemon checks. */
 function ptc_mover_running() {
     global $ptc_move_lock;
     $fh = @fopen($ptc_move_lock, 'c');
@@ -159,7 +127,6 @@ function ptc_mover_running() {
     return !$free;
 }
 
-/** Cache paths being played, if the service's snapshot is recent enough to say. */
 function ptc_stream_paths() {
     global $ptc_status_file;
     $st = is_readable($ptc_status_file) ? json_decode(@file_get_contents($ptc_status_file), true) : null;
@@ -167,15 +134,6 @@ function ptc_stream_paths() {
     return (isset($st['stream_paths']) && is_array($st['stream_paths'])) ? $st['stream_paths'] : [];
 }
 
-/**
- * Unraid's CSRF token.
- *
- * Without it, any page an authenticated admin visits can trigger the
- * state-changing endpoints below - an <img src="...?action=service&cmd=stop">
- * is enough to stop the daemon. $var is normally provided by the page layout;
- * fall back to var.ini so the check also works when this file is requested
- * directly by the AJAX calls.
- */
 function ptc_csrf_token() {
     global $var;
     if (isset($var['csrf_token']) && $var['csrf_token'] !== '') return $var['csrf_token'];
@@ -185,14 +143,10 @@ function ptc_csrf_token() {
 
 function ptc_require_csrf($as_json = true) {
     $expected = ptc_csrf_token();
-    if ($expected === '') return;                       // nothing to check against
+    if ($expected === '') return;
     $got = (string)($_POST['csrf_token'] ?? $_GET['csrf_token'] ?? $_REQUEST['csrf_token'] ?? '');
     if (hash_equals($expected, $got)) return;
 
-    // Say which of the two it is. A token that never arrived points at the
-    // request, one that arrived stale points at the page: Unraid mints a new
-    // token when it boots, and a tab left open since before that still carries
-    // the old one.
     $why = $got === ''
         ? 'No CSRF token was sent with this request.'
         : 'This page is holding an out-of-date CSRF token. Reload it - Unraid '
@@ -210,16 +164,12 @@ function ptc_require_csrf($as_json = true) {
 
 $ptc_action = (string)($_GET['action'] ?? '');
 
-// AJAX: Get log
 if ($ptc_action === 'log') {
     header('Content-Type: text/plain');
     echo file_exists($ptc_log_file) ? shell_exec("tail -n 200 " . escapeshellarg($ptc_log_file)) : "Log file not found. Service might be starting...";
     exit;
 }
 
-// AJAX: What the service and the mover are doing. The service's snapshot is
-// written by the daemon, the mover's progress by the mover; whether each is
-// running is asked here, since a process that died cannot say so itself.
 if ($ptc_action === 'status') {
     header('Content-Type: application/json');
     $service = is_readable($ptc_status_file) ? json_decode(@file_get_contents($ptc_status_file), true) : null;
@@ -232,14 +182,12 @@ if ($ptc_action === 'status') {
     exit;
 }
 
-// AJAX: Test connection (uses form values sent via POST, not saved config)
 if ($ptc_action === 'test') {
     ptc_require_csrf();
     header('Content-Type: application/json');
     $service = $_GET['service'] ?? '';
     $result = ['success' => false, 'message' => 'Unknown service'];
 
-    // Get values from POST (current form input) instead of saved config
     $test_url = $_POST['url'] ?? '';
     $test_key = $_POST['key'] ?? '';
 
@@ -321,7 +269,6 @@ if ($ptc_action === 'test') {
 }
 
 
-// AJAX: Service control
 if ($ptc_action === 'service') {
     ptc_require_csrf();
     header('Content-Type: application/json');
@@ -336,15 +283,9 @@ if ($ptc_action === 'service') {
     exit;
 }
 
-// AJAX: Browse one level of the cache media folders.
-// Folders report the total of the media below them, so a whole series or a
-// single season can be judged and moved as one.
 if ($ptc_action === 'browse') {
     header('Content-Type: application/json');
 
-    // A fatal - execution timeout, memory, a dying worker - cannot be caught by
-    // try/catch and leaves the client with an empty response and no status,
-    // which is indistinguishable from "still loading". This says what happened.
     $ptc_answered = false;
     register_shutdown_function(function () use (&$ptc_answered) {
         if ($ptc_answered) return;
@@ -357,8 +298,6 @@ if ($ptc_action === 'browse') {
     try {
 
     $roots = ptc_media_roots();
-    // Full paths: comparing names alone marks every "S01E01.mkv" in the
-    // library as playing when one of them is.
     $streaming = ptc_stream_paths();
     $tracked = ptc_tracked();
 
@@ -367,9 +306,6 @@ if ($ptc_action === 'browse') {
     $files = [];
     $here = '';
 
-    // What is actually in the folder, not just what the plugin put there - the
-    // point of the number is to tell a full folder from an empty one. Capped so
-    // an enormous tree cannot stall the request; the UI says when it was.
     $summarise = function ($dir) use ($tracked, $streaming) {
         $under  = ptc_media_under($dir, PTC_SCAN_CAP);
         $cached = 0; $busy = 0;
@@ -386,7 +322,6 @@ if ($ptc_action === 'browse') {
     };
 
     if ($want === '') {
-        // Top level: one entry per mapped folder.
         foreach ($roots as $root) {
             if (!is_dir($root)) continue;
             $label = (strpos($root, rtrim($ptc_cfg['CACHE_ROOT'], '/') . '/') === 0)
@@ -409,8 +344,6 @@ if ($ptc_action === 'browse') {
             exit;
         }
         foreach ($entries as $entry) {
-            // Skips . and .. along with .Recycle.Bin and other hidden entries -
-            // none of them are media the plugin has any business moving.
             if ($entry === '' || $entry[0] === '.') continue;
             $full = $here . '/' . $entry;
             if (is_dir($full)) {
@@ -424,12 +357,10 @@ if ($ptc_action === 'browse') {
         }
     }
 
-    // By name, naturally: a plain string compare puts episode 10 ahead of 2.
     $by_name = function ($a, $b) { return strnatcasecmp($a['name'], $b['name']); };
     usort($dirs,  $by_name);
     usort($files, $by_name);
 
-    // Where "up" goes: '' means back to the list of mapped folders.
     $parent = null;
     if ($here !== '') {
         $parent = in_array($here, $roots, true) ? '' : dirname($here);
@@ -450,14 +381,13 @@ if ($ptc_action === 'browse') {
     exit;
 }
 
-// AJAX: How much of the cache this plugin holds right now.
 if ($ptc_action === 'cached') {
     header('Content-Type: application/json');
     $count = 0;
     $total = 0;
     foreach (ptc_tracked() as $path => $ts) {
         $size = @filesize($path);
-        if ($size === false) continue;   // gone since the list was written
+        if ($size === false) continue;
         $count++;
         $total += $size;
     }
@@ -465,24 +395,16 @@ if ($ptc_action === 'cached') {
     exit;
 }
 
-// AJAX: Move a file or folder back to the array.
 if ($ptc_action === 'uncache') {
     ptc_require_csrf();
     header('Content-Type: application/json');
 
-    // A file or a whole folder - a season, a series, a mapped root. The mover
-    // enforces the mapped folders itself, so this check is here to give a
-    // useful message rather than to be the guard. A line break would split
-    // the request in two in the mover's queue.
     $path = ptc_safe_path($_POST['path'] ?? $_GET['path'] ?? '');
     if ($path === '' || strpbrk($path, "\r\n") !== false) {
         echo json_encode(['success' => false, 'message' => 'Path is outside the mapped media folders']);
         exit;
     }
 
-    // Clicking To Array on a specific file or folder is an explicit instruction,
-    // so it moves whatever media is in there whether this plugin put it on the
-    // cache or not. Auto Cleanup only ever touches what this plugin put there.
     if (is_dir($path)) {
         $under = ptc_media_under($path, PTC_SCAN_CAP);
         $count = count($under['files']);
@@ -496,10 +418,6 @@ if ($ptc_action === 'uncache') {
         $label = basename($path);
     }
 
-    // Queue first, then look for a mover - the order the mover's exit relies
-    // on (see run_mover in plex_to_cache.py). Appended, so that several rows
-    // clicked in a row all get moved. The mover is its own process whether the
-    // service runs or not, so Stop does not end a move that is under way.
     if (@file_put_contents($ptc_move_queue, "pick\t" . $path . "\n", FILE_APPEND | LOCK_EX) === false) {
         echo json_encode(['success' => false, 'message' => 'Cannot write the move queue']);
         exit;
@@ -518,8 +436,6 @@ if ($ptc_action === 'uncache') {
     exit;
 }
 
-// AJAX: Stop the move to the array. The file being moved stays on the cache
-// and so does everything still queued; the service is not touched.
 if ($ptc_action === 'stop_move') {
     ptc_require_csrf();
     header('Content-Type: application/json');
@@ -528,10 +444,6 @@ if ($ptc_action === 'stop_move') {
     exit;
 }
 
-// Every action is handled above. A request naming one that is not - from a
-// page left open across an update, say - must not fall through to the save
-// below: none of the form's fields would be in it, so the save would switch
-// every media server off and clear the Docker mappings.
 if ($ptc_action !== '') {
     http_response_code(400);
     header('Content-Type: application/json');
@@ -540,17 +452,13 @@ if ($ptc_action !== '') {
     exit;
 }
 
-// POST: Save settings
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     ptc_require_csrf(false);
     foreach ($ptc_cfg as $key => $val) {
         if (isset($_POST[$key])) {
-            // Written as key="value", one per line: a quote or a line break in
-            // a value would end it early or start a key of its own, and then
-            // parse_ini_file fails and every setting reads as its default.
             $ptc_cfg[$key] = str_replace(["\r", "\n", '"'], '', (string)$_POST[$key]);
         } elseif (strpos($key, "ENABLE_") === 0) {
-            $ptc_cfg[$key] = "False";   // an unticked checkbox is not sent at all
+            $ptc_cfg[$key] = "False";
         }
     }
     $m_str = "";
@@ -569,8 +477,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!is_dir(dirname($ptc_cfg_file))) mkdir(dirname($ptc_cfg_file), 0777, true);
     file_put_contents($ptc_cfg_file, $content);
 
-    // condrestart: apply new settings if the service is enabled, but do not
-    // force-start a service the user has stopped on purpose.
     shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache condrestart > /dev/null 2>&1 &");
     echo "<script>window.location.href = window.location.href;</script>";
     exit;
@@ -614,18 +520,9 @@ $is_running = ptc_service_running();
     display: flex;
     flex-direction: column;
     min-height: 650px;
-    /* Without this a grid item refuses to shrink below its content's
-       min-content width, so one long file name in the list widens the whole
-       page and puts a scrollbar under it. */
     min-width: 0;
 }
 
-/* The list is two tables sharing one set of column widths: the header and ../
-   sit in a static block, the rows in a scrolling one. That is the only way to
-   have them always visible without content sliding underneath, which is what
-   position:sticky does by definition. The scrollbar of the lower box would
-   offset the columns by its own width, so the head reserves the same gap -
-   measured, not guessed. */
 #ptc-cached-head { border: 1px solid #333; border-bottom: none;
                    border-radius: 8px 8px 0 0; background: var(--bg-dark); }
 #ptc-cached-wrap { max-height: 260px; overflow-x: hidden; overflow-y: auto;
@@ -638,8 +535,6 @@ table.ptc-list th, table.ptc-list td { padding: 5px 6px; }
 table.ptc-list td:first-child,
 table.ptc-list th:first-child { white-space: nowrap; overflow: hidden;
                                 text-overflow: ellipsis; }
-/* Unraid styles bare buttons uppercase and letter-spaced, which makes the label
-   wider than the column reserved for it. */
 table.ptc-list .btn-test { text-transform: none; letter-spacing: 0; }
 
 table.ptc-list thead tr { background: #262b33; }
@@ -648,7 +543,6 @@ table.ptc-list thead th { background: #262b33; color: #c3ccd4;
 table.ptc-list tbody tr { background: #17191d; }
 #ptc-cached-table tbody tr:nth-child(even) { background: #1b1e23; }
 table.ptc-list tbody tr.ptc-up-row { background: #1e2228; }
-/* Last, so hovering still highlights - equal specificity, later wins. */
 table.ptc-list tbody tr:hover { background: #223142; }
 
 table.ptc-list a { color: var(--primary-blue); text-decoration: none; }
@@ -656,8 +550,6 @@ table.ptc-list a:hover { text-decoration: underline; }
 table.ptc-list .ptc-ico { width: 14px; display: inline-block; text-align: center;
                           margin-right: 6px; color: #7a8894; }
 table.ptc-list .ptc-ico.folder { color: var(--primary-blue); }
-/* The whole name cell opens the folder, not just the text - at narrow widths
-   the label is shortened to almost nothing and would be hard to hit. */
 table.ptc-list td.ptc-openable { cursor: pointer; }
 .btn-test:disabled { opacity: .45; cursor: default; border-color: #333; }
 #ptc-crumbs a { color: var(--primary-blue); text-decoration: none; }
@@ -667,8 +559,6 @@ table.ptc-list col.ptc-c-note { width: 84px; }
 table.ptc-list col.ptc-c-act  { width: 92px; }
 table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
 
-/* What the mover is doing, with the button that stops it. Only there while a
-   move runs, or for a few minutes after one ended. */
 #ptc-move-bar { display: flex; align-items: center; gap: 10px; margin: 8px 0 2px;
                 padding: 6px 10px; background: #12202c; border: 1px solid #1f3a52;
                 border-radius: 6px; font-size: 12px; color: #c3ccd4; }
@@ -700,7 +590,6 @@ table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
     overflow-y: auto;
 }
 
-/* Status dot */
 .status-dot {
     width: 14px;
     height: 14px;
@@ -718,11 +607,8 @@ table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
     50% { opacity: 0.5; }
 }
 
-/* Top control bar with Save and Service buttons */
 .top-control-bar {
     display: flex;
-    /* Without wrapping, flex:1 on the submit shrinks it past its own label
-       before anything else gives way, and "Save & Apply" gets clipped. */
     flex-wrap: wrap;
     gap: 10px;
     margin-bottom: 15px;
@@ -756,7 +642,6 @@ table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
     border-color: var(--primary-blue);
 }
 
-/* Form elements */
 .section-header { color: var(--primary-blue); font-size: 18px; font-weight: bold; margin-bottom: 15px; margin-top: 20px; border-bottom: 1px solid #333; padding-bottom: 5px; display: flex; align-items: center; gap: 8px; }
 .section-header:first-of-type { margin-top: 0; }
 
@@ -767,7 +652,6 @@ table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
 .expand-row .form-input-wrapper { flex: 1; }
 .expand-row input { width: 100% !important; max-width: none !important; box-sizing: border-box !important; }
 
-/* Custom Tooltip */
 .form-pair label:after {
     content: attr(data-tooltip);
     position: absolute;
@@ -803,7 +687,6 @@ table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
 #mapping_table td { padding: 5px 0; }
 
 
-/* Test button */
 .btn-test {
     padding: 4px 10px;
     font-size: 11px;
@@ -819,7 +702,6 @@ table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
 .btn-test.error { border-color: var(--error-red); color: var(--error-red); }
 
 
-/* Cleanup mode selector */
 .cleanup-mode-selector {
     display: flex;
     flex-direction: column;
@@ -940,8 +822,6 @@ table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
             </div>
             <div id="ptc-cached-summary" style="color:#888; font-size:12px; margin-top:6px;"></div>
             <div id="ptc-crumbs" style="color:#8b98a5; font-size:12px; margin:4px 0; word-break:break-all;"></div>
-            <!-- Header and ../ live outside the scrolling box, so nothing can
-                 scroll underneath them. Both tables share the column widths. -->
             <div id="ptc-cached-head">
                 <table class="ptc-list">
                     <colgroup><col><col class="ptc-c-size"><col class="ptc-c-note"><col class="ptc-c-act"></colgroup>
@@ -985,10 +865,10 @@ function refreshLog() {
     });
 }
 
-var ptcMoveSeen = null;     // `finished` of the last move the list was refreshed for
-var ptcMoveDone = -1;       // files done when the list was last refreshed during a move
+var ptcMoveSeen = null;
+var ptcMoveDone = -1;
 var ptcMoveListAt = 0;
-var ptcNoticeUntil = 0;     // a message in the move bar stays this long before progress replaces it
+var ptcNoticeUntil = 0;
 
 function ptcSetDot(running) {
     var dot = document.getElementById('status-dot');
@@ -999,13 +879,9 @@ function ptcSetDot(running) {
 function refreshStatus() {
     $.getJSON('/plugins/plex_to_cache/plex_to_cache.php?action=status', function(r) {
         if (!r) return;
-        // The dot follows the service on every poll, so a crash shows too -
-        // not only a Stop pressed on this page.
         ptcSetDot(r.running);
         var d = r.service || {}, parts = [];
         if (!r.running) {
-            // The snapshot is what the service saw when it stopped; showing it
-            // as current would say it is still copying.
             parts.push('Service stopped');
         } else if (d.updated) {
             parts.push('Cached: ' + d.cached_files + ' files / ' + (d.cached_bytes / 1073741824).toFixed(1) + ' GB');
@@ -1030,9 +906,6 @@ function ptcMoveBar(m, now) {
     var bar = $('#ptc-move-bar'), btn = $('#ptc-move-stop');
     if (!m.running) {
         btn.prop('disabled', false).text('Stop move');
-        // Refresh the list once when a move ends, so it does not go on showing
-        // files that have left the cache. Not on the first poll: that move
-        // ended before the page was opened.
         if (m.finished && m.finished !== ptcMoveSeen) {
             if (ptcMoveSeen !== null) refreshCached();
             ptcMoveDone = -1;
@@ -1056,7 +929,6 @@ function ptcMoveBar(m, now) {
             .attr('title', m.current || '');
         btn.prop('hidden', false);
         bar.prop('hidden', false);
-        // Rows leave the list as their files leave the cache.
         if (m.done !== ptcMoveDone && Date.now() - ptcMoveListAt > 10000) {
             ptcMoveDone = m.done;
             ptcMoveListAt = Date.now();
@@ -1073,9 +945,6 @@ function ptcMoveBar(m, now) {
     }
 }
 
-// What a failed request says: the server's message when it sent one. A bare
-// "Request failed" hides a 403 from the CSRF check just as much as a request
-// that never arrived.
 function ptcFailText(xhr) {
     var msg = 'Request failed (HTTP ' + (xhr.status || '0 - no response') + ')';
     try {
@@ -1107,7 +976,7 @@ function ptcBytes(n) {
     return (n / 1024).toFixed(0) + ' KB';
 }
 
-var ptcBrowsePath = '';   // '' = the list of mapped media folders
+var ptcBrowsePath = '';
 
 function refreshCached() { browseCache(ptcBrowsePath); }
 
@@ -1116,8 +985,6 @@ function ptcRow(body, o) {
     var cell = $('<td>').attr('title', o.title || '');
     $('<i>').addClass('ptc-ico ' + (o.icon || '')).addClass(o.folder ? 'folder' : '').appendTo(cell);
     if (o.open) {
-        // The whole cell is the target: at narrow widths the label is cut down
-        // to an ellipsis and would be almost impossible to hit.
         cell.addClass('ptc-openable').on('click', function(e) { e.preventDefault(); o.open(); });
         $('<a href="#">').text(o.name).appendTo(cell);
     } else {
@@ -1140,7 +1007,6 @@ function ptcRow(body, o) {
     body.append(tr);
 }
 
-// Clickable path segments, so a deep folder is one click from any level above.
 function ptcCrumbs(path, roots) {
     var box = $('#ptc-crumbs').empty();
     if (!path) { box.text('Mapped media folders'); return; }
@@ -1163,14 +1029,9 @@ function ptcCrumbs(path, roots) {
     });
 }
 
-// The scrolling box has a scrollbar and the static head does not, which would
-// offset the columns by exactly its width. Measure it rather than guess: it
-// differs between platforms and is zero with overlay scrollbars.
 function ptcAlignHead() {
     var wrap = document.getElementById('ptc-cached-wrap');
     if (!wrap) return;
-    // offsetWidth - clientWidth is the scrollbar plus both borders. The head
-    // has the same borders, so only the scrollbar is to be made up for.
     var cs = getComputedStyle(wrap);
     var gap = wrap.offsetWidth - wrap.clientWidth
             - (parseFloat(cs.borderLeftWidth) || 0) - (parseFloat(cs.borderRightWidth) || 0);
@@ -1178,10 +1039,6 @@ function ptcAlignHead() {
 }
 
 function browseCache(path) {
-    // POST rather than a GET carrying the path in the query string: content
-    // blockers match on URLs, and a request they drop arrives here as status 0
-    // with an empty body - indistinguishable from a server that died. The same
-    // thing bit the snapshot browser in the other plugin.
     $.post('/plugins/plex_to_cache/plex_to_cache.php?action=browse',
            {path: path || '', csrf_token: ptcToken}, null, 'json')
      .done(function(d) {
@@ -1238,8 +1095,6 @@ function browseCache(path) {
         }
         ptcAlignHead();
     }).fail(function(xhr) {
-        // Say what went wrong in the table itself. Leaving "Loading..." sitting
-        // there says nothing and looks like the request is still running.
         var detail = 'HTTP ' + (xhr.status || '?');
         if (xhr.responseText) detail += ': ' + xhr.responseText.substring(0, 300);
         $('#ptc-crumbs').text('Could not read the folder.');
@@ -1249,8 +1104,6 @@ function browseCache(path) {
                                                         whiteSpace: 'pre-wrap'}).text(detail)));
     });
 
-    // The totals line comes from the tracked list and is independent of where
-    // the browser currently is.
     $.post('/plugins/plex_to_cache/plex_to_cache.php?action=cached',
            {csrf_token: ptcToken}, null, 'json').done(function(d) {
         if (!d || !d.success) return;
@@ -1261,17 +1114,10 @@ function browseCache(path) {
 }
 
 function uncacheFile(path, btn) {
-    // No confirm() here: it renders as the browser's own "JavaScript from
-    // <origin>" prompt, and this is not a destructive action - the file moves
-    // to the array and gets cached again next time it is played.
     btn.disabled = true;
     btn.textContent = '...';
     $.post('/plugins/plex_to_cache/plex_to_cache.php?action=uncache',
            {path: path, csrf_token: ptcToken}, null, 'json').done(function(data) {
-        // The mover takes a moment to start, and a poll made before it has
-        // would find nothing running. So the answer shows first, with the
-        // button that stops the move, and progress takes over after that.
-        // A refusal has to stay readable longer.
         if (data.success) {
             ptcNotice(data.message || 'Moving', 2500, true);
             setTimeout(refreshStatus, 2600);
@@ -1287,14 +1133,10 @@ function uncacheFile(path, btn) {
     });
 }
 
-// Unraid exposes csrf_token as a global on its own pages; fall back to the
-// hidden field in the form so the AJAX calls work either way.
 var ptcToken = (typeof csrf_token !== 'undefined' && csrf_token)
     ? csrf_token
     : ($('input[name="csrf_token"]').val() || '');
 
-// Values go in with .val(), not pasted into markup: a path with a quote or an
-// ampersand in it would otherwise cut the input short.
 function addMappingRow(dockerVal, hostVal) {
     var style = 'padding:4px !important; height:26px !important;';
     var row = $('<tr>');
@@ -1312,7 +1154,6 @@ function testConnection(service, btn) {
     btn.textContent = '...';
     btn.className = 'btn-test';
 
-    // Get current form values (not saved config)
     var url, key;
     if (service === 'plex') {
         url = $('input[name="PLEX_URL"]').val();
@@ -1382,14 +1223,10 @@ $(function() {
     refreshLog();
     refreshStatus();
     refreshCached();
-    // Auto Refresh is about the log. The status line, the dot and the move bar
-    // with its Stop move button keep updating either way.
     setInterval(function() {
         refreshStatus();
         if ($('#auto_refresh').is(':checked')) { refreshLog(); }
     }, 3000);
-    // The file list changes far less often than the log, and reading it walks
-    // the tracked list on flash - once a minute is plenty.
     setInterval(function() {
         if ($('#auto_refresh').is(':checked')) { refreshCached(); }
     }, 60000);
