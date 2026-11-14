@@ -979,19 +979,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         for ($i=0; $i<count($d_arr); $i++) {
             if (!empty(trim($d_arr[$i])) && !empty(trim($h_arr[$i]))) { $pairs[] = trim($d_arr[$i]).":".trim($h_arr[$i]); }
         }
-        $m_str = implode(";", $pairs);
+        $m_str = str_replace(["\r", "\n", '"'], '', implode(";", $pairs));
     }
     $ptc_cfg['DOCKER_MAPPINGS'] = $m_str;
 
-    $content = "";
-    foreach ($ptc_cfg as $key => $val) { $content .= "$key=\"$val\"\n"; }
+    exec('python3 ' . escapeshellarg($ptc_daemon_script) . ' --check ' . escapeshellarg($ptc_cfg['CACHE_ROOT'])
+        . ' ' . escapeshellarg($ptc_cfg['ARRAY_ROOT']) . ' 2>/dev/null', $ptc_check, $ptc_check_rc);
+    $ptc_save_error = $ptc_check_rc === 1 ? implode(' ', $ptc_check) : '';
+    if ($ptc_save_error === '') {
+        $content = "";
+        foreach ($ptc_cfg as $key => $val) { $content .= "$key=\"$val\"\n"; }
 
-    if (!is_dir(dirname($ptc_cfg_file))) mkdir(dirname($ptc_cfg_file), 0777, true);
-    file_put_contents($ptc_cfg_file, $content);
+        if (!is_dir(dirname($ptc_cfg_file))) mkdir(dirname($ptc_cfg_file), 0777, true);
+        file_put_contents($ptc_cfg_file, $content);
 
-    shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache condrestart > /dev/null 2>&1 &");
-    echo "<script>window.location.href = window.location.href;</script>";
-    exit;
+        shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache condrestart > /dev/null 2>&1 &");
+        echo "<script>window.location.href = window.location.href;</script>";
+        exit;
+    }
 }
 
 $mappings_pairs = [];
@@ -1236,11 +1241,15 @@ table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
 .radio-option input[type="radio"] { accent-color: var(--primary-blue); width: 16px; height: 16px; margin: 0; }
 .radio-label { color: #fff; font-weight: bold; font-size: 13px; min-width: 110px; }
 .radio-desc { color: #888; font-size: 12px; }
+.ptc-save-error { margin: 0 0 12px; padding: 10px 14px; border: 1px solid #ff4444; border-radius: 6px; color: #ff4444; }
 .cleanup-options { margin-top: 10px; padding: 10px; background: #0a0a0a; border-radius: 6px; border: 1px solid #222; }
 </style>
 
 <form method="post" autocomplete="off">
 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(ptc_csrf_token(), ENT_QUOTES) ?>">
+<?php if (!empty($ptc_save_error)): ?>
+    <div class="ptc-save-error"><?= htmlspecialchars($ptc_save_error) ?> Nothing was saved.</div>
+<?php endif; ?>
     <div id="ptc-wrapper">
         <div class="ptc-col" id="ptc-col-servers">
             <div class="top-control-bar">
@@ -2135,6 +2144,26 @@ def _relative_to(path, prefix):
         return path[len(prefix) + 1:]
     return None
 
+def storage_problem(cache_root, array_root):
+    cache, array = (os.path.normpath(re.sub(r'/+', '/', p.strip())) if p.strip() else ''
+                    for p in (cache_root, array_root))
+    for label, path in (("Cache Root", cache), ("Array Root", array)):
+        if not path.startswith('/') or path == '/':
+            return f"{label} must be a full path below /, such as /mnt/cache or /mnt/user."
+    if _under(cache, array) or _under(array, cache):
+        return (f"Cache Root {cache} and Array Root {array} overlap - "
+                f"they must be two different places.")
+    if _under(cache, '/mnt/user') or _under(cache, USER0_ROOT) or re.match(r'/mnt/disk\d+(/|$)', cache):
+        return (f"Cache Root {cache} is on the array - "
+                f"enter the cache pool itself, such as /mnt/cache.")
+    return ""
+
+def _bad_roots():
+    problem = storage_problem(cfg("CACHE_ROOT"), cfg("ARRAY_ROOT"))
+    if problem:
+        log(f"{problem} Nothing runs until the settings are corrected.", error=True)
+    return bool(problem)
+
 def physical_array_root():
     """The array-only view of the configured array root.
 
@@ -2542,6 +2571,8 @@ def _twin(cache_path):
     except FileNotFoundError:
         return None
     c = os.stat(cache_path)
+    if os.path.samestat(a, c):
+        raise OSError(f"{cache_path} and {array_path} are one and the same file")
     dt = c.st_mtime - a.st_mtime
     if abs(dt) < 2:
         return "same" if c.st_size == a.st_size else "unclear"
@@ -3007,6 +3038,8 @@ def run_mover():
     """
     setup_logging(rotate=False)
     load_config()
+    if _bad_roots():
+        return 1
     try:
         lock = open(MOVE_LOCK, "a")
     except OSError as e:
@@ -3634,6 +3667,8 @@ def run_daemon():
     """Main daemon loop."""
     setup_logging()
     load_config()
+    if _bad_roots():
+        sys.exit(1)
 
     lock_fd = open(LOCK_FILE, 'w')
     try:
@@ -3686,8 +3721,13 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     if args == ["--move"]:
         sys.exit(run_mover())
+    if len(args) == 3 and args[0] == "--check":
+        problem = storage_problem(args[1], args[2])
+        if problem:
+            print(problem)
+        sys.exit(1 if problem else 0)
     if args:
-        sys.exit(f"usage: {sys.argv[0]} [--move]")
+        sys.exit(f"usage: {sys.argv[0]} [--move | --check CACHE_ROOT ARRAY_ROOT]")
     run_daemon()
 ]]>
 </INLINE>

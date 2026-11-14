@@ -467,19 +467,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         for ($i=0; $i<count($d_arr); $i++) {
             if (!empty(trim($d_arr[$i])) && !empty(trim($h_arr[$i]))) { $pairs[] = trim($d_arr[$i]).":".trim($h_arr[$i]); }
         }
-        $m_str = implode(";", $pairs);
+        $m_str = str_replace(["\r", "\n", '"'], '', implode(";", $pairs));
     }
     $ptc_cfg['DOCKER_MAPPINGS'] = $m_str;
 
-    $content = "";
-    foreach ($ptc_cfg as $key => $val) { $content .= "$key=\"$val\"\n"; }
+    exec('python3 ' . escapeshellarg($ptc_daemon_script) . ' --check ' . escapeshellarg($ptc_cfg['CACHE_ROOT'])
+        . ' ' . escapeshellarg($ptc_cfg['ARRAY_ROOT']) . ' 2>/dev/null', $ptc_check, $ptc_check_rc);
+    $ptc_save_error = $ptc_check_rc === 1 ? implode(' ', $ptc_check) : '';
+    if ($ptc_save_error === '') {
+        $content = "";
+        foreach ($ptc_cfg as $key => $val) { $content .= "$key=\"$val\"\n"; }
 
-    if (!is_dir(dirname($ptc_cfg_file))) mkdir(dirname($ptc_cfg_file), 0777, true);
-    file_put_contents($ptc_cfg_file, $content);
+        if (!is_dir(dirname($ptc_cfg_file))) mkdir(dirname($ptc_cfg_file), 0777, true);
+        file_put_contents($ptc_cfg_file, $content);
 
-    shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache condrestart > /dev/null 2>&1 &");
-    echo "<script>window.location.href = window.location.href;</script>";
-    exit;
+        shell_exec("/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache condrestart > /dev/null 2>&1 &");
+        echo "<script>window.location.href = window.location.href;</script>";
+        exit;
+    }
 }
 
 $mappings_pairs = [];
@@ -724,11 +729,15 @@ table.ptc-list td[colspan] { white-space: normal; overflow-wrap: anywhere; }
 .radio-option input[type="radio"] { accent-color: var(--primary-blue); width: 16px; height: 16px; margin: 0; }
 .radio-label { color: #fff; font-weight: bold; font-size: 13px; min-width: 110px; }
 .radio-desc { color: #888; font-size: 12px; }
+.ptc-save-error { margin: 0 0 12px; padding: 10px 14px; border: 1px solid #ff4444; border-radius: 6px; color: #ff4444; }
 .cleanup-options { margin-top: 10px; padding: 10px; background: #0a0a0a; border-radius: 6px; border: 1px solid #222; }
 </style>
 
 <form method="post" autocomplete="off">
 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(ptc_csrf_token(), ENT_QUOTES) ?>">
+<?php if (!empty($ptc_save_error)): ?>
+    <div class="ptc-save-error"><?= htmlspecialchars($ptc_save_error) ?> Nothing was saved.</div>
+<?php endif; ?>
     <div id="ptc-wrapper">
         <div class="ptc-col" id="ptc-col-servers">
             <div class="top-control-bar">

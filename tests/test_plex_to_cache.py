@@ -1094,6 +1094,130 @@ class StopSparesTheMover(unittest.TestCase):
             self.assertIn(f'plugins/plex_to_cache/event/{event}" Mode="0755"', plg)
 
 
+class OneFileIsNotItsOwnTwin(StateInTempDir):
+
+    def setUp(self):
+        super().setUp()
+        self.user = os.path.join(self.tmp, "user")
+        os.makedirs(os.path.join(self.user, "Media"))
+        os.symlink(self.user, os.path.join(self.tmp, "user0"))
+        self.film = os.path.join(self.user, "Media", "film.mkv")
+        Path(self.film).write_text("the only copy")
+        configure(ARRAY_ROOT=os.path.join(self.tmp, "user0"), CACHE_ROOT=self.user)
+
+    def test_the_twin_of_a_file_is_never_the_file_itself(self):
+        with self.assertRaises(OSError):
+            ptc._twin(self.film)
+
+    def test_a_move_leaves_the_only_copy_where_it_is(self):
+        with mock.patch.object(ptc, 'log'):
+            result, _ = ptc.move_file_to_array(self.film)
+        self.assertEqual(result, "failed")
+        self.assertEqual(Path(self.film).read_text(), "the only copy")
+
+    def test_two_real_copies_are_still_told_apart(self):
+        array = os.path.join(self.tmp, "array")
+        os.makedirs(os.path.join(array, "Media"))
+        copy = os.path.join(array, "Media", "film.mkv")
+        Path(copy).write_text("the only copy")
+        stamp = os.stat(self.film)
+        os.utime(copy, (stamp.st_atime, stamp.st_mtime))
+        configure(ARRAY_ROOT=array, CACHE_ROOT=self.user)
+        self.assertEqual(ptc._twin(self.film), "same")
+
+
+class StorageRoots(unittest.TestCase):
+
+    def test_a_cache_root_on_the_array_is_named_as_a_problem(self):
+        for cache in ("/mnt/user", "/mnt/user/Media", "/mnt/user0", "/mnt/user0/Media",
+                      "/mnt/disk1", "/mnt/disk12/Media", "", "/", "/mnt//user", " /mnt/user",
+                      "/mnt/./user0", "/mnt/cache/../user", "mnt/cache"):
+            with self.subTest(cache=cache):
+                self.assertTrue(ptc.storage_problem(cache, "/mnt/user"))
+
+    def test_cache_and_array_must_be_two_places(self):
+        self.assertTrue(ptc.storage_problem("/mnt/pool", "/mnt/pool"))
+        self.assertTrue(ptc.storage_problem("/mnt/pool/", "/mnt/pool"))
+        self.assertTrue(ptc.storage_problem("/mnt/pool/Media", "/mnt/pool"))
+        self.assertTrue(ptc.storage_problem("/mnt/pool", "/mnt/pool/Media"))
+
+    def test_the_array_root_has_to_be_a_full_path_too(self):
+        for array in ("", "/", "user"):
+            with self.subTest(array=array):
+                self.assertTrue(ptc.storage_problem("/mnt/cache", array))
+
+    def test_a_pool_is_fine(self):
+        for cache, array in (("/mnt/cache", "/mnt/user"), ("/mnt/nvme/", "/mnt/user/Media"),
+                             ("/mnt/disk1x", "/mnt/user"), ("/mnt/cache", "/mnt/disk1/Media"),
+                             ("/mnt/disks/ssd", "/mnt/user"), ("/mnt/cache", "/mnt/tank")):
+            with self.subTest(cache=cache, array=array):
+                self.assertEqual(ptc.storage_problem(cache, array), "")
+
+    def test_the_check_can_be_asked_from_outside(self):
+        script = str(ROOT / "src" / "plex_to_cache.py")
+        bad = subprocess.run([sys.executable, script, "--check", "/mnt/user", "/mnt/user"],
+                             capture_output=True, text=True)
+        self.assertEqual(bad.returncode, 1)
+        self.assertIn("/mnt/user", bad.stdout)
+        good = subprocess.run([sys.executable, script, "--check", "/mnt/cache", "/mnt/user"],
+                              capture_output=True, text=True)
+        self.assertEqual((good.returncode, good.stdout.strip()), (0, ""))
+
+
+class NothingRunsOnBadRoots(StateInTempDir):
+
+    def setUp(self):
+        super().setUp()
+        self.cfg = os.path.join(self.tmp, "settings.cfg")
+        Path(self.cfg).write_text('ARRAY_ROOT="/mnt/user"\nCACHE_ROOT="/mnt/user"\n')
+        patcher = mock.patch.object(ptc, 'CONFIG_FILE', self.cfg)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_service_does_not_start(self):
+        with mock.patch.object(ptc, 'setup_logging'), mock.patch.object(ptc, 'log') as log, \
+             mock.patch.object(ptc, 'copy_worker'), mock.patch.object(ptc, '_daemon_pass') as loop, \
+             mock.patch.object(ptc, 'write_status'), \
+             mock.patch.object(ptc.time, 'sleep', side_effect=RuntimeError("the loop was reached")):
+            with self.assertRaises(SystemExit) as stop:
+                ptc.run_daemon()
+        self.assertEqual(stop.exception.code, 1)
+        loop.assert_not_called()
+        self.assertIn("/mnt/user", log.call_args[0][0])
+
+    def test_the_mover_moves_nothing(self):
+        ptc._queue_append(["pick\t/mnt/user/Media/film.mkv"])
+        with mock.patch.object(ptc, 'setup_logging'), mock.patch.object(ptc, 'log'), \
+             mock.patch.object(ptc, '_move_batch') as batch:
+            self.assertEqual(ptc.run_mover(), 1)
+        batch.assert_not_called()
+
+
+class SavingSettings(unittest.TestCase):
+
+    def setUp(self):
+        self.php = (ROOT / "src" / "plex_to_cache.php").read_text()
+        start = self.php.index("if ($_SERVER['REQUEST_METHOD'] === 'POST') {")
+        self.save = self.php[start:self.php.index("$mappings_pairs = [];", start)]
+
+    def test_the_roots_are_checked_before_anything_is_written(self):
+        self.assertIn("--check", self.save)
+        self.assertLess(self.save.index("--check"), self.save.index("file_put_contents"))
+
+    def test_a_refused_save_restarts_nothing(self):
+        refused = self.save[self.save.index("--check"):self.save.index("file_put_contents")]
+        self.assertNotIn("condrestart", refused)
+        self.assertIn("$ptc_save_error", refused)
+
+    def test_only_the_verdict_of_the_check_refuses_a_save(self):
+        self.assertIn("$ptc_check_rc === 1", self.save)
+        self.assertNotIn("2>&1", self.save[self.save.index("--check"):self.save.index("file_put_contents")])
+
+    def test_a_mapping_cannot_carry_a_second_line(self):
+        mapping = self.save[self.save.index("mapping_docker"):self.save.index("DOCKER_MAPPINGS")]
+        self.assertIn('"\\n"', mapping)
+
+
 class WebUiActions(unittest.TestCase):
     """A request for an action the PHP does not handle fell through to the
     settings save - with none of the form's fields in it, which switched every

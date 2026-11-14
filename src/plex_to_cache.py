@@ -382,6 +382,26 @@ def _relative_to(path, prefix):
         return path[len(prefix) + 1:]
     return None
 
+def storage_problem(cache_root, array_root):
+    cache, array = (os.path.normpath(re.sub(r'/+', '/', p.strip())) if p.strip() else ''
+                    for p in (cache_root, array_root))
+    for label, path in (("Cache Root", cache), ("Array Root", array)):
+        if not path.startswith('/') or path == '/':
+            return f"{label} must be a full path below /, such as /mnt/cache or /mnt/user."
+    if _under(cache, array) or _under(array, cache):
+        return (f"Cache Root {cache} and Array Root {array} overlap - "
+                f"they must be two different places.")
+    if _under(cache, '/mnt/user') or _under(cache, USER0_ROOT) or re.match(r'/mnt/disk\d+(/|$)', cache):
+        return (f"Cache Root {cache} is on the array - "
+                f"enter the cache pool itself, such as /mnt/cache.")
+    return ""
+
+def _bad_roots():
+    problem = storage_problem(cfg("CACHE_ROOT"), cfg("ARRAY_ROOT"))
+    if problem:
+        log(f"{problem} Nothing runs until the settings are corrected.", error=True)
+    return bool(problem)
+
 def physical_array_root():
     """The array-only view of the configured array root.
 
@@ -789,6 +809,8 @@ def _twin(cache_path):
     except FileNotFoundError:
         return None
     c = os.stat(cache_path)
+    if os.path.samestat(a, c):
+        raise OSError(f"{cache_path} and {array_path} are one and the same file")
     dt = c.st_mtime - a.st_mtime
     if abs(dt) < 2:
         return "same" if c.st_size == a.st_size else "unclear"
@@ -1254,6 +1276,8 @@ def run_mover():
     """
     setup_logging(rotate=False)
     load_config()
+    if _bad_roots():
+        return 1
     try:
         lock = open(MOVE_LOCK, "a")
     except OSError as e:
@@ -1881,6 +1905,8 @@ def run_daemon():
     """Main daemon loop."""
     setup_logging()
     load_config()
+    if _bad_roots():
+        sys.exit(1)
 
     lock_fd = open(LOCK_FILE, 'w')
     try:
@@ -1933,6 +1959,11 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     if args == ["--move"]:
         sys.exit(run_mover())
+    if len(args) == 3 and args[0] == "--check":
+        problem = storage_problem(args[1], args[2])
+        if problem:
+            print(problem)
+        sys.exit(1 if problem else 0)
     if args:
-        sys.exit(f"usage: {sys.argv[0]} [--move]")
+        sys.exit(f"usage: {sys.argv[0]} [--move | --check CACHE_ROOT ARRAY_ROOT]")
     run_daemon()
