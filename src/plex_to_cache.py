@@ -477,7 +477,7 @@ def is_excluded(path):
 def is_media_file(filename):
     """Check if file is a media file according to the configured extensions."""
     extensions = cfg("MEDIA_FILETYPES").split()
-    return not extensions or any(filename.lower().endswith(ext.lower()) for ext in extensions)
+    return any(filename.lower().endswith(ext.lower()) for ext in extensions)
 
 _EP_PATTERNS = (
     re.compile(r"[sS]\d{1,4}[eE](\d{1,4})"),
@@ -1739,7 +1739,7 @@ def handle_series(array_path):
 def _stream_array_path(docker_path):
     """The array path a stream plays, or None if it is nothing to cache."""
     array_path = translate_docker_path(docker_path)
-    if not _under(array_path, cfg("ARRAY_ROOT")):
+    if array_path != os.path.normpath(array_path) or not _under(array_path, cfg("ARRAY_ROOT")):
         return None
     if is_excluded(array_path) or not is_media_file(os.path.basename(array_path)):
         return None
@@ -1779,8 +1779,8 @@ def _smart_cleanup(last_streams, streams):
     tracked = None
     for docker_path in set(last_streams) - set(streams):
         session    = last_streams[docker_path]
-        array_path = translate_docker_path(docker_path)
-        if not is_watched(session):
+        array_path = _stream_array_path(docker_path)
+        if array_path is None or not is_watched(session):
             continue
         cache_path = array_to_cache(array_path)
         if not os.path.exists(cache_path):

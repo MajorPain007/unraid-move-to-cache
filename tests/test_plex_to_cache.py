@@ -1094,6 +1094,41 @@ class StopSparesTheMover(unittest.TestCase):
             self.assertIn(f'plugins/plex_to_cache/event/{event}" Mode="0755"', plg)
 
 
+class PathsFromTheMediaServer(unittest.TestCase):
+
+    def setUp(self):
+        configure(ARRAY_ROOT="/mnt/user", CACHE_ROOT="/mnt/cache",
+                  DOCKER_MAPPINGS="/data:/mnt/user/Media")
+
+    def test_a_plain_path_is_taken(self):
+        self.assertEqual(ptc._stream_array_path("/data/Movies/a.mkv"),
+                         "/mnt/user/Media/Movies/a.mkv")
+
+    def test_a_path_that_climbs_out_of_its_folder_is_nothing_to_cache(self):
+        for path in ("/data/../../disk1/Movies/a.mkv", "/data/../Other/a.mkv",
+                     "/data/Movies/../../../../etc/a.mkv", "/mnt/user/Media/../../disk1/a.mkv",
+                     "/data/Movies/./a.mkv", "/data//Movies/a.mkv"):
+            with self.subTest(path=path):
+                self.assertIsNone(ptc._stream_array_path(path))
+
+    def test_cleanup_does_not_follow_such_a_path_either(self):
+        path = "/data/../../disk1/Movies/a.mkv"
+        cache = "/mnt/cache/Media/../../disk1/Movies/a.mkv"
+        ptc.deletion_queue.clear()
+        self.addCleanup(ptc.deletion_queue.clear)
+        with mock.patch.object(ptc, 'is_watched', return_value=True), \
+             mock.patch.object(ptc.os.path, 'exists', return_value=True), \
+             mock.patch.object(ptc.TrackedFiles, 'load', return_value={cache: 1.0}), \
+             mock.patch.object(ptc, 'request_moves'):
+            ptc._smart_cleanup({path: {}}, {})
+        self.assertEqual(ptc.deletion_queue, {})
+
+    def test_no_file_types_means_no_media(self):
+        configure(MEDIA_FILETYPES="")
+        self.assertFalse(ptc.is_media_file("a.mkv"))
+        self.assertFalse(ptc.is_media_file("passwd"))
+
+
 class OneFileIsNotItsOwnTwin(StateInTempDir):
 
     def setUp(self):
