@@ -615,7 +615,7 @@
     color: var(--mtc-dim);
 }
 
-.mtc-field.indent > label:first-child {
+#mtc-app .mtc-field.indent > .mtc-tip {
     padding-left: 14px;
 }
 
@@ -660,6 +660,48 @@
 #mtc-app input.num {
     flex: 0 0 80px;
     width: 80px;
+}
+
+#mtc-app .mtc-tip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: 0 0 130px;
+    color: var(--mtc-dim);
+}
+
+#mtc-app .mtc-maps > .mtc-tip {
+    margin-bottom: 4px;
+}
+
+#mtc-app .mtc-tip svg.mtc-i {
+    width: 13px;
+    height: 13px;
+    opacity: 0.5;
+}
+
+#mtc-app .mtc-tip:hover,
+#mtc-app .mtc-tip.on {
+    color: var(--mtc-text);
+}
+
+#mtc-app .mtc-tip.on svg.mtc-i {
+    opacity: 1;
+    color: var(--mtc-accent-text);
+}
+
+.mtc-help {
+    margin: 0 0 6px 140px;
+    padding: 6px 10px;
+    border-left: 2px solid var(--mtc-accent);
+    background: var(--mtc-accent-soft);
+    border-radius: 0 6px 6px 0;
+    font-size: 13px;
+    max-width: 640px;
+}
+
+.mtc-maps > .mtc-help {
+    margin-left: 0;
 }
 
 .mtc-check {
@@ -852,7 +894,12 @@
         display: none;
     }
 
+    #mtc-app .mtc-tip {
+        flex-basis: 100%;
+    }
+
     .mtc-hint,
+    .mtc-help,
     .mtc-result {
         margin-left: 0;
     }

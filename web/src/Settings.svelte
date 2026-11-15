@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Icon from './Icon.svelte';
+  import Tip from './Tip.svelte';
+  import Help from './Help.svelte';
   import { api, ApiError } from './lib/api';
   import { app, refresh } from './lib/state.svelte';
 
@@ -129,19 +131,22 @@
       {#if open[sv.key] || (s['ENABLE_' + sv.key] === 'yes' && !srv[sv.key]?.ok && srv[sv.key])}
         <div class="mtc-sub">
           <div class="mtc-field" class:bad={field === sv.key + '_URL'}>
-            <label for="{sv.key}-url">Address</label>
+            <Tip k="URL">Address</Tip>
             <input id="{sv.key}-url" type="text" bind:value={s[sv.key + '_URL']} placeholder={sv.hint} onchange={() => save()} />
           </div>
+          <Help k="URL" />
           <div class="mtc-field">
-            <label for="{sv.key}-tok">{sv.tokenLabel}</label>
+            <Tip k="TOKEN">{sv.tokenLabel}</Tip>
             <input id="{sv.key}-tok" type="password" autocomplete="off" bind:value={tokens[sv.token]} placeholder={stored[sv.token] ? 'saved' : 'not set'} onchange={() => save()} />
             {#if stored[sv.token]}<button type="button" class="mtc-btn small" onclick={() => save({ [sv.token + '_CLEAR']: true })}>Remove</button>{/if}
           </div>
+          <Help k="TOKEN" />
           <div class="mtc-field">
-            <span class="mtc-label">Certificate</span>
+            <Tip k="TLS">Certificate</Tip>
             <label class="mtc-check"><input type="checkbox" checked={s[sv.key + '_VERIFY_TLS'] === 'yes'} onchange={() => flip(sv.key + '_VERIFY_TLS')} />verify (https)</label>
             {#if s[sv.key + '_CERT_SHA256']}<span class="mtc-dim" title={s[sv.key + '_CERT_SHA256']}>· own certificate trusted</span>{/if}
           </div>
+          <Help k="TLS" />
           <div class="mtc-field">
             <span class="mtc-label"></span>
             <button type="button" class="mtc-btn" disabled={testing[sv.key]} onclick={() => test(sv)}><Icon name="refresh" />{testing[sv.key] ? 'Testing…' : 'Test connection'}</button>
@@ -172,21 +177,25 @@
   <section class="mtc-panel">
     <h3>Paths</h3>
     <div class="mtc-field" class:bad={field === 'CACHE_ROOT' || (!!root.problem && s.CACHE_ROOT === root.current)}>
-      <label for="mtc-cache">Cache pool</label>
+      <Tip k="CACHE_ROOT">Cache pool</Tip>
       <select id="mtc-cache" bind:value={s.CACHE_ROOT} onchange={() => save()}>
         {#if !root.listed}<option value={root.current}>{root.current} (not valid)</option>{/if}
         {#each root.pools as p}<option value={p}>{p}</option>{/each}
       </select>
     </div>
+    <Help k="CACHE_ROOT" />
     {#if root.problem && s.CACHE_ROOT === root.current}<p class="mtc-hint err">{root.problem}</p>{/if}
     <div class="mtc-field" class:bad={field === 'ARRAY_ROOT'}>
-      <label for="mtc-array">Array</label>
+      <Tip k="ARRAY_ROOT">Array</Tip>
       <select id="mtc-array" bind:value={s.ARRAY_ROOT} onchange={() => save()}>
         {#if !root.arrays.includes(s.ARRAY_ROOT)}<option value={s.ARRAY_ROOT}>{s.ARRAY_ROOT}</option>{/if}
         {#each root.arrays as a, i}<option value={a}>{a}{i === 0 ? ' (all shares)' : ''}</option>{/each}
       </select>
     </div>
+    <Help k="ARRAY_ROOT" />
     <div class="mtc-maps" class:bad={field === 'DOCKER_MAPPINGS'}>
+      <Tip k="MAPPINGS">Docker path mappings</Tip>
+      <Help k="MAPPINGS" />
       <div class="mtc-maps-head"><span>Path in the container</span><span>Path on the host</span><span></span></div>
       {#each maps as m, i}
         <div class="mtc-maps-row">
@@ -202,73 +211,86 @@
     <h3>Caching</h3>
     {#each [['COPY_DELAY', 'Copy after', 's of playback'], ['CHECK_INTERVAL', 'Check every', 's'], ['CACHE_MAX_USAGE', 'Pool limit', '%']] as [k, label, unit]}
       <div class="mtc-field" class:bad={field === k}>
-        <label for="mtc-{k}">{label}</label>
+        <Tip k={k}>{label}</Tip>
         <input id="mtc-{k}" class="num" type="number" bind:value={s[k]} onchange={() => save()} /><span class="mtc-dim">{unit}</span>
       </div>
+      <Help k={k} />
     {/each}
     <div class="mtc-field">
-      <span class="mtc-label">Series</span>
+      <Tip k="SERIES">Series</Tip>
       <label class="mtc-check"><input type="checkbox" checked={s.ENABLE_EPISODE_BATCHING === 'yes'} onchange={() => flip('ENABLE_EPISODE_BATCHING')} />long seasons in batches</label>
     </div>
+    <Help k="SERIES" />
     {#if s.ENABLE_EPISODE_BATCHING === 'yes'}
       <div class="mtc-field indent">
-        <label for="mtc-bs">Batch</label>
+        <Tip k="BATCH">Batch</Tip>
         <input id="mtc-bs" class="num" type="number" bind:value={s.EPISODE_BATCH_SIZE} onchange={() => save()} /><span class="mtc-dim">episodes, +</span>
         <input class="num" type="number" aria-label="Tolerance" bind:value={s.EPISODE_BATCH_TOLERANCE} onchange={() => save()} /><span class="mtc-dim">tolerance</span>
       </div>
+      <Help k="BATCH" />
     {/if}
     <div class="mtc-field">
-      <span class="mtc-label"></span>
+      <Tip k="NEXT_SEASON">Next season</Tip>
       <label class="mtc-check"><input type="checkbox" checked={s.ENABLE_NEXT_SEASON_PREFETCH === 'yes'} onchange={() => flip('ENABLE_NEXT_SEASON_PREFETCH')} />start the next season early</label>
     </div>
+    <Help k="NEXT_SEASON" />
     {#if s.ENABLE_EPISODE_BATCHING === 'yes' || s.ENABLE_NEXT_SEASON_PREFETCH === 'yes'}
       <div class="mtc-field indent">
-        <label for="mtc-bp">Ahead</label>
+        <Tip k="AHEAD">Ahead</Tip>
         <input id="mtc-bp" class="num" type="number" bind:value={s.EPISODE_BATCH_PREFETCH} onchange={() => save()} /><span class="mtc-dim">episodes before the end</span>
       </div>
+      <Help k="AHEAD" />
     {/if}
     <div class="mtc-field" class:bad={field === 'MEDIA_FILETYPES'}>
-      <label for="mtc-types">File types</label>
+      <Tip k="MEDIA_FILETYPES">File types</Tip>
       <input id="mtc-types" type="text" bind:value={s.MEDIA_FILETYPES} placeholder=".mkv .mp4" onchange={() => save()} />
     </div>
+    <Help k="MEDIA_FILETYPES" />
     <div class="mtc-field" class:bad={field === 'EXCLUDE_DIRS'}>
-      <label for="mtc-excl">Skip folders</label>
+      <Tip k="EXCLUDE_DIRS">Skip folders</Tip>
       <input id="mtc-excl" type="text" bind:value={s.EXCLUDE_DIRS} placeholder="Kids, Extras" onchange={() => save()} />
     </div>
+    <Help k="EXCLUDE_DIRS" />
   </section>
 
   <section class="mtc-panel">
     <h3>Cleanup</h3>
     <div class="mtc-field" class:bad={field === 'CLEANUP_MODE'}>
-      <label for="mtc-clean">Move back</label>
+      <Tip k="CLEANUP_MODE">Move back</Tip>
       <select id="mtc-clean" bind:value={s.CLEANUP_MODE} onchange={() => save()}>
         <option value="none">never</option>
         <option value="smart">when watched</option>
         <option value="days">after days</option>
       </select>
     </div>
+    <Help k="CLEANUP_MODE" />
     {#if s.CLEANUP_MODE === 'smart'}
       <div class="mtc-field indent">
-        <label for="mtc-mdd">Movies after</label>
+        <Tip k="MOVIE_DELETE_DELAY">Movies after</Tip>
         <input id="mtc-mdd" class="num" type="number" bind:value={s.MOVIE_DELETE_DELAY} onchange={() => save()} /><span class="mtc-dim">s</span>
       </div>
+      <Help k="MOVIE_DELETE_DELAY" />
       <div class="mtc-field indent">
-        <label for="mtc-keep">Keep</label>
+        <Tip k="EPISODE_KEEP_PREVIOUS">Keep</Tip>
         <input id="mtc-keep" class="num" type="number" bind:value={s.EPISODE_KEEP_PREVIOUS} onchange={() => save()} /><span class="mtc-dim">previous episodes</span>
       </div>
+      <Help k="EPISODE_KEEP_PREVIOUS" />
     {:else if s.CLEANUP_MODE === 'days'}
       <div class="mtc-field indent">
-        <label for="mtc-days">After</label>
+        <Tip k="CACHE_MAX_DAYS">After</Tip>
         <input id="mtc-days" class="num" type="number" bind:value={s.CACHE_MAX_DAYS} onchange={() => save()} /><span class="mtc-dim">days</span>
       </div>
+      <Help k="CACHE_MAX_DAYS" />
     {/if}
     <div class="mtc-field">
-      <span class="mtc-label">Pool full</span>
+      <Tip k="EVICTION">Pool full</Tip>
       <label class="mtc-check"><input type="checkbox" checked={s.ENABLE_CACHE_EVICTION === 'yes'} onchange={() => flip('ENABLE_CACHE_EVICTION')} />move the oldest copies back</label>
     </div>
+    <Help k="EVICTION" />
     <div class="mtc-field" class:bad={field === 'NOTIFY_OFFLINE_MINUTES'}>
-      <label for="mtc-off">Notify after</label>
+      <Tip k="NOTIFY_OFFLINE_MINUTES">Notify after</Tip>
       <input id="mtc-off" class="num" type="number" bind:value={s.NOTIFY_OFFLINE_MINUTES} onchange={() => save()} /><span class="mtc-dim">min without server</span>
     </div>
+    <Help k="NOTIFY_OFFLINE_MINUTES" />
   </section>
 {/if}
