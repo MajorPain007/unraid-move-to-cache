@@ -51,6 +51,20 @@ var numberRanges = map[string][2]int{
 	"NOTIFY_OFFLINE_MINUTES": {1, 1440},
 }
 
+var fieldLabels = map[string]string{
+	"CHECK_INTERVAL": "Check every", "CACHE_MAX_USAGE": "Pool limit", "COPY_DELAY": "Copy after",
+	"MOVIE_DELETE_DELAY": "Movies after", "EPISODE_KEEP_PREVIOUS": "Keep previous episodes", "CACHE_MAX_DAYS": "Days",
+	"EPISODE_BATCH_SIZE": "Batch", "EPISODE_BATCH_TOLERANCE": "Tolerance", "EPISODE_BATCH_PREFETCH": "Ahead",
+	"NOTIFY_OFFLINE_MINUTES": "Notify after", "EXCLUDE_DIRS": "Skip folders", "MEDIA_FILETYPES": "File types",
+}
+
+func label(k string) string {
+	if l, ok := fieldLabels[k]; ok {
+		return l
+	}
+	return k
+}
+
 type Settings map[string]string
 
 func isSwitch(k string) bool {
@@ -222,13 +236,13 @@ func (e fieldError) Error() string { return e.Msg }
 func validateSettings(s Settings) error {
 	for _, k := range settingKeys {
 		if strings.ContainsAny(s[k], "\"\r\n\x00") {
-			return fieldError{k, k + " must not contain quotes or line breaks."}
+			return fieldError{k, label(k) + " must not contain quotes or line breaks."}
 		}
 	}
 	for k, r := range numberRanges {
 		n, err := strconv.Atoi(s[k])
 		if err != nil || n < r[0] || n > r[1] {
-			return fieldError{k, fmt.Sprintf("%s must be a whole number from %d to %d.", k, r[0], r[1])}
+			return fieldError{k, fmt.Sprintf("%s: enter a whole number from %d to %d.", label(k), r[0], r[1])}
 		}
 	}
 	for _, sv := range servers {

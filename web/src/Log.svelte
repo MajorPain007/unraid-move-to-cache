@@ -25,6 +25,6 @@
   });
 </script>
 
-{#if error}<div class="mtc-msg mtc-err">{error}</div>{/if}
+{#if error}<div class="mtc-banner">{error}</div>{/if}
 <pre class="mtc-log" bind:this={box}>{text}</pre>
 <button type="button" class="mtc-btn" onclick={load}>Refresh</button>

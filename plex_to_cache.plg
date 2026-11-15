@@ -2,8 +2,8 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.11.15.01">
-<!ENTITY md5       "2afcd7dadaa5da8372c53bde42a7a77d">
+<!ENTITY version   "2026.11.15.02">
+<!ENTITY md5       "4c6793fbffe72799e11c0fd1e3702cbd">
 <!ENTITY launch    "Settings/plex_to_cache">
 <!ENTITY github    "MajorPain007/unraid-move-to-cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/plex_to_cache.plg">
@@ -19,6 +19,13 @@
         icon="server">
 
 <CHANGES>
+### 2026.11.15.02
+
+- Clearer interface: status, streams, cached files and pool usage at the top;
+  activity as one compact list; the cache as a table with ../ as first row.
+- Settings save themselves as you change them; errors name the field.
+- Drop-down menus look like drop-down menus.
+
 ### 2026.11.15.01
 
 Move to Cache is rebuilt as one Go program with a new interface. Settings
