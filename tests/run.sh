@@ -49,6 +49,7 @@ md5=$(sed -n 's/^<!ENTITY md5 *"\([^"]*\)">.*/\1/p' plex_to_cache.plg)
 pkg="archive/plex_to_cache-${ver}-x86_64-1.txz"
 check "the manifest's md5 matches $pkg" '[ -f "$pkg" ] && [ "$( (md5sum "$pkg" 2>/dev/null || md5 -r "$pkg") | cut -d" " -f1)" = "$md5" ]'
 check "the install URL is unchanged" 'grep -q "<!ENTITY pluginURL \"https://raw.githubusercontent.com/&github;/main/plex_to_cache.plg\">" plex_to_cache.plg'
+check "pkill patterns in the manifest cannot match the script that runs them" '! grep -E "(pkill|pgrep) .*-f" plex_to_cache.plg | grep -vq "\\["'
 check "the uninstall block stops the service and the mover" 'sed -n "/Method=\"remove\"/,/<\/FILE>/p" plex_to_cache.plg | grep -q "service array_stopping"'
 
 section "Test build"

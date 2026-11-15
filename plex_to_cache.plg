@@ -514,9 +514,9 @@ mkdir -p &configDir; &tmpDir;
 if [ -f /var/run/&name;.pid ]; then
   kill "$(cat /var/run/&name;.pid)" 2&gt;/dev/null
 fi
-pkill -TERM -f '&pluginDir;/scripts/&name;.py' 2&gt;/dev/null
-for _ in $(seq 30); do pgrep -f '&pluginDir;/scripts/&name;.py' &gt;/dev/null || break; sleep 1; done
-pkill -KILL -f '&pluginDir;/scripts/&name;.py' 2&gt;/dev/null
+pkill -TERM -f '&pluginDir;/scripts/&name;[.]py' 2&gt;/dev/null
+for _ in $(seq 30); do pgrep -f '&pluginDir;/scripts/&name;[.]py' &gt;/dev/null || break; sleep 1; done
+pkill -KILL -f '&pluginDir;/scripts/&name;[.]py' 2&gt;/dev/null
 rm -rf &pluginDir;/scripts
 rm -f &pluginDir;/&name;.php /etc/rc.d/rc.&name; &configDir;/flush_last.txt
 rm -f /var/run/&name;.pid /var/run/&name;.lock /var/run/&name;.status.json /var/run/&name;.tracked.lock
@@ -541,9 +541,9 @@ echo "Move to Cache is installed: Settings, Utilities, Move to Cache."
 <FILE Run="/bin/bash" Method="remove">
 <INLINE>
 &pluginDir;/bin/move-to-cache service array_stopping 2&gt;/dev/null
-pkill -TERM -f '&pluginDir;/bin/move-to-cache' 2&gt;/dev/null
-for _ in $(seq 30); do pgrep -f '&pluginDir;/bin/move-to-cache' &gt;/dev/null || break; sleep 1; done
-pkill -KILL -f '&pluginDir;/bin/move-to-cache' 2&gt;/dev/null
+pkill -TERM -f '&pluginDir;/bin/move-to-cach[e]' 2&gt;/dev/null
+for _ in $(seq 30); do pgrep -f '&pluginDir;/bin/move-to-cach[e]' &gt;/dev/null || break; sleep 1; done
+pkill -KILL -f '&pluginDir;/bin/move-to-cach[e]' 2&gt;/dev/null
 removepkg &name; 2&gt;/dev/null
 rm -rf &pluginDir; &configDir; &tmpDir;
 rm -f /var/log/&name;.log /var/log/&name;.log.1
