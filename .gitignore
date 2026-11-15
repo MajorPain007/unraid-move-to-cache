@@ -1,3 +1,8 @@
-__pycache__/
-*.pyc
 .DS_Store
+dist/
+tests/harness/.unraid/
+web/node_modules/
+web/dist/
+CLAUDE.md
+REWRITE-PLAN.md
+.claude/

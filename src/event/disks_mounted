@@ -1,2 +1,2 @@
 #!/bin/bash
-/usr/local/emhttp/plugins/plex_to_cache/scripts/rc.plex_to_cache boot >> /var/log/plex_to_cache.log 2>&1
+/usr/local/emhttp/plugins/plex_to_cache/bin/move-to-cache service boot >> /var/log/plex_to_cache.log 2>&1
