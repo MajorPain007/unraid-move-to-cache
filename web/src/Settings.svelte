@@ -181,7 +181,10 @@
     {#if root.problem && s.CACHE_ROOT === root.current}<p class="mtc-hint err">{root.problem}</p>{/if}
     <div class="mtc-field" class:bad={field === 'ARRAY_ROOT'}>
       <label for="mtc-array">Array</label>
-      <input id="mtc-array" type="text" bind:value={s.ARRAY_ROOT} placeholder="/mnt/user" onchange={() => save()} />
+      <select id="mtc-array" bind:value={s.ARRAY_ROOT} onchange={() => save()}>
+        {#if !root.arrays.includes(s.ARRAY_ROOT)}<option value={s.ARRAY_ROOT}>{s.ARRAY_ROOT}</option>{/if}
+        {#each root.arrays as a, i}<option value={a}>{a}{i === 0 ? ' (all shares)' : ''}</option>{/each}
+      </select>
     </div>
     <div class="mtc-maps" class:bad={field === 'DOCKER_MAPPINGS'}>
       <div class="mtc-maps-head"><span>Path in the container</span><span>Path on the host</span><span></span></div>

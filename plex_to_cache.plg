@@ -2,8 +2,8 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
-<!ENTITY version   "2026.11.15.02">
-<!ENTITY md5       "4c6793fbffe72799e11c0fd1e3702cbd">
+<!ENTITY version   "2026.11.15.03">
+<!ENTITY md5       "80b85bab07d1ebddb84d046cfed3f4c6">
 <!ENTITY launch    "Settings/plex_to_cache">
 <!ENTITY github    "MajorPain007/unraid-move-to-cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/plex_to_cache.plg">
@@ -19,6 +19,11 @@
         icon="server">
 
 <CHANGES>
+### 2026.11.15.03
+
+- The array is chosen from a list too: all shares (/mnt/user), another pool
+  or an unassigned disk.
+
 ### 2026.11.15.02
 
 - Clearer interface: status, streams, cached files and pool usage at the top;

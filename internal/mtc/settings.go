@@ -288,7 +288,13 @@ func cacheRootState(s Settings) M {
 			problem = cur + " is not a mounted pool. Choose one from the list."
 		}
 	}
-	return M{"pools": pools, "current": cur, "listed": listed, "problem": problem}
+	arrays := []string{MntDir + "/user"}
+	for _, p := range listPools("") {
+		if p != cur {
+			arrays = append(arrays, p)
+		}
+	}
+	return M{"pools": pools, "current": cur, "listed": listed, "problem": problem, "arrays": arrays}
 }
 
 func init() {

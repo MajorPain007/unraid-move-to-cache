@@ -114,6 +114,10 @@ func TestListPools(t *testing.T) {
 	if got != want {
 		t.Fatalf("pools %q, want %q", got, want)
 	}
+	arrays := strings.Join(cacheRootState(Settings{"CACHE_ROOT": MntDir + "/cache", "ARRAY_ROOT": MntDir + "/user"})["arrays"].([]string), " ")
+	if arrays != strings.Join([]string{MntDir + "/user", MntDir + "/fast", MntDir + "/disks/ssd1"}, " ") {
+		t.Fatalf("array choices %q", arrays)
+	}
 }
 
 func TestInvalidCacheRootShownNotReplaced(t *testing.T) {
