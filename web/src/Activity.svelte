@@ -61,7 +61,7 @@
   });
 </script>
 
-{#if error}<div class="mtc-msg err">{error}</div>{/if}
+{#if error}<div class="mtc-msg mtc-err">{error}</div>{/if}
 {#if ov}
   <section class="mtc-card">
     <div class="mtc-head">
@@ -76,11 +76,11 @@
       {/if}
     </div>
     {#if note}<div class="mtc-sub">{note}</div>{/if}
-    {#if ov.problem}<div class="mtc-msg err">{ov.problem}</div>{/if}
-    {#if ov.running && st && !st.storage_ready}<div class="mtc-msg warn">Waiting for the cache pool and the array to be mounted.</div>{/if}
-    {#if ov.servers_enabled?.length === 0}<div class="mtc-msg warn">No media server is switched on. Open Settings.</div>{/if}
+    {#if ov.problem}<div class="mtc-msg mtc-err">{ov.problem}</div>{/if}
+    {#if ov.running && st && !st.storage_ready}<div class="mtc-msg mtc-warn">Waiting for the cache pool and the array to be mounted.</div>{/if}
+    {#if ov.servers_enabled?.length === 0}<div class="mtc-msg mtc-warn">No media server is switched on. Open Settings.</div>{/if}
     {#each servers as [key, s]}
-      {#if !s.ok}<div class="mtc-msg err"><strong>{key}:</strong> {s.message}</div>{/if}
+      {#if !s.ok}<div class="mtc-msg mtc-err"><strong>{key}:</strong> {s.message}</div>{/if}
     {/each}
     <div class="mtc-stats">
       <div><span>Cached by the plugin</span><b>{ov.cached.files} files · {bytes(ov.cached.bytes)}</b></div>
@@ -106,7 +106,7 @@
             <div class="mtc-meta">
               <span>{s.service}{s.user ? ' · ' + s.user : ''}</span>
               {#if s.progress != null}<span>{Math.round(s.progress * 100)} %</span>{/if}
-              {#if s.skipped}<span class="warn">not cached: {s.skipped}</span>{:else if s.on_cache}<span class="ok">on cache</span>{:else}<span>on array</span>{/if}
+              {#if s.skipped}<span class="mtc-warn">not cached: {s.skipped}</span>{:else if s.on_cache}<span class="mtc-ok">on cache</span>{:else}<span>on array</span>{/if}
             </div>
             <div class="mtc-path">{s.host}</div>
           </li>

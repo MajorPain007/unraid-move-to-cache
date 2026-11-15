@@ -103,8 +103,8 @@
   onMount(load);
 </script>
 
-{#if error}<div class="mtc-msg err">{error}</div>{/if}
-{#if saved}<div class="mtc-msg ok">{saved}</div>{/if}
+{#if error}<div class="mtc-msg mtc-err">{error}</div>{/if}
+{#if saved}<div class="mtc-msg mtc-ok">{saved}</div>{/if}
 
 {#each servers as sv}
   <section class="mtc-card">
@@ -135,7 +135,7 @@
       <button type="button" class="mtc-btn" disabled={testing[sv.key]} onclick={() => test(sv.key, sv.token)}>{testing[sv.key] ? 'Testing…' : 'Test connection'}</button>
       {#if tests[sv.key]}
         {@const r = tests[sv.key]}
-        <div class="mtc-msg {r.success ? 'ok' : 'err'}">
+        <div class="mtc-msg {r.success ? 'mtc-ok' : 'mtc-err'}">
           {r.message}
           {#if r.advice}<div class="mtc-sub">{r.advice}</div>{/if}
           {#if r.certificate}
@@ -152,7 +152,7 @@
               <li>
                 <div class="mtc-name">{row.title ? row.title + ': ' : ''}{row.container}</div>
                 <div class="mtc-path">→ {row.host}</div>
-                <div class="mtc-meta"><span class={row.state === 'ok' ? 'ok' : 'warn'}>{row.text}</span></div>
+                <div class="mtc-meta"><span class={row.state === 'ok' ? 'mtc-ok' : 'mtc-warn'}>{row.text}</span></div>
               </li>
             {/each}
           </ul>
@@ -172,8 +172,8 @@
           {#if !root.listed}<option value={root.current}>{root.current} (not valid)</option>{/if}
           {#each root.pools as p}<option value={p}>{p}</option>{/each}
         </select>
-        {#if root.problem && s.CACHE_ROOT === root.current}<div class="mtc-sub err">{root.problem}</div>{/if}
-        {#if root.pools.length === 0}<div class="mtc-sub warn">No pool is mounted right now - is the array started?</div>{/if}
+        {#if root.problem && s.CACHE_ROOT === root.current}<div class="mtc-sub mtc-err">{root.problem}</div>{/if}
+        {#if root.pools.length === 0}<div class="mtc-sub mtc-warn">No pool is mounted right now - is the array started?</div>{/if}
       {/if}
     </div>
     <label for="mtc-array">Array Root</label>

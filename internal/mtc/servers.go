@@ -342,7 +342,7 @@ func pathPreview(c *Config, docker string) M {
 	case !mapped && !under(host, c.Array):
 		first := "/" + strings.SplitN(strings.TrimLeft(docker, "/"), "/", 2)[0]
 		row["state"] = "unmapped"
-		row["text"] = "No Docker mapping for " + first + " - add one in Path mappings."
+		row["text"] = "No Docker mapping for " + first + " - add one under Docker path mappings."
 	case !under(host, c.Array):
 		row["state"] = "outside"
 		row["text"] = "Lies outside the Array Root " + c.Array + " - nothing would be cached."

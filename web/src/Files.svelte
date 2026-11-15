@@ -66,8 +66,8 @@
   {/each}
 </div>
 
-{#if error}<div class="mtc-msg err">{error}</div>{/if}
-{#if note}<div class="mtc-msg ok">{note}</div>{/if}
+{#if error}<div class="mtc-msg mtc-err">{error}</div>{/if}
+{#if note}<div class="mtc-msg mtc-ok">{note}</div>{/if}
 
 <div class="mtc-toolbar">
   {#if path}<button type="button" class="mtc-btn" onclick={() => open(parent)}>Up</button>{/if}
@@ -89,9 +89,9 @@
         </div>
         <div class="mtc-fmeta">
           <span>{summary(e)}</span>
-          {#if e.dir && e.cached}<span class="ok">{e.cached} by the plugin</span>{/if}
-          {#if !e.dir && e.tracked}<span class="ok">by the plugin</span>{/if}
-          {#if e.in_use || (e.busy ?? 0) > 0}<span class="warn">playing</span>{/if}
+          {#if e.dir && e.cached}<span class="mtc-ok">{e.cached} by the plugin</span>{/if}
+          {#if !e.dir && e.tracked}<span class="mtc-ok">by the plugin</span>{/if}
+          {#if e.in_use || (e.busy ?? 0) > 0}<span class="mtc-warn">playing</span>{/if}
         </div>
       </li>
     {/each}

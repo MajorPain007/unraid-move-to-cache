@@ -160,15 +160,15 @@
     overflow-wrap: anywhere;
 }
 
-.mtc-msg.ok {
+.mtc-msg.mtc-ok {
     background: var(--mtc-ok-soft);
 }
 
-.mtc-msg.warn {
+.mtc-msg.mtc-warn {
     background: var(--mtc-warn-soft);
 }
 
-.mtc-msg.err {
+.mtc-msg.mtc-err {
     background: var(--mtc-err-soft);
 }
 
@@ -179,21 +179,21 @@
     overflow-wrap: anywhere;
 }
 
-#mtc-app .ok {
+#mtc-app .mtc-ok {
     color: var(--mtc-ok);
 }
 
-#mtc-app .warn {
+#mtc-app .mtc-warn {
     color: var(--mtc-warn);
 }
 
-#mtc-app .err {
+#mtc-app .mtc-err {
     color: var(--mtc-err);
 }
 
-#mtc-app .mtc-msg.ok,
-#mtc-app .mtc-msg.warn,
-#mtc-app .mtc-msg.err {
+#mtc-app .mtc-msg.mtc-ok,
+#mtc-app .mtc-msg.mtc-warn,
+#mtc-app .mtc-msg.mtc-err {
     color: var(--mtc-text);
 }
 
@@ -270,6 +270,8 @@
 
 .mtc-meta,
 .mtc-fmeta {
+    overflow-wrap: anywhere;
+    min-width: 0;
     display: flex;
     flex-wrap: wrap;
     gap: 4px 12px;

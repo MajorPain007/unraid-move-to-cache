@@ -136,11 +136,7 @@ func pidRuns(pid int, args ...string) bool {
 	if !pidAlive(pid) {
 		return false
 	}
-	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
-	if err != nil {
-		return false
-	}
-	parts := strings.Split(strings.TrimRight(string(b), "\x00"), "\x00")
+	parts := cmdlineOf(pid)
 	if len(parts) < len(args)+1 || filepath.Base(parts[0]) != "move-to-cache" {
 		return false
 	}
