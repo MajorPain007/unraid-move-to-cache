@@ -691,17 +691,13 @@
 }
 
 .mtc-help {
-    margin: 0 0 6px 140px;
+    margin: 0 0 6px;
     padding: 6px 10px;
     border-left: 2px solid var(--mtc-accent);
     background: var(--mtc-accent-soft);
     border-radius: 0 6px 6px 0;
     font-size: 13px;
     max-width: 640px;
-}
-
-.mtc-maps > .mtc-help {
-    margin-left: 0;
 }
 
 .mtc-check {
@@ -899,7 +895,6 @@
     }
 
     .mtc-hint,
-    .mtc-help,
     .mtc-result {
         margin-left: 0;
     }
