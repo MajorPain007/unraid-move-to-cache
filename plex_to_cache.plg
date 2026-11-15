@@ -3,7 +3,7 @@
 <!ENTITY name      "plex_to_cache">
 <!ENTITY author    "MajorPain007">
 <!ENTITY version   "2026.11.15.01">
-<!ENTITY md5       "00000000000000000000000000000000">
+<!ENTITY md5       "2afcd7dadaa5da8372c53bde42a7a77d">
 <!ENTITY launch    "Settings/plex_to_cache">
 <!ENTITY github    "MajorPain007/unraid-move-to-cache">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/&github;/main/plex_to_cache.plg">
