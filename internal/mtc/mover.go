@@ -297,7 +297,12 @@ func (m *mover) batch(reqs []moveReq) {
 		}
 		if !it.Tracked {
 			tw, err := twin(it.Path)
-			if err != nil || (tw != twinNone && tw != twinSame) {
+			if err != nil {
+				m.job.Failed++
+				logError("[Move] Skipping %s: %v", name, err)
+				continue
+			}
+			if tw != twinNone && tw != twinSame {
 				m.job.Conflicts++
 				logWarn("[Move] Skipping %s: a different file of that name is already on the array", name)
 				continue

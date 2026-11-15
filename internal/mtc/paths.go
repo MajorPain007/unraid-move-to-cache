@@ -231,9 +231,6 @@ func mountOf(p string, ms []mount) (mount, bool) {
 }
 
 func fsIdentity(p string, ms []mount) string {
-	if onArray(p) {
-		return "array"
-	}
 	m, ok := mountOf(p, ms)
 	if !ok {
 		return ""
@@ -241,7 +238,7 @@ func fsIdentity(p string, ms []mount) string {
 	if m.Type == "fuse.shfs" {
 		return "array"
 	}
-	return m.Dir + "\x00" + m.Source
+	return m.Type + "\x00" + m.Source
 }
 
 func separateFilesystems(a, b string) bool {

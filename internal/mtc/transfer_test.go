@@ -48,6 +48,10 @@ func TestSameFilesystemNeverDeleted(t *testing.T) {
 	if res, _ := moveFileToArray(c, nil); res != resFailed || !exists(c) {
 		t.Fatalf("moved: %s", res)
 	}
+	os.WriteFile(ProcMounts, []byte("arr "+MntDir+"/user0 tmpfs rw 0 0\narr "+MntDir+"/cache tmpfs rw 0 0\n"), 0o644)
+	if res, _ := moveFileToArray(c, nil); res != resFailed || !exists(c) {
+		t.Fatalf("bind mount of the array taken for a second copy: %s", res)
+	}
 }
 
 func TestExit23OlderTargetKeepsSource(t *testing.T) {
