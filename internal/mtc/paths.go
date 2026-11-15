@@ -242,6 +242,12 @@ func fsIdentity(p string, ms []mount) string {
 }
 
 func separateFilesystems(a, b string) bool {
+	ra, err1 := filepath.EvalSymlinks(a)
+	rb, err2 := filepath.EvalSymlinks(b)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	a, b = ra, rb
 	ms := readMounts()
 	x, y := fsIdentity(a, ms), fsIdentity(b, ms)
 	return x != "" && y != "" && x != y

@@ -130,6 +130,9 @@ func TestConnectionTestMessages(t *testing.T) {
 	sb.file(MntDir+"/user0/Media/Movies/Film.mkv", 1, past)
 	ts := httptest.NewServer(fakePlex(t, "tok"))
 	defer ts.Close()
+	s := loadSettings()
+	s["PLEX_URL"] = ts.URL
+	saveSettings(s)
 	r := apiDispatch("test", M{"service": "plex", "url": ts.URL, "token": "bad"})
 	if r["success"] != false || r["kind"] != "token" || !strings.Contains(r["message"].(string), "refuses the token (HTTP 401)") || r["advice"] == "" {
 		t.Fatalf("wrong token: %v", r)

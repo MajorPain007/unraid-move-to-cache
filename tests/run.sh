@@ -14,7 +14,7 @@ unformatted=$(gofmt -l cmd internal)
 check "gofmt" '[ -z "$unformatted" ]'
 GOOS=linux "$GO" vet ./... || fail=1
 "$GO" vet ./... || fail=1
-"$GO" test ./internal/mtc/ -count=1 2>&1 | grep -v 'TLS handshake error' || fail=1
+"$GO" test -race ./internal/mtc/ -count=1 2>&1 | grep -v 'TLS handshake error' || fail=1
 [ "${PIPESTATUS[0]}" = 0 ] || fail=1
 
 section "Web interface"

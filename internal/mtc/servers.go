@@ -419,6 +419,9 @@ func connectionTest(p M) (M, error) {
 	}
 	sc := serverConn{d, strings.TrimRight(strings.TrimSpace(pstr(p, "url")), "/"), strings.TrimSpace(pstr(p, "token")), boolParam(p, "verify", true), pstr(p, "pin")}
 	if sc.Token == "" {
+		if sc.URL != strings.TrimRight(saved[d.Key+"_URL"], "/") {
+			return M{"success": false, "kind": "token", "message": "Enter the " + strings.ToLower(strings.ReplaceAll(d.TokenKey[len(d.Key)+1:], "_", " ")) + " to test a new address. The saved one is only sent to the saved address.", "advice": advice["token"]}, nil
+		}
 		sc.Token = saved[d.TokenKey]
 	}
 	if !validURL(sc.URL) {

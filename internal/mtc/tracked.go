@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -13,6 +14,7 @@ import (
 type Tracked map[string]float64
 
 var trackedCache struct {
+	sync.Mutex
 	mtime time.Time
 	size  int64
 	data  Tracked
@@ -23,6 +25,8 @@ func loadTracked() Tracked {
 	if err != nil {
 		return Tracked{}
 	}
+	trackedCache.Lock()
+	defer trackedCache.Unlock()
 	if trackedCache.data != nil && st.ModTime().Equal(trackedCache.mtime) && st.Size() == trackedCache.size {
 		return trackedCache.data.clone()
 	}
@@ -149,7 +153,7 @@ func storageReady() bool {
 
 type space struct{ Used, Total, Free int64 }
 
-var zfsWarned = map[string]bool{}
+var zfsWarned sync.Map
 
 var poolSpace = realPoolSpace
 
@@ -172,8 +176,7 @@ func realPoolSpace() (space, bool) {
 				return space{used, used + avail, avail}, true
 			}
 		}
-		if !zfsWarned[pool] {
-			zfsWarned[pool] = true
+		if _, seen := zfsWarned.LoadOrStore(pool, true); !seen {
 			logWarn("Cannot read the size of ZFS pool %s (%s) - the usage limit is judged from %s alone", pool, r.Message(), C.Cache)
 		}
 	}
